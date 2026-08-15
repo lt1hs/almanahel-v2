@@ -1,0 +1,398 @@
+<?php
+
+namespace App\Http\Controllers\Api;
+
+use App\Http\Controllers\Controller;
+use App\Models\Book;
+use App\Models\Transfer;
+use App\Models\Inventory;
+use App\Models\WarehouseLog;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+
+class TransferController extends Controller
+{
+    public function index(Request $request)
+    {
+        $query = Transfer::with(['fromBranch', 'toBranch', 'user']);
+        $this->scopeTransfersToUser($query, $request->user());
+
+        if ($request->filled('from_branch_id')) {
+            $query->where('from_branch_id', $request->from_branch_id);
+        }
+        if ($request->filled('to_branch_id')) {
+            $query->where('to_branch_id', $request->to_branch_id);
+        }
+        if ($request->filled('status')) {
+            $query->where('status', $request->status);
+        }
+
+        $perPage = min(max((int) $request->get('per_page', 30), 1), 100);
+        $paginator = $query->latest()->paginate($perPage);
+
+        $bookIds = collect($paginator->items())
+            ->flatMap(fn (Transfer $t) => collect($t->lineItems())->pluck('book_id'))
+            ->filter()
+            ->unique()
+            ->values();
+
+        $books = $bookIds->isEmpty()
+            ? collect()
+            : Book::whereIn('id', $bookIds)->get(['id', 'title', 'author', 'isbn'])->keyBy('id');
+
+        $paginator->getCollection()->transform(function (Transfer $transfer) use ($books) {
+            $statusLog = $transfer->displayStatusLog();
+            $items = collect($transfer->lineItems())->map(function ($item) use ($books) {
+                $bookId = $item['book_id'] ?? null;
+                $book = $bookId ? $books->get((int) $bookId) : null;
+                return [
+                    ...$item,
+                    'book' => [
+                        'id' => $bookId,
+                        'title' => $book?->title,
+                        'author' => $book?->author,
+                        'isbn' => $book?->isbn,
+                    ],
+                ];
+            })->values()->all();
+
+            $transfer->setAttribute('items', $items);
+            $transfer->setAttribute('status_log', $statusLog);
+            return $transfer;
+        });
+
+        return response()->json($paginator);
+    }
+
+    public function store(Request $request)
+    {
+        $validated = $request->validate([
+            'from_branch_id' => 'required|exists:branches,id|different:to_branch_id',
+            'to_branch_id'   => 'required|exists:branches,id',
+            'notes'          => 'nullable|string',
+            'items'          => 'required|array|min:1',
+            'items.*.book_id'  => 'required|exists:books,id',
+            'items.*.quantity' => 'required|integer|min:1',
+        ]);
+
+        return DB::transaction(function () use ($request, $validated) {
+            foreach ($validated['items'] as $item) {
+                $inv = Inventory::where('branch_id', $validated['from_branch_id'])
+                    ->where('book_id', $item['book_id'])
+                    ->lockForUpdate()
+                    ->first();
+
+                if (!$inv || $inv->quantity < $item['quantity']) {
+                    return response()->json([
+                        'message' => 'موجودی کافی در شعبه مبدأ وجود ندارد',
+                        'book_id' => $item['book_id'],
+                    ], 422);
+                }
+            }
+
+            $user = $request->user();
+            $items = array_values($validated['items']);
+            $items[] = ['_status_log' => [$this->statusEvent('pending', $user)]];
+            $transfer = Transfer::create([
+                'from_branch_id' => $validated['from_branch_id'],
+                'to_branch_id'   => $validated['to_branch_id'],
+                'status'         => 'pending',
+                'user_id'        => $user->id,
+                'items'          => $items,
+            ]);
+
+            $transfer->load(['toBranch', 'fromBranch']);
+
+            foreach ($validated['items'] as $item) {
+                $inv = Inventory::where('branch_id', $validated['from_branch_id'])
+                    ->where('book_id', $item['book_id'])
+                    ->lockForUpdate()
+                    ->first();
+
+                $inv->decrement('quantity', $item['quantity']);
+
+                WarehouseLog::create([
+                    'branch_id'           => $transfer->from_branch_id,
+                    'book_id'             => $item['book_id'],
+                    'direction'           => 'out',
+                    'quantity'            => $item['quantity'],
+                    'handler_name'        => $user->name,
+                    'reason'              => 'transferred_to_branch',
+                    'related_transfer_id' => $transfer->id,
+                    'log_date'            => now()->toDateString(),
+                    'user_id'             => $user->id,
+                    'notes'               => $validated['notes']
+                        ?? "رزرو برای انتقال به شعبه {$transfer->toBranch?->name} (در انتظار ارسال)",
+                ]);
+            }
+
+            $transfer->load(['fromBranch', 'toBranch', 'user']);
+            $transfer->setAttribute('status_log', $transfer->statusLog());
+            $transfer->setAttribute('items', $transfer->lineItems());
+
+            return response()->json($transfer, 201);
+        });
+    }
+
+    public function updateStatus(Request $request, Transfer $transfer)
+    {
+        $validated = $request->validate([
+            'status' => 'required|in:shipped,received,cancelled',
+        ]);
+
+        return DB::transaction(function () use ($request, $transfer, $validated) {
+        $user = $request->user();
+        $previousStatus = $transfer->status;
+        $nextStatus = $validated['status'];
+        $transfer->load(['toBranch', 'fromBranch', 'user']);
+
+        $allowed = [
+            'pending'   => ['shipped', 'cancelled'],
+            'shipped'   => ['received'],
+            'received'  => [],
+            'cancelled' => [],
+        ];
+        if (!in_array($nextStatus, $allowed[$previousStatus] ?? [], true)) {
+            abort(422, 'این تغییر وضعیت برای این انتقال مجاز نیست');
+        }
+
+        if ($nextStatus === 'shipped' && !$this->canShip($user, $transfer)) {
+            abort(403, 'فقط مبدأ یا انبار می‌تواند محموله را ارسال کند');
+        }
+        if ($nextStatus === 'received' && !$this->canReceive($user, $transfer)) {
+            abort(403, 'فقط شعبه مقصد می‌تواند دریافت را تأیید کند');
+        }
+        if ($nextStatus === 'cancelled' && !$this->canShip($user, $transfer) && !$this->isAdmin($user)) {
+            abort(403, 'اجازه لغو این انتقال را ندارید');
+        }
+
+        $log = collect($transfer->statusLog());
+        if ($log->isEmpty()) {
+            $log->push($this->statusEvent($previousStatus, $transfer->user ?? $user));
+        }
+        $log = $log->push($this->statusEvent($nextStatus, $user))->values()->all();
+        $transfer->update([
+            'status' => $nextStatus,
+            'items' => $transfer->itemsWithStatusLog($log),
+        ]);
+
+        if ($nextStatus === 'shipped' && $previousStatus === 'pending') {
+            WarehouseLog::where('related_transfer_id', $transfer->id)
+                ->where('direction', 'out')
+                ->update([
+                    'notes' => "ارسال محموله به شعبه {$transfer->toBranch?->name} — در راه (توسط {$user->name})",
+                ]);
+        }
+
+        if ($nextStatus === 'received' && $previousStatus !== 'received') {
+            foreach ($transfer->lineItems() as $item) {
+                $srcInv = Inventory::where('branch_id', $transfer->from_branch_id)
+                    ->where('book_id', $item['book_id'])
+                    ->first();
+
+                // Legacy transfers created before source reservation — deduct now
+                $sourceAlreadyLogged = WarehouseLog::where('related_transfer_id', $transfer->id)
+                    ->where('book_id', $item['book_id'])
+                    ->where('direction', 'out')
+                    ->exists();
+
+                if (!$sourceAlreadyLogged) {
+                    if (!$srcInv || $srcInv->quantity < $item['quantity']) {
+                        abort(422, 'موجودی کافی در شعبه مبدأ وجود ندارد');
+                    }
+
+                    $srcInv->decrement('quantity', $item['quantity']);
+
+                    WarehouseLog::create([
+                        'branch_id'           => $transfer->from_branch_id,
+                        'book_id'             => $item['book_id'],
+                        'direction'           => 'out',
+                        'quantity'            => $item['quantity'],
+                        'handler_name'        => $user->name,
+                        'reason'              => 'transferred_to_branch',
+                        'related_transfer_id' => $transfer->id,
+                        'log_date'            => now()->toDateString(),
+                        'user_id'             => $user->id,
+                        'notes'               => "انتقال به شعبه {$transfer->toBranch?->name}",
+                    ]);
+                }
+
+                $destInv = Inventory::firstOrCreate(
+                    ['branch_id' => $transfer->to_branch_id, 'book_id' => $item['book_id']],
+                    ['quantity' => 0, 'type' => $srcInv?->type ?? 'owned']
+                );
+                $destInv = Inventory::where('id', $destInv->id)->lockForUpdate()->first();
+                $destInv->increment('quantity', $item['quantity']);
+
+                if ($srcInv) {
+                    $destInv->update([
+                        'type'             => $srcInv->type,
+                        'supplier_id'      => $srcInv->supplier_id,
+                        'price_toman'      => $srcInv->price_toman,
+                        'price_dinar'      => $srcInv->price_dinar,
+                        'cost_price_toman' => $srcInv->cost_price_toman,
+                        'cost_price_dinar' => $srcInv->cost_price_dinar,
+                    ]);
+                }
+
+                WarehouseLog::create([
+                    'branch_id'           => $transfer->to_branch_id,
+                    'book_id'             => $item['book_id'],
+                    'direction'           => 'in',
+                    'quantity'            => $item['quantity'],
+                    'handler_name'        => $user->name,
+                    'reason'              => 'transferred_to_branch',
+                    'related_transfer_id' => $transfer->id,
+                    'log_date'            => now()->toDateString(),
+                    'user_id'             => $user->id,
+                    'notes'               => "تأیید دریافت توسط {$user->name} از {$transfer->fromBranch?->name}",
+                ]);
+            }
+        }
+
+        if ($nextStatus === 'cancelled' && $previousStatus === 'pending') {
+            foreach ($transfer->lineItems() as $item) {
+                $wasDeducted = WarehouseLog::where('related_transfer_id', $transfer->id)
+                    ->where('book_id', $item['book_id'])
+                    ->where('direction', 'out')
+                    ->exists();
+
+                if (!$wasDeducted) {
+                    continue;
+                }
+
+                $inv = Inventory::where('branch_id', $transfer->from_branch_id)
+                    ->where('book_id', $item['book_id'])
+                    ->first();
+                if ($inv) {
+                    $inv->increment('quantity', $item['quantity']);
+                }
+
+                WarehouseLog::create([
+                    'branch_id'           => $transfer->from_branch_id,
+                    'book_id'             => $item['book_id'],
+                    'direction'           => 'in',
+                    'quantity'            => $item['quantity'],
+                    'handler_name'        => $user->name,
+                    'reason'              => 'adjustment',
+                    'related_transfer_id' => $transfer->id,
+                    'log_date'            => now()->toDateString(),
+                    'user_id'             => $user->id,
+                    'notes'               => "لغو انتقال توسط {$user->name} — بازگشت موجودی به مبدأ",
+                ]);
+            }
+        }
+
+        $transfer->load(['fromBranch', 'toBranch', 'user']);
+        $transfer->setAttribute('status_log', $transfer->statusLog());
+        $transfer->setAttribute('items', $transfer->lineItems());
+
+        return response()->json($transfer);
+        });
+    }
+
+    public function show(Request $request, Transfer $transfer)
+    {
+        if (!$this->userCanViewTransfer($request->user(), $transfer)) {
+            abort(403, 'اجازه مشاهده این انتقال را ندارید');
+        }
+
+        $transfer->load(['fromBranch', 'toBranch', 'user']);
+        $transfer->setAttribute('status_log', $transfer->statusLog());
+        $transfer->setAttribute('items', $transfer->lineItems());
+
+        return response()->json($transfer);
+    }
+
+    private function isAdmin($user): bool
+    {
+        return in_array($user->role, ['super_admin', 'admin'], true);
+    }
+
+    private function visibleBranchIds($user): ?array
+    {
+        if ($this->isAdmin($user)) {
+            return null;
+        }
+
+        $ids = [];
+        if ($user?->branch_id) {
+            $ids[] = (int) $user->branch_id;
+        }
+        foreach ($user->iraq_only_visible_branches ?? [] as $id) {
+            $ids[] = (int) $id;
+        }
+
+        return array_values(array_unique(array_filter($ids)));
+    }
+
+    private function scopeTransfersToUser($query, $user): void
+    {
+        $ids = $this->visibleBranchIds($user);
+        if ($ids === null) {
+            return;
+        }
+        if (!$ids) {
+            $query->whereRaw('1 = 0');
+            return;
+        }
+
+        $query->where(function ($q) use ($ids, $user) {
+            $q->whereIn('from_branch_id', $ids)
+                ->orWhereIn('to_branch_id', $ids);
+            if ($user?->id) {
+                $q->orWhere('user_id', $user->id);
+            }
+        });
+    }
+
+    private function userCanViewTransfer($user, Transfer $transfer): bool
+    {
+        if ($this->isAdmin($user)) {
+            return true;
+        }
+        if ((int) $transfer->user_id === (int) $user?->id) {
+            return true;
+        }
+
+        $ids = $this->visibleBranchIds($user) ?? [];
+
+        return in_array((int) $transfer->from_branch_id, $ids, true)
+            || in_array((int) $transfer->to_branch_id, $ids, true);
+    }
+
+    private function canShip($user, Transfer $transfer): bool
+    {
+        if ($this->isAdmin($user)) {
+            return true;
+        }
+        if ($user->role === 'warehouse_staff') {
+            return true;
+        }
+
+        return (int) $user->branch_id === (int) $transfer->from_branch_id;
+    }
+
+    private function canReceive($user, Transfer $transfer): bool
+    {
+        if (!$user?->branch_id) {
+            return false;
+        }
+
+        if ((int) $user->id === (int) $transfer->user_id) {
+            return false;
+        }
+
+        return (int) $user->branch_id === (int) $transfer->to_branch_id;
+    }
+
+    private function statusEvent(string $status, $user): array
+    {
+        return [
+            'status' => $status,
+            'at' => now()->toIso8601String(),
+            'user_id' => $user?->id,
+            'user_name' => $user?->name,
+        ];
+    }
+}

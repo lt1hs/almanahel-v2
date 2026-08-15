@@ -1,0 +1,41 @@
+# Dependencies
+node_modules/
+vendor/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Next.js
+frontend/.next/
+frontend/out/
+
+# Laravel
+backend/storage/*.key
+backend/storage/framework/cache/*
+backend/storage/framework/sessions/*
+backend/storage/framework/views/*
+backend/storage/logs/*
+backend/bootstrap/cache/*.php
+!backend/storage/framework/cache/.gitignore
+!backend/storage/framework/sessions/.gitignore
+!backend/storage/framework/views/.gitignore
+!backend/storage/logs/.gitignore
+!backend/bootstrap/cache/.gitignore
+
+# Build / OS / IDE
+dist/
+build/
+.DS_Store
+Thumbs.db
+__MACOSX/
+.idea/
+.vscode/
+*.log
+npm-debug.log*
+yarn-error.log*
+
+# PHP / Composer
+.phpunit.result.cache

@@ -1,0 +1,504 @@
+{
+  "toast": {
+    "branchNotSet": "فرع المستخدم غير محدد",
+    "invoiceSuccess": "تم تسجيل الفاتورة بنجاح",
+    "invoiceError": "خطأ في تسجيل الفاتورة",
+    "addedToCart": "تمت الإضافة: {{title}}",
+    "bookNotInBranch": "هذا الكتاب غير متوفر في فرعك",
+    "barcodeNotFound": "لم يُعثر على كتاب بهذا الباركود",
+    "branchStaffOnly": "يمكن لموظفي الفرع فقط تعديل المخزون.",
+    "stockUpdateError": "خطأ في تحديث المخزون",
+    "bookDeleteError": "خطأ في حذف الكتاب",
+    "partialDeleteError": "لم يُحذف بعض الكتب.",
+    "bookNotFound": "الكتاب غير موجود",
+    "titleAuthorRequired": "العنوان والمؤلف مطلوبان",
+    "selectSupplierFirst": "يرجى اختيار مورد أولاً",
+    "titleQtyRequired": "يرجى إدخال العنوان والكمية",
+    "ledgerSaving": "جاري التسجيل في الدفتر...",
+    "bookRegistered": "تم تسجيل الكتاب بنجاح",
+    "bookRegisterError": "خطأ في تسجيل المعلومات",
+    "bookIdentified": "تم التعرف على الكتاب: {{title}}",
+    "barcodeNewBook": "تم تسجيل الباركود — كتاب جديد",
+    "consignmentFieldsRequired": "يرجى ملء جميع الحقول وكتاب واحد على الأقل.",
+    "consignmentReceiptError": "خطأ في تسجيل إيصال الأمانة",
+    "settlementSuccess": "تم تسجيل التسوية بنجاح",
+    "settlementError": "خطأ في تسجيل التسوية",
+    "branchAmountRequired": "الفرع والمبلغ مطلوبان",
+    "expenseSaveError": "خطأ في تسجيل المصروف",
+    "expenseSaveSuccess": "تم تسجيل المصروف بنجاح",
+    "expenseDeleteError": "خطأ في الحذف",
+    "expenseDeleteSuccess": "تم حذف المصروف",
+    "requiredFields": "يرجى ملء الحقول المطلوبة",
+    "giftSuccess": "تم تسجيل الهدية بنجاح",
+    "giftError": "خطأ في تسجيل الهدية",
+    "giftSettleError": "خطأ في التسوية",
+    "warehouseLogSuccess": "تم تسجيل حركة المستودع",
+    "warehouseLogError": "خطأ في تسجيل الحركة",
+    "supplierUpdated": "تم تحديث المورد",
+    "supplierCreated": "تم تسجيل مورد جديد",
+    "supplierSaveError": "خطأ في الحفظ",
+    "branchAddError": "خطأ في إضافة الفرع",
+    "branchAddSuccess": "تم تسجيل الفرع بنجاح",
+    "branchUpdateError": "خطأ في تحديث الفرع",
+    "branchUpdateSuccess": "تم تحديث الفرع",
+    "settingsSaveError": "خطأ في حفظ الإعدادات",
+    "checkUpdateError": "خطأ في تحديث الشيك",
+    "checksUpdated": "تم تحديث حالة الشيك",
+    "checksLoadError": "خطأ في تحميل الشيكات",
+    "printBlocked": "تم حظر نافذة الطباعة — اسمح بالنوافذ المنبثقة",
+    "invoicePrintError": "خطأ في طباعة الفاتورة",
+    "creditsLoadError": "خطأ في تحميل الآجل",
+    "creditsUpdateError": "خطأ في تحديث الآجل",
+    "creditsUpdated": "تم تحديث حالة الآجل",
+    "invoiceNotFound": "الفاتورة غير موجودة",
+    "invoiceSearchError": "خطأ في البحث عن الفاتورة",
+    "invoiceNotSelected": "لم يتم اختيار فاتورة",
+    "minOneItem": "اختر عنصراً واحداً على الأقل",
+    "supplierBranchRequired": "المورد والفرع مطلوبان",
+    "minOneBook": "اختر كتاباً واحداً على الأقل",
+    "returnError": "خطأ في تسجيل المرتجع"
+  },
+  "meta": {
+    "title": "دار المناهل | Al-Manahel",
+    "description": "نظام محاسبة وإدارة مخزون الكتب"
+  },
+  "auth": {
+    "tagline": "جسر بين المكتبات التقليدية والكفاءة الحديثة"
+  },
+  "navbar": {
+    "notif": {
+      "checkDue": "استحقاق الشيك",
+      "creditDue": "استحقاق الآجل",
+      "noNew": "لا توجد تنبيهات جديدة"
+    }
+  },
+  "common": {
+    "clear": "مسح",
+    "saving": "جاري الحفظ...",
+    "saveChanges": "حفظ التغييرات",
+    "submitting": "جاري التسجيل...",
+    "pleaseWait": "يرجى الانتظار...",
+    "update": "تحديث",
+    "currency": {
+      "tomanSymbol": "تومان",
+      "dinarSymbol": "د.ع"
+    }
+  },
+  "sales": {
+    "subtitle": "إدارة المبيعات اليومية · تحديث المخزون الفوري",
+    "invoiceCount": "الفواتير",
+    "searchPlaceholder": "البحث عن كتاب (اسم، مؤلف، باركود)...",
+    "noBooksFound": "لم يُعثر على كتب",
+    "check": "شيك",
+    "credit": "آجل",
+    "stockCount": "{{count}} نسخة",
+    "emptyCart": "السلة فارغة",
+    "actualPrice": "السعر الفعلي",
+    "checkInfo": "معلومات الشيك",
+    "creditInfo": "معلومات الآجل",
+    "customerName": "اسم العميل",
+    "customerPhone": "هاتف العميل",
+    "checkNumber": "رقم الشيك",
+    "bankName": "اسم البنك",
+    "payerName": "اسم مُصدر الشيك",
+    "dueDate": "تاريخ الاستحقاق",
+    "totalDiscount": "الخصم الإجمالي (%)",
+    "coverPrice": "سعر الغلاف",
+    "payable": "المبلغ المستحق",
+    "completeCheckout": "إتمام العملية وإصدار الفاتورة",
+    "validation": {
+      "checkNumberRequired": "رقم الشيك مطلوب",
+      "checkDueRequired": "تاريخ استحقاق الشيك مطلوب",
+      "payerNameRequired": "اسم مُصدر الشيك مطلوب",
+      "creditCustomerRequired": "اسم العميل للآجل مطلوب",
+      "creditDueRequired": "تاريخ استحقاق الآجل مطلوب"
+    }
+  },
+  "warehouse": {
+    "title": "إدارة المستودع المركزي",
+    "subtitle": "دخول وخروج الكتب",
+    "logIn": "تسجيل دخول",
+    "logOut": "تسجيل خروج",
+    "stats": {
+      "totalIn": "إجمالي الوارد",
+      "totalOut": "إجمالي الصادر",
+      "physicalStock": "المخزون الفعلي"
+    },
+    "tabs": {
+      "inventory": "مخزون المستودع",
+      "log": "سجل الدخول والخروج"
+    },
+    "empty": {
+      "inventory": "لا يوجد مخزون مسجل",
+      "log": "لا توجد حركات مسجلة"
+    },
+    "modal": {
+      "titleIn": "تسجيل دخول كتب",
+      "titleOut": "تسجيل خروج كتب"
+    },
+    "form": {
+      "selectBook": "اختيار كتاب...",
+      "quantity": "الكمية",
+      "date": "التاريخ",
+      "deliverer": "المُسلِّم",
+      "receiver": "المُستلِم",
+      "phone": "الهاتف",
+      "notes": "ملاحظات..."
+    },
+    "logTypes": {
+      "received": "استلام من المورد",
+      "transferred": "إرسال إلى فرع",
+      "returned": "مرتجع من فرع",
+      "adjustment": "تعديل المخزون",
+      "other": "أخرى"
+    }
+  },
+  "gifts": {
+    "title": "إدارة الهدايا",
+    "subtitle": "تسجيل كتب الهدايا · حساب التكلفة · التسوية مع الناشر",
+    "kpi": {
+      "total": "إجمالي الهدايا",
+      "totalCost": "التكلفة الإجمالية",
+      "pendingSettlement": "تحتاج تسوية"
+    },
+    "consignmentNote": "يجب دفع قيمة كتب الهدايا الأمانة للناشر.",
+    "status": {
+      "pending": "تحتاج تسوية",
+      "settled": "تمت التسوية"
+    },
+    "consignmentFrom": "أمانة — {{supplier}}",
+    "submit": "تسجيل هدية",
+    "form": {
+      "book": "كتاب",
+      "branch": "فرع",
+      "recipient": "المستلم",
+      "quantity": "الكمية",
+      "costValue": "قيمة التكلفة",
+      "date": "التاريخ",
+      "isConsignment": "كتاب أمانة (يحتاج تسوية مع الناشر)",
+      "selectPublisher": "اختيار ناشر..."
+    }
+  },
+  "returns": {
+    "title": "إدارة المرتجعات",
+    "subtitle": "مرتجع العميل · مرتجع الأمانة للناشر",
+    "tabs": {
+      "customer": "مرتجع العميل",
+      "consignment": "مرتجع للناشر"
+    },
+    "refund": {
+      "cash": "نقد",
+      "credit": "رصيد"
+    },
+    "empty": "لم يُسجَّل مرتجع بعد",
+    "submit": "تسجيل مرتجع",
+    "form": {
+      "title": "تسجيل مرتجع",
+      "customerSubtitle": "إرجاع من العميل",
+      "consignmentSubtitle": "إرجاع أمانة للناشر",
+      "searchInvoice": "البحث عن فاتورة",
+      "invoicePlaceholder": "رقم الفاتورة...",
+      "search": "بحث",
+      "refundCash": "استرداد نقدي",
+      "refundCredit": "رصيد في حساب العميل",
+      "reason": "سبب الإرجاع",
+      "notesPlaceholder": "ملاحظات...",
+      "consignmentBooks": "كتب الأمانة",
+      "maxQtyPrice": "الحد الأقصى للكمية / السعر",
+      "noConsignmentBooks": "لا توجد كتب أمانة"
+    }
+  },
+  "checks": {
+    "title": "إدارة الشيكات",
+    "subtitle": "مبيعات غير نقدية · استحقاق الشيك · تنبيهات الدفع",
+    "dueSoon": "{{count}} شيك خلال ٧ أيام",
+    "overdueAlert": "{{count}} شيك متأخر",
+    "viewOverdue": "عرض المتأخر",
+    "totalPending": "إجمالي المعلّق",
+    "searchPlaceholder": "بحث بالاسم أو رقم الشيك أو البنك أو الفاتورة...",
+    "empty": "لا توجد شيكات مسجلة",
+    "checkNumber": "شيك",
+    "dueDate": "الاستحقاق",
+    "branch": "فرع",
+    "amount": "مبلغ الشيك",
+    "invoice": "فاتورة",
+    "unknownPayer": "بدون اسم",
+    "markCleared": "تم التحصيل",
+    "markBounced": "مرتجع",
+    "reopen": "إعادة للانتظار",
+    "status": {
+      "pending": "قيد الانتظار",
+      "cleared": "تم التحصيل",
+      "bounced": "مرتجع",
+      "bouncedShort": "مرتجع",
+      "overdue": "متأخر"
+    }
+  },
+  "credits": {
+    "title": "إدارة الآجل",
+    "subtitle": "مبيعات الآجل · الاستحقاق · تحصيل المطالبات",
+    "dueSoon": "{{count}} آجل خلال ٧ أيام",
+    "totalUnpaid": "إجمالي غير المحصّل",
+    "searchPlaceholder": "بحث باسم العميل أو الهاتف أو رقم الفاتورة...",
+    "empty": "لا توجد مبيعات آجل مسجلة",
+    "dueDate": "الاستحقاق",
+    "branch": "فرع",
+    "amount": "مبلغ الآجل",
+    "unknownCustomer": "بدون اسم",
+    "markPaid": "تم التحصيل",
+    "markOverdue": "متأخر",
+    "status": {
+      "pending": "قيد الانتظار",
+      "paid": "تم التحصيل",
+      "overdue": "متأخر"
+    }
+  },
+  "expenses": {
+    "title": "مصروفات الفروع اليومية",
+    "subtitle": "تسجيل المصروفات · حساب صافي الربح",
+    "add": "تسجيل مصروف",
+    "kpi": {
+      "total": "إجمالي المصروفات (تومان)",
+      "count": "عدد التسجيلات"
+    },
+    "empty": "لا توجد مصروفات مسجلة",
+    "confirmDelete": "حذف هذا المصروف؟",
+    "form": {
+      "title": "تسجيل مصروف جديد",
+      "selectBranch": "اختيار فرع...",
+      "amount": "المبلغ",
+      "description": "الوصف"
+    },
+    "categories": {
+      "rent": "إيجار",
+      "salary": "رواتب",
+      "utilities": "ماء وكهرباء",
+      "transport": "نقل",
+      "marketing": "إعلانات",
+      "office": "لوازم مكتبية",
+      "other": "أخرى"
+    }
+  },
+  "consignment": {
+    "title": "إدارة كتب الأمانة",
+    "subtitle": "إيصالات الأمانة · التسوية · المرتجعات",
+    "settle": "تسوية",
+    "addReceipt": "تسجيل إيصال أمانة",
+    "searchPlaceholder": "بحث بالمورد أو رقم الإيصال...",
+    "noReceipts": "لا توجد إيصالات أمانة",
+    "totalDebt": "إجمالي الدين",
+    "remaining": "المتبقي",
+    "settledPercent": "٪ تمت التسوية",
+    "kpi": {
+      "totalReceipts": "إجمالي الإيصالات",
+      "totalBalance": "الرصيد الإجمالي (تومان)"
+    },
+    "status": {
+      "unsettled": "غير مسوّى",
+      "partial": "مسوّى جزئياً",
+      "settled": "مسوّى"
+    },
+    "table": {
+      "bookTitle": "عنوان الكتاب",
+      "quantity": "الكمية",
+      "purchasePrice": "سعر الشراء",
+      "salePrice": "سعر البيع"
+    },
+    "form": {
+      "supplier": "المورد",
+      "branch": "فرع الاستلام",
+      "receivedDate": "تاريخ الاستلام",
+      "currency": "العملة",
+      "notes": "ملاحظات",
+      "noBooks": "لم تُضف كتب"
+    },
+    "settle": {
+      "title": "تسوية كتب الأمانة",
+      "subtitle": "حساب حصة الناشر · تسجيل الدفع"
+    }
+  },
+  "suppliers": {
+    "title": "إدارة الموردين",
+    "subtitle": "الناشرون · مراكز التوزيع · الشركاء",
+    "search": "البحث عن مورد",
+    "searchPlaceholder": "اسم، مدينة أو رمز...",
+    "add": "مورد جديد",
+    "addNew": "مورد جديد",
+    "addModalTitle": "إضافة مورد جديد",
+    "notFound": "لم يُعثر على مورد",
+    "submit": "تسجيل المورد",
+    "viewTransactions": "عرض المعاملات",
+    "types": {
+      "publisher": "ناشر",
+      "company": "شركة",
+      "individual": "فرد"
+    },
+    "form": {
+      "name": "اسم المورد",
+      "city": "المدينة / موقع النشاط",
+      "phone": "الهاتف (اختياري)",
+      "type": "نوع التعاون",
+      "email": "البريد الإلكتروني",
+      "address": "العنوان",
+      "nameExample": "مثال: دار نشر بستان",
+      "cityExample": "مثال: قم",
+      "editTitle": "تعديل المورد",
+      "addTitle": "تسجيل مورد جديد",
+      "contactDesc": "معلومات الاتصال والتعاون"
+    }
+  },
+  "reports": {
+    "title": "التقارير الشاملة",
+    "subtitle": "تحليل الأداء · المخزون · أرباح الفروع",
+    "branchPerformanceMonth": "أداء الفروع (الشهر الحالي)",
+    "lowStockBooks": "كتب منخفضة المخزون",
+    "kpi": {
+      "todaySalesToman": "مبيعات اليوم (تومان)",
+      "todaySalesDinar": "مبيعات اليوم (دينار)",
+      "monthlyNetToman": "صافي الربح الشهري",
+      "lowStockAlert": "تنبيه مخزون منخفض"
+    },
+    "iraqProfit": {
+      "title": "ربح فرع العراق",
+      "revenue": "الإيرادات",
+      "expenses": "المصروفات",
+      "netProfit": "صافي الربح",
+      "salesCount": "عدد المبيعات"
+    },
+    "links": {
+      "overdueChecks": "شيكات متأخرة",
+      "overdueCredits": "آجل متأخر",
+      "finance": "المالية والتسوية",
+      "distribution": "التوزيع"
+    }
+  },
+  "finance": {
+    "totalCashBalance": "إجمالي رصيد الصندوق",
+    "grossProfitThisMonth": "الربح الإجمالي للشهر",
+    "salesCount": "{{count}} مبيعة",
+    "noTopItems": "لا توجد عناصر مبيعة مسجلة",
+    "branchProfit": {
+      "subtitle": "تحليل الإيرادات والمصروفات وصافي الربح حسب الفرع",
+      "currencyToman": "تومان إيران (﷼)",
+      "currencyDinar": "دينار عراق (ع.د)",
+      "loadError": "خطأ في تحميل أرباح الفروع",
+      "empty": "لا توجد بيانات لهذه الفترة",
+      "searchPlaceholder": "بحث بالفرع أو المدينة...",
+      "pendingCredit": "آجل معلّق",
+      "period": {
+        "thisMonth": "هذا الشهر",
+        "lastMonth": "الشهر الماضي",
+        "last30": "٣٠ يوماً",
+        "thisYear": "هذه السنة",
+        "custom": "مخصص"
+      },
+      "kpi": {
+        "totalRevenue": "إجمالي إيرادات الفروع",
+        "totalExpenses": "إجمالي المصروفات التشغيلية",
+        "giftCost": "تكلفة كتب الهدايا",
+        "netProfit": "صافي الربح"
+      },
+      "salesRevenue": "إيرادات المبيعات",
+      "operatingExpenses": "المصروفات التشغيلية",
+      "giftBooksCost": "تكلفة كتب الهدايا",
+      "estimatedNet": "صافي الربح التقديري"
+    },
+    "settlement": {
+      "supplier": "المورد",
+      "selectSupplier": "اختيار مورد...",
+      "fromDate": "من تاريخ",
+      "toDate": "إلى تاريخ",
+      "calculating": "جاري الحساب...",
+      "calculate": "حساب التسوية",
+      "noData": "لا توجد بيانات للعرض",
+      "total": "المجموع",
+      "commission": "عمولة ١٠٪",
+      "publisherShare": "حصة المورد",
+      "finalPayable": "المبلغ النهائي المستحق للمورد",
+      "downloadPdf": "تحميل PDF",
+      "confirmDeposit": "تأكيد وتسجيل الدفع",
+      "table": {
+        "book": "كتاب",
+        "soldQty": "الكمية المباعة",
+        "total": "المجموع",
+        "commission": "عمولة ١٠٪",
+        "publisherShare": "حصة المورد"
+      }
+    },
+    "charts": {
+      "period3m": "٣ أشهر",
+      "period6m": "٦ أشهر",
+      "periodYear": "هذا العام",
+      "salesTrend": "اتجاه المبيعات",
+      "netProfitMonthly": "صافي الربح الشهري",
+      "noData": "لا توجد بيانات",
+      "months": {
+        "1": "يناير", "2": "فبراير", "3": "مارس", "4": "أبريل",
+        "5": "مايو", "6": "يونيو", "7": "يوليو", "8": "أغسطس",
+        "9": "سبتمبر", "10": "أكتوبر", "11": "نوفمبر", "12": "ديسمبر"
+      }
+    }
+  },
+  "inventory": {
+    "addToWarehouse": "إضافة كتاب للمستودع",
+    "scanBarcode": "مسح الباركود",
+    "unknownAuthor": "مؤلف غير معروف",
+    "noIsbn": "بدون ISBN",
+    "iraqOnly": "العراق فقط",
+    "form": {
+      "identityTitle": "بيانات هوية العمل",
+      "identityDesc": "تفاصيل ببليوغرافية",
+      "titlePlaceholder": "اسم العمل...",
+      "authorPlaceholder": "اسم المؤلف",
+      "pricingTitle": "التسعير ونوع العقد",
+      "purchaseType": "نوع شراء المنتج",
+      "ownershipModel": "تحديد نموذج الملكية",
+      "priceToman": "سعر البيع (تومان)",
+      "priceDinar": "سعر البيع (دينار عراقي)",
+      "costPriceToman": "سعر الشراء / التكلفة (تومان)",
+      "costPriceDinar": "سعر الشراء (دينار عراقي)",
+      "costPriceHint": "فارغ = نفس سعر البيع",
+      "iraqExclusive": "حصري لفروع العراق",
+      "allBranches": "عرض في جميع الفروع"
+    },
+    "scanner": {
+      "title": "مسح الباركود",
+      "hint": "ضع الباركود داخل الإطار...",
+      "cameraDenied": "لا يمكن الوصول إلى الكاميرا."
+    },
+    "wizard": {
+      "stepSupplier": "اختيار المورد",
+      "stepBook": "بيانات الكتاب",
+      "stepReview": "المراجعة والتأكيد",
+      "supplierTitle": "اختيار المورد",
+      "supplierDesc": "حدد المورد ونوع التعاون",
+      "bookTitle": "بيانات الكتاب",
+      "bookDesc": "معلومات الكتاب والمخزون الأولي",
+      "reviewTitle": "المراجعة النهائية",
+      "reviewDesc": "راجع المعلومات قبل التسجيل",
+      "supplierInfo": "معلومات المورد",
+      "shipmentDetails": "تفاصيل الشحنة",
+      "bookSummary": "ملخص الكتاب",
+      "prevStep": "الخطوة السابقة",
+      "nextStep": "الخطوة التالية",
+      "confirmRegister": "تأكيد والتسجيل في المستودع",
+      "scannerTip": "نصيحة: استخدم زر الماسح لإدخال الباركود بسرعة",
+      "cancel": "إلغاء"
+    }
+  },
+  "admin": {
+    "branchType": {
+      "warehouse": "مستودع",
+      "store": "متجر"
+    },
+    "form": {
+      "branchName": "اسم الفرع",
+      "city": "المدينة"
+    },
+    "submitBranch": "تسجيل الفرع"
+  },
+  "countries": {
+    "iran": "إيران",
+    "iraq": "العراق"
+  }
+}

@@ -1,0 +1,504 @@
+{
+  "toast": {
+    "branchNotSet": "شعبه کاربر مشخص نیست",
+    "invoiceSuccess": "فاکتور با موفقیت ثبت شد",
+    "invoiceError": "خطا در ثبت فاکتور",
+    "addedToCart": "افزوده شد: {{title}}",
+    "bookNotInBranch": "این کتاب در شعبه شما موجود نیست",
+    "barcodeNotFound": "کتابی با این بارکد یافت نشد",
+    "branchStaffOnly": "تنها پرسنل شعبه می‌توانند موجودی را تغییر دهند.",
+    "stockUpdateError": "خطا در به‌روزرسانی موجودی",
+    "bookDeleteError": "خطا در حذف کتاب",
+    "partialDeleteError": "برخی کتاب‌ها حذف نشدند.",
+    "bookNotFound": "کتاب یافت نشد",
+    "titleAuthorRequired": "عنوان و نویسنده الزامی است",
+    "selectSupplierFirst": "لطفاً ابتدا یک تأمین‌کننده انتخاب کنید",
+    "titleQtyRequired": "لطفاً عنوان و تعداد کتاب را وارد کنید",
+    "ledgerSaving": "در حال ثبت در دفتر کل...",
+    "bookRegistered": "کتاب با موفقیت ثبت شد",
+    "bookRegisterError": "خطا در ثبت اطلاعات",
+    "bookIdentified": "کتاب شناسایی شد: {{title}}",
+    "barcodeNewBook": "بارکد ثبت شد — کتاب جدید",
+    "consignmentFieldsRequired": "لطفا تمامی فیلدها و حداقل یک کتاب را وارد کنید.",
+    "consignmentReceiptError": "خطا در ثبت رسید امانی",
+    "settlementSuccess": "تسویه با موفقیت ثبت شد",
+    "settlementError": "خطا در ثبت تسویه",
+    "branchAmountRequired": "شعبه و مبلغ الزامی است",
+    "expenseSaveError": "خطا در ثبت هزینه",
+    "expenseSaveSuccess": "هزینه با موفقیت ثبت شد",
+    "expenseDeleteError": "خطا در حذف",
+    "expenseDeleteSuccess": "هزینه حذف شد",
+    "requiredFields": "لطفاً فیلدهای الزامی را پر کنید",
+    "giftSuccess": "هدیه با موفقیت ثبت شد",
+    "giftError": "خطا در ثبت هدیه",
+    "giftSettleError": "خطا در تسویه",
+    "warehouseLogSuccess": "تراکنش انبار ثبت شد",
+    "warehouseLogError": "خطا در ثبت تراکنش",
+    "supplierUpdated": "تأمین‌کننده به‌روزرسانی شد",
+    "supplierCreated": "تأمین‌کننده جدید ثبت شد",
+    "supplierSaveError": "خطا در ذخیره‌سازی",
+    "branchAddError": "خطا در افزودن شعبه",
+    "branchAddSuccess": "شعبه با موفقیت ثبت شد",
+    "branchUpdateError": "خطا در به‌روزرسانی شعبه",
+    "branchUpdateSuccess": "شعبه به‌روزرسانی شد",
+    "settingsSaveError": "خطا در ذخیره تنظیمات",
+    "checkUpdateError": "خطا در به‌روزرسانی چک",
+    "checksUpdated": "وضعیت چک به‌روز شد",
+    "checksLoadError": "خطا در بارگذاری چک‌ها",
+    "printBlocked": "پنجره چاپ مسدود شد — اجازه پاپ‌آپ را فعال کنید",
+    "invoicePrintError": "خطا در چاپ فاکتور",
+    "creditsLoadError": "خطا در بارگذاری نسیه‌ها",
+    "creditsUpdateError": "خطا در به‌روزرسانی نسیه",
+    "creditsUpdated": "وضعیت نسیه به‌روز شد",
+    "invoiceNotFound": "فاکتور یافت نشد",
+    "invoiceSearchError": "خطا در جستجوی فاکتور",
+    "invoiceNotSelected": "فاکتور انتخاب نشده",
+    "minOneItem": "حداقل یک قلم انتخاب کنید",
+    "supplierBranchRequired": "تأمین‌کننده و شعبه الزامی است",
+    "minOneBook": "حداقل یک کتاب انتخاب کنید",
+    "returnError": "خطا در ثبت مرجوعی"
+  },
+  "meta": {
+    "title": "دارالمناهل | Al-Manahel",
+    "description": "سامانه حسابداری و مدیریت موجودی کتاب"
+  },
+  "auth": {
+    "tagline": "پلی میان کتابخانه‌های سنتی و کارآیی مدرن"
+  },
+  "navbar": {
+    "notif": {
+      "checkDue": "سررسید چک",
+      "creditDue": "سررسید نسیه",
+      "noNew": "اعلان جدیدی نیست"
+    }
+  },
+  "common": {
+    "clear": "پاک کردن",
+    "saving": "در حال ذخیره...",
+    "saveChanges": "ذخیره تغییرات",
+    "submitting": "در حال ثبت...",
+    "pleaseWait": "صبور باشید...",
+    "update": "به‌روزرسانی",
+    "currency": {
+      "tomanSymbol": "تومان",
+      "dinarSymbol": "د.ع"
+    }
+  },
+  "sales": {
+    "subtitle": "مدیریت فروش روزانه · به‌روزرسانی آنی انبار",
+    "invoiceCount": "فاکتورها",
+    "searchPlaceholder": "جستجوی کتاب (نام، نویسنده، بارکد)...",
+    "noBooksFound": "کتابی یافت نشد",
+    "check": "چک",
+    "credit": "نسیه",
+    "stockCount": "{{count}} جلد",
+    "emptyCart": "سبد خرید خالی است",
+    "actualPrice": "قیمت واقعی",
+    "checkInfo": "اطلاعات چک",
+    "creditInfo": "اطلاعات نسیه",
+    "customerName": "نام مشتری",
+    "customerPhone": "تلفن مشتری",
+    "checkNumber": "شماره چک",
+    "bankName": "نام بانک",
+    "payerName": "نام صادرکننده چک",
+    "dueDate": "تاریخ سررسید",
+    "totalDiscount": "تخفیف کل (%)",
+    "coverPrice": "قیمت پشت جلد",
+    "payable": "مبلغ قابل پرداخت",
+    "completeCheckout": "تکمیل فرایند و صدور فاکتور",
+    "validation": {
+      "checkNumberRequired": "شماره چک الزامی است",
+      "checkDueRequired": "تاریخ سررسید چک الزامی است",
+      "payerNameRequired": "نام صادرکننده چک الزامی است",
+      "creditCustomerRequired": "نام مشتری برای نسیه الزامی است",
+      "creditDueRequired": "تاریخ سررسید نسیه الزامی است"
+    }
+  },
+  "warehouse": {
+    "title": "مدیریت انبار مرکزی",
+    "subtitle": "ورود و خروج کتب",
+    "logIn": "ثبت ورود",
+    "logOut": "ثبت خروج",
+    "stats": {
+      "totalIn": "کل ورودی",
+      "totalOut": "کل خروجی",
+      "physicalStock": "موجودی فیزیکی"
+    },
+    "tabs": {
+      "inventory": "موجودی انبار",
+      "log": "لاگ ورود و خروج"
+    },
+    "empty": {
+      "inventory": "موجودی ثبت نشده",
+      "log": "تراکنشی ثبت نشده"
+    },
+    "modal": {
+      "titleIn": "ثبت ورود کتب",
+      "titleOut": "ثبت خروج کتب"
+    },
+    "form": {
+      "selectBook": "انتخاب کتاب...",
+      "quantity": "تعداد",
+      "date": "تاریخ",
+      "deliverer": "تحویل‌دهنده",
+      "receiver": "تحویل‌گیرنده",
+      "phone": "تماس",
+      "notes": "یادداشت..."
+    },
+    "logTypes": {
+      "received": "دریافت از تامین‌کننده",
+      "transferred": "ارسال به شعبه",
+      "returned": "مرجوعی از شعبه",
+      "adjustment": "تعدیل موجودی",
+      "other": "سایر"
+    }
+  },
+  "gifts": {
+    "title": "مدیریت هدایا",
+    "subtitle": "ثبت کتاب هدیه · محاسبه هزینه · تسویه با ناشر",
+    "kpi": {
+      "total": "کل هدایا",
+      "totalCost": "هزینه کل",
+      "pendingSettlement": "نیازمند تسویه"
+    },
+    "consignmentNote": "کتب اهدایی امانی باید بهای آن‌ها به ناشر پرداخت شود.",
+    "status": {
+      "pending": "نیازمند تسویه",
+      "settled": "تسویه شده"
+    },
+    "consignmentFrom": "امانی — {{supplier}}",
+    "submit": "ثبت هدیه",
+    "form": {
+      "book": "کتاب",
+      "branch": "شعبه",
+      "recipient": "گیرنده",
+      "quantity": "تعداد",
+      "costValue": "ارزش هزینه",
+      "date": "تاریخ",
+      "isConsignment": "کتاب امانی است (نیاز به تسویه با ناشر)",
+      "selectPublisher": "انتخاب ناشر..."
+    }
+  },
+  "returns": {
+    "title": "مدیریت مرجوعی‌ها",
+    "subtitle": "مرجوعی مشتری · مرجوعی امانی به ناشر",
+    "tabs": {
+      "customer": "مرجوعی مشتری",
+      "consignment": "مرجوعی به ناشر"
+    },
+    "refund": {
+      "cash": "نقد",
+      "credit": "اعتبار"
+    },
+    "empty": "هنوز مرجوعی ثبت نشده",
+    "submit": "ثبت مرجوعی",
+    "form": {
+      "title": "ثبت مرجوعی",
+      "customerSubtitle": "بازگشت از مشتری",
+      "consignmentSubtitle": "بازگشت امانی به ناشر",
+      "searchInvoice": "جستجوی فاکتور",
+      "invoicePlaceholder": "شماره فاکتور...",
+      "search": "جستجو",
+      "refundCash": "بازپرداخت نقد",
+      "refundCredit": "اعتبار در حساب مشتری",
+      "reason": "دلیل مرجوعی",
+      "notesPlaceholder": "توضیحات...",
+      "consignmentBooks": "کتب امانی",
+      "maxQtyPrice": "حداکثر تعداد / قیمت",
+      "noConsignmentBooks": "کتاب امانی یافت نشد"
+    }
+  },
+  "checks": {
+    "title": "مدیریت چک‌ها",
+    "subtitle": "فروش غیر نقدی · سررسید چک · هشدار موعد پرداخت",
+    "dueSoon": "{{count}} چک تا ۷ روز آینده",
+    "overdueAlert": "{{count}} چک سررسید گذشته",
+    "viewOverdue": "مشاهده معوق‌ها",
+    "totalPending": "مجموع در انتظار",
+    "searchPlaceholder": "جستجو نام، شماره چک، بانک یا فاکتور...",
+    "empty": "چکی ثبت نشده است",
+    "checkNumber": "چک",
+    "dueDate": "سررسید",
+    "branch": "شعبه",
+    "amount": "مبلغ چک",
+    "invoice": "فاکتور",
+    "unknownPayer": "بدون نام",
+    "markCleared": "وصول شد",
+    "markBounced": "برگشتی",
+    "reopen": "بازگشت به انتظار",
+    "status": {
+      "pending": "در انتظار",
+      "cleared": "وصول شده",
+      "bounced": "برگشت خورده",
+      "bouncedShort": "برگشتی",
+      "overdue": "معوق"
+    }
+  },
+  "credits": {
+    "title": "مدیریت نسیه",
+    "subtitle": "فروش نسیه · سررسید · وصول مطالبات",
+    "dueSoon": "{{count}} نسیه تا ۷ روز آینده",
+    "totalUnpaid": "مجموع وصول‌نشده",
+    "searchPlaceholder": "جستجو نام مشتری، تلفن یا شماره فاکتور...",
+    "empty": "فروش نسیه‌ای ثبت نشده است",
+    "dueDate": "سررسید",
+    "branch": "شعبه",
+    "amount": "مبلغ نسیه",
+    "unknownCustomer": "بدون نام",
+    "markPaid": "وصول شد",
+    "markOverdue": "معوق",
+    "status": {
+      "pending": "در انتظار",
+      "paid": "وصول شده",
+      "overdue": "معوق"
+    }
+  },
+  "expenses": {
+    "title": "هزینه‌های روزانه شعب",
+    "subtitle": "ثبت خروجی از دخل · محاسبه سود خالص",
+    "add": "ثبت هزینه",
+    "kpi": {
+      "total": "کل هزینه‌ها (تومان)",
+      "count": "تعداد ثبت"
+    },
+    "empty": "هزینه‌ای ثبت نشده",
+    "confirmDelete": "حذف این هزینه؟",
+    "form": {
+      "title": "ثبت هزینه جدید",
+      "selectBranch": "انتخاب شعبه...",
+      "amount": "مبلغ",
+      "description": "توضیحات"
+    },
+    "categories": {
+      "rent": "اجاره",
+      "salary": "حقوق",
+      "utilities": "آب و برق",
+      "transport": "حمل و نقل",
+      "marketing": "تبلیغات",
+      "office": "لوازم اداری",
+      "other": "سایر"
+    }
+  },
+  "consignment": {
+    "title": "مدیریت کتب امانی",
+    "subtitle": "رسیدهای امانی · تسویه حساب · مرجوعی",
+    "settle": "تسویه حساب",
+    "addReceipt": "ثبت رسید امانی",
+    "searchPlaceholder": "جستجو بر اساس تامین‌کننده یا شماره رسید...",
+    "noReceipts": "رسید امانی یافت نشد",
+    "totalDebt": "کل بدهی",
+    "remaining": "مانده",
+    "settledPercent": "٪ تسویه شده",
+    "kpi": {
+      "totalReceipts": "کل رسیدها",
+      "totalBalance": "مانده کل (تومان)"
+    },
+    "status": {
+      "unsettled": "تسویه نشده",
+      "partial": "تسویه جزئی",
+      "settled": "تسویه شده"
+    },
+    "table": {
+      "bookTitle": "عنوان کتاب",
+      "quantity": "تعداد",
+      "purchasePrice": "قیمت خرید",
+      "salePrice": "قیمت فروش"
+    },
+    "form": {
+      "supplier": "تامین‌کننده",
+      "branch": "شعبه دریافت",
+      "receivedDate": "تاریخ دریافت",
+      "currency": "واحد پولی",
+      "notes": "یادداشت",
+      "noBooks": "کتابی اضافه نشده است"
+    },
+    "settle": {
+      "title": "تسویه حساب کتب امانی",
+      "subtitle": "محاسبه سهم ناشر · ثبت واریزی"
+    }
+  },
+  "suppliers": {
+    "title": "مدیریت تأمین‌کنندگان",
+    "subtitle": "ناشران · مراکز پخش · شرکای تجاری",
+    "search": "جستجوی تأمین‌کننده",
+    "searchPlaceholder": "نام، شهر یا کد...",
+    "add": "تأمین‌کننده جدید",
+    "addNew": "تأمین‌کننده جدید",
+    "addModalTitle": "افزودن تأمین‌کننده جدید",
+    "notFound": "تأمین‌کننده‌ای یافت نشد",
+    "submit": "ثبت تأمین‌کننده",
+    "viewTransactions": "مشاهده تراکنش‌ها",
+    "types": {
+      "publisher": "ناشر",
+      "company": "شرکت",
+      "individual": "فردی"
+    },
+    "form": {
+      "name": "نام تأمین‌کننده",
+      "city": "شهر / محل فعالیت",
+      "phone": "تلفن (اختیاری)",
+      "type": "نوع همکاری",
+      "email": "ایمیل",
+      "address": "آدرس",
+      "nameExample": "مثلاً: انتشارات بوستان کتاب",
+      "cityExample": "مثلاً: قم",
+      "editTitle": "ویرایش تأمین‌کننده",
+      "addTitle": "ثبت تأمین‌کننده جدید",
+      "contactDesc": "اطلاعات تماس و همکاری"
+    }
+  },
+  "reports": {
+    "title": "گزارشات جامع",
+    "subtitle": "تحلیل عملکرد · موجودی · سود شعب",
+    "branchPerformanceMonth": "عملکرد شعب (ماه جاری)",
+    "lowStockBooks": "کتاب‌های کم‌موجود",
+    "kpi": {
+      "todaySalesToman": "فروش امروز (تومان)",
+      "todaySalesDinar": "فروش امروز (دینار)",
+      "monthlyNetToman": "سود خالص ماهانه",
+      "lowStockAlert": "هشدار موجودی کم"
+    },
+    "iraqProfit": {
+      "title": "سود شعبه عراق",
+      "revenue": "درآمد",
+      "expenses": "هزینه‌ها",
+      "netProfit": "سود خالص",
+      "salesCount": "تعداد فروش"
+    },
+    "links": {
+      "overdueChecks": "چک‌های معوق",
+      "overdueCredits": "نسیه‌های معوق",
+      "finance": "مالی و تسویه",
+      "distribution": "توزیع"
+    }
+  },
+  "finance": {
+    "totalCashBalance": "موجودی کل صندوق",
+    "grossProfitThisMonth": "سود ناخالص ماه جاری",
+    "salesCount": "{{count}} فروش",
+    "noTopItems": "کالای پرفروشی ثبت نشده است",
+    "branchProfit": {
+      "subtitle": "تحلیل درآمد، هزینه‌ها و سود خالص به تفکیک شعبه",
+      "currencyToman": "تومان ایران (﷼)",
+      "currencyDinar": "دینار عراق (ع.د)",
+      "loadError": "خطا در بارگذاری سود شعب",
+      "empty": "داده‌ای برای این بازه یافت نشد",
+      "searchPlaceholder": "جستجوی شعبه یا شهر...",
+      "pendingCredit": "نسیه معوق",
+      "period": {
+        "thisMonth": "این ماه",
+        "lastMonth": "ماه قبل",
+        "last30": "۳۰ روز",
+        "thisYear": "امسال",
+        "custom": "سفارشی"
+      },
+      "kpi": {
+        "totalRevenue": "کل درآمد شعبه‌ها",
+        "totalExpenses": "کل هزینه‌های جاری",
+        "giftCost": "بهای کتب اهدایی",
+        "netProfit": "سود خالص"
+      },
+      "salesRevenue": "درآمد فروش",
+      "operatingExpenses": "هزینه‌های جاری",
+      "giftBooksCost": "بهای کتب اهدایی",
+      "estimatedNet": "سود خالص تخمینی"
+    },
+    "settlement": {
+      "supplier": "تأمین‌کننده",
+      "selectSupplier": "انتخاب تامین‌کننده...",
+      "fromDate": "از تاریخ",
+      "toDate": "تا تاریخ",
+      "calculating": "در حال محاسبه...",
+      "calculate": "محاسبه تسویه حساب",
+      "noData": "داده‌ای برای نمایش وجود ندارد",
+      "total": "جمع کل",
+      "commission": "حق‌العمل ۱۰٪",
+      "publisherShare": "سهم تأمین‌کننده",
+      "finalPayable": "مبلغ نهایی قابل پرداخت به تأمین‌کننده",
+      "downloadPdf": "دانلود PDF",
+      "confirmDeposit": "تأیید و ثبت واریزی",
+      "table": {
+        "book": "کتاب",
+        "soldQty": "تعداد فروخته شده",
+        "total": "جمع کل",
+        "commission": "حق‌العمل ۱۰٪",
+        "publisherShare": "سهم تأمین‌کننده"
+      }
+    },
+    "charts": {
+      "period3m": "۳ ماه",
+      "period6m": "۶ ماه",
+      "periodYear": "امسال",
+      "salesTrend": "روند فروش",
+      "netProfitMonthly": "سود خالص ماهانه",
+      "noData": "داده‌ای موجود نیست",
+      "months": {
+        "1": "فروردین", "2": "اردیبهشت", "3": "خرداد", "4": "تیر",
+        "5": "مرداد", "6": "شهریور", "7": "مهر", "8": "آبان",
+        "9": "آذر", "10": "دی", "11": "بهمن", "12": "اسفند"
+      }
+    }
+  },
+  "inventory": {
+    "addToWarehouse": "افزودن کتاب به انبار",
+    "scanBarcode": "اسکن بارکد",
+    "unknownAuthor": "نویسنده نامشخص",
+    "noIsbn": "بدون شابک",
+    "iraqOnly": "فقط عراق",
+    "form": {
+      "identityTitle": "اطلاعات شناسنامه‌ای اثر",
+      "identityDesc": "جزئیات کتاب‌شناختی",
+      "titlePlaceholder": "نام اثر...",
+      "authorPlaceholder": "نام پدیدآورنده",
+      "pricingTitle": "قیمت‌گذاری و نوع قرارداد",
+      "purchaseType": "نوع خرید محصول",
+      "ownershipModel": "تعیین مدل مالکیت",
+      "priceToman": "قیمت فروش (تومان)",
+      "priceDinar": "قیمت فروش (دینار عراقی)",
+      "costPriceToman": "قیمت خرید / بهای تمام‌شده (تومان)",
+      "costPriceDinar": "قیمت خرید (دینار عراقی)",
+      "costPriceHint": "خالی = همان قیمت فروش",
+      "iraqExclusive": "محصول انحصاری شعب عراق",
+      "allBranches": "نمایش در تمامی شعب"
+    },
+    "scanner": {
+      "title": "اسکن بارکد",
+      "hint": "بارکد را در کادر قرار دهید...",
+      "cameraDenied": "دسترسی به دوربین امکان‌پذیر نیست."
+    },
+    "wizard": {
+      "stepSupplier": "انتخاب تأمین‌کننده",
+      "stepBook": "مشخصات کتاب",
+      "stepReview": "بررسی و تأیید نهایی",
+      "supplierTitle": "انتخاب تأمین‌کننده",
+      "supplierDesc": "تأمین‌کننده و نوع همکاری را مشخص کنید",
+      "bookTitle": "مشخصات کتاب",
+      "bookDesc": "اطلاعات کتاب و موجودی اولیه",
+      "reviewTitle": "بررسی نهایی",
+      "reviewDesc": "قبل از ثبت، اطلاعات را بررسی کنید",
+      "supplierInfo": "اطلاعات تأمین‌کننده",
+      "shipmentDetails": "جزئیات محموله",
+      "bookSummary": "خلاصه کتاب",
+      "prevStep": "مرحله قبل",
+      "nextStep": "مرحله بعد",
+      "confirmRegister": "تأیید و ثبت در انبار",
+      "scannerTip": "نکته: از دکمه اسکنر برای ورود سریع بارکد استفاده کنید",
+      "cancel": "انصراف"
+    }
+  },
+  "admin": {
+    "branchType": {
+      "warehouse": "انبار",
+      "store": "فروشگاه"
+    },
+    "form": {
+      "branchName": "نام شعبه",
+      "city": "شهر"
+    },
+    "submitBranch": "ثبت شعبه"
+  },
+  "countries": {
+    "iran": "ایران",
+    "iraq": "عراق"
+  }
+}

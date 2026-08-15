@@ -1,0 +1,453 @@
+"use client";
+
+import React, { useEffect, useState, useCallback } from "react";
+import dynamic from "next/dynamic";
+import { SettlementWizard } from "@/components/finance/SettlementWizard";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card";
+import {
+    Wallet, TrendingUp, Receipt, BarChart2, FileText, History,
+    RefreshCw, Building2, CalendarDays, AlertTriangle,
+} from "lucide-react";
+import { useTranslation } from "@/hooks/useTranslation";
+import { useNotify } from "@/hooks/useNotify";
+import { cn } from "@/lib/utils";
+import { apiRequest } from "@/lib/api";
+
+const ProfitCharts = dynamic(
+    () => import("@/components/finance/ProfitCharts").then((m) => m.ProfitCharts),
+    {
+        ssr: false,
+        loading: () => (
+            <div className="h-64 rounded-2xl bg-ink/5 animate-pulse" aria-hidden />
+        ),
+    }
+);
+
+const RANK_COLORS = [
+    "from-accent to-accent/60",
+    "from-slate-400 to-slate-300",
+    "from-amber-700/80 to-amber-600/50",
+];
+
+const COMMISSION_RATE = 0.1;
+
+type FinanceTab = "overview" | "settlement" | "history";
+
+interface FinanceStats {
+    total_balance: number;
+    gross_profit: number;
+    supplier_debt: number;
+    top_books: any[];
+}
+
+function formatPeriodDate(value: string | null | undefined): string {
+    if (!value) return "—";
+    return String(value).slice(0, 10);
+}
+
+export default function FinancePage() {
+    const { t, formatNumber, isArabic } = useTranslation();
+    const notify = useNotify();
+    const currencySymbol = isArabic ? t("common.currency.dinarSymbol") : t("common.currency.tomanSymbol");
+    const currency = isArabic ? "dinar" : "toman";
+
+    const [activeTab, setActiveTab] = useState<FinanceTab>("overview");
+    const [stats, setStats] = useState<FinanceStats | null>(null);
+    const [suppliers, setSuppliers] = useState<any[]>([]);
+    const [suppliersLoaded, setSuppliersLoaded] = useState(false);
+    const [isLoading, setIsLoading] = useState(true);
+    const [isRefreshing, setIsRefreshing] = useState(false);
+    const [isSettlementLoading, setIsSettlementLoading] = useState(false);
+    const [isConfirming, setIsConfirming] = useState(false);
+    const [settlementData, setSettlementData] = useState<any[]>([]);
+    const [settlements, setSettlements] = useState<any[]>([]);
+    const [historyLoading, setHistoryLoading] = useState(false);
+    const [historyLoaded, setHistoryLoaded] = useState(false);
+
+    const notifyRef = React.useRef(notify);
+    notifyRef.current = notify;
+
+    const fetchOverview = useCallback(async (soft = false) => {
+        if (soft) setIsRefreshing(true);
+        else setIsLoading(true);
+        try {
+            const [balanceData, topBooks, dashboard] = await Promise.all([
+                apiRequest("/reports/all-branches"),
+                apiRequest("/reports/top-books"),
+                apiRequest("/reports/dashboard"),
+            ]);
+
+            let debtData: Record<string, { currency: string; balance: number }[]> = {};
+            try {
+                debtData = await apiRequest("/consignments/unsettled-by-supplier");
+            } catch (debtError) {
+                console.error("Failed to fetch supplier debt:", debtError);
+            }
+
+            const branches = Array.isArray(balanceData) ? balanceData : [];
+
+            const totalBalance = isArabic
+                ? Number(dashboard.inventory_value_dinar ?? 0)
+                : Number(dashboard.inventory_value_toman ?? 0);
+
+            const grossProfit = branches.reduce(
+                (acc: number, curr: { net_profit_toman?: number | string; net_profit_dinar?: number | string }) =>
+                    acc + Number(isArabic ? curr.net_profit_dinar ?? 0 : curr.net_profit_toman ?? 0),
+                0
+            );
+
+            let totalDebt = 0;
+            Object.values(debtData).forEach((supplierCurrencies) => {
+                if (!Array.isArray(supplierCurrencies)) return;
+                supplierCurrencies.forEach((item) => {
+                    if (isArabic && item.currency === "dinar") totalDebt += Number(item.balance ?? 0);
+                    if (!isArabic && item.currency === "toman") totalDebt += Number(item.balance ?? 0);
+                });
+            });
+
+            setStats({
+                total_balance: totalBalance,
+                gross_profit: grossProfit,
+                supplier_debt: totalDebt,
+                top_books: Array.isArray(topBooks) ? topBooks : [],
+            });
+        } catch (error) {
+            console.error("Failed to fetch finance data:", error);
+            notifyRef.current.error("finance.loadError");
+        } finally {
+            setIsLoading(false);
+            setIsRefreshing(false);
+        }
+    }, [isArabic]);
+
+    const fetchSuppliers = useCallback(async (force = false) => {
+        if (suppliersLoaded && !force) return;
+        try {
+            const suppliersData = await apiRequest("/suppliers");
+            setSuppliers(Array.isArray(suppliersData) ? suppliersData : []);
+            setSuppliersLoaded(true);
+        } catch (error) {
+            console.error("Failed to fetch suppliers:", error);
+            notifyRef.current.error("finance.loadError");
+        }
+    }, [suppliersLoaded]);
+
+    const fetchHistory = useCallback(async (force = false) => {
+        if (historyLoaded && !force) return;
+        setHistoryLoading(true);
+        try {
+            const data = await apiRequest("/consignments/settlements");
+            const list = data?.data ?? data ?? [];
+            setSettlements(Array.isArray(list) ? list : []);
+            setHistoryLoaded(true);
+        } catch (error) {
+            console.error("Failed to fetch settlements:", error);
+            notifyRef.current.error("finance.historyLoadError");
+        } finally {
+            setHistoryLoading(false);
+        }
+    }, [historyLoaded]);
+
+    useEffect(() => {
+        fetchOverview();
+    }, [fetchOverview]);
+
+    useEffect(() => {
+        if (activeTab === "settlement") fetchSuppliers();
+        if (activeTab === "history") fetchHistory();
+    }, [activeTab, fetchSuppliers, fetchHistory]);
+
+    const handleCalculateSettlement = async (supplierId: number, fromDate: string, toDate: string) => {
+        setIsSettlementLoading(true);
+        try {
+            const data = await apiRequest(
+                `/consignments/settlement-preview?supplier_id=${supplierId}&period_start=${fromDate}&period_end=${toDate}&currency=${currency}`
+            );
+            const items = (data.items || []).map((item: any) => {
+                const total = Number(item.total || 0);
+                return {
+                    title: item.title,
+                    qty: item.qty_sold,
+                    price: item.cost_price,
+                    total,
+                    commission: total * COMMISSION_RATE,
+                };
+            });
+            setSettlementData(items);
+            if (items.length === 0) notify.info("finance.settlement.noData");
+        } catch (error) {
+            console.error("Calculation failed:", error);
+            const msg = error instanceof Error ? error.message : "";
+            if (msg) notify.rawError(msg);
+            else notify.error("toast.settlementError");
+            setSettlementData([]);
+        } finally {
+            setIsSettlementLoading(false);
+        }
+    };
+
+    const handleConfirmSettlement = async (supplierId: number, fromDate: string, toDate: string, amount: number) => {
+        setIsConfirming(true);
+        try {
+            await apiRequest("/consignments/settle", {
+                method: "POST",
+                body: JSON.stringify({
+                    supplier_id: supplierId,
+                    period_type: "custom",
+                    period_start: fromDate,
+                    period_end: toDate,
+                    amount,
+                    currency,
+                    payment_method: "bank_transfer",
+                }),
+            });
+            notify.success("toast.settlementSuccess");
+            setSettlementData([]);
+            fetchOverview(true);
+            setHistoryLoaded(false);
+            if (activeTab === "history") fetchHistory(true);
+        } catch (error) {
+            console.error("Settlement failed:", error);
+            const msg = error instanceof Error ? error.message : "";
+            if (msg) notify.rawError(msg);
+            else notify.error("toast.settlementError");
+        } finally {
+            setIsConfirming(false);
+        }
+    };
+
+    const maxProfit = stats?.top_books?.length
+        ? Math.max(...stats.top_books.map((i: any) => Number(i.total_revenue || 0)), 1)
+        : 1;
+
+    const kpis = [
+        {
+            label: t("finance.totalBalance"),
+            hint: t("finance.totalCashBalance"),
+            value: stats?.total_balance || 0,
+            icon: Wallet,
+            color: "text-primary",
+            border: "border-primary/15",
+            bg: "bg-primary/[0.04]",
+        },
+        {
+            label: t("finance.grossProfit"),
+            hint: t("finance.grossProfitThisMonth"),
+            value: stats?.gross_profit || 0,
+            icon: TrendingUp,
+            color: "text-emerald-600",
+            border: "border-emerald-100",
+            bg: "bg-emerald-50/50",
+        },
+        {
+            label: t("finance.supplierDebt"),
+            hint: t("finance.overdueDebt"),
+            value: stats?.supplier_debt || 0,
+            icon: Receipt,
+            color: "text-rose-500",
+            border: "border-rose-100",
+            bg: "bg-rose-50/50",
+        },
+    ];
+
+    return (
+        <div className="space-y-4 pb-8">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                    <h1 className="text-xl font-black font-vazirmatn text-ink">{t("finance.title")}</h1>
+                    <p className="text-[10px] text-ink/35 font-bold mt-0.5">{t("finance.overview")}</p>
+                </div>
+                <div className="flex items-center gap-2 flex-wrap">
+                    <div className="flex gap-1 bg-white/50 border border-white/70 rounded-xl p-1 shadow-sm">
+                        <TabBtn active={activeTab === "overview"} onClick={() => setActiveTab("overview")}
+                            icon={<BarChart2 className="w-3.5 h-3.5" />} label={t("finance.overview")} />
+                        <TabBtn active={activeTab === "settlement"} onClick={() => setActiveTab("settlement")}
+                            icon={<FileText className="w-3.5 h-3.5" />} label={t("finance.settlementTab")} />
+                        <TabBtn active={activeTab === "history"} onClick={() => setActiveTab("history")}
+                            icon={<History className="w-3.5 h-3.5" />} label={t("finance.settlementHistory")} />
+                    </div>
+                    <button
+                        type="button"
+                        title={t("common.refresh")}
+                        aria-label={t("common.refresh")}
+                        disabled={isLoading || isRefreshing}
+                        onClick={() => {
+                            if (activeTab === "overview") fetchOverview(true);
+                            else if (activeTab === "history") fetchHistory(true);
+                            else fetchSuppliers(true);
+                        }}
+                        className="h-9 w-9 flex items-center justify-center rounded-xl border border-white bg-white/70 hover:bg-white shadow-sm disabled:opacity-40"
+                    >
+                        <RefreshCw className={cn("w-3.5 h-3.5 text-ink/40", (isLoading || isRefreshing || historyLoading) && "animate-spin")} />
+                    </button>
+                </div>
+            </div>
+
+            {activeTab === "overview" && (
+                <div className="space-y-4">
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                        {kpis.map((kpi) => (
+                            <Card key={kpi.label} className={cn("border bg-white/70 rounded-xl", kpi.border)}>
+                                <CardContent className={cn("p-3.5", kpi.bg)}>
+                                    <div className="flex items-center justify-between mb-2">
+                                        <p className="text-[9px] font-bold text-ink/40 truncate">{kpi.label}</p>
+                                        <kpi.icon className={cn("w-4 h-4", kpi.color)} />
+                                    </div>
+                                    <p className={cn("text-xl font-black font-vazirmatn tabular-nums leading-none", kpi.color)}>
+                                        {isLoading && !stats ? "…" : formatNumber(kpi.value)}
+                                        <span className="text-[10px] text-ink/30 ms-1 font-bold">{currencySymbol}</span>
+                                    </p>
+                                    <p className="text-[9px] text-ink/30 mt-1.5">{kpi.hint}</p>
+                                </CardContent>
+                            </Card>
+                        ))}
+                    </div>
+
+                    <ProfitCharts currency={currency} />
+
+                    <Card className="border border-white/70 bg-white/60 rounded-2xl overflow-hidden">
+                        <CardHeader className="px-4 py-3 border-b border-ink/5 flex flex-row items-center justify-between">
+                            <CardTitle className="text-[13px] font-black font-vazirmatn text-ink">
+                                {t("finance.topItems")}
+                            </CardTitle>
+                            <span className="text-[9px] font-bold text-ink/30">{t("finance.thisMonth")}</span>
+                        </CardHeader>
+                        <CardContent className="p-3 space-y-1.5">
+                            {isLoading && !stats ? (
+                                Array.from({ length: 3 }).map((_, i) => (
+                                    <div key={i} className="h-12 bg-parchment/20 rounded-xl animate-pulse" />
+                                ))
+                            ) : stats?.top_books?.length ? (
+                                stats.top_books.map((item, i) => (
+                                    <div key={i} className="flex items-center gap-3 p-2.5 rounded-xl hover:bg-white/80 transition-colors">
+                                        <div className={cn(
+                                            "w-6 h-6 rounded-lg bg-gradient-to-br flex items-center justify-center font-black text-[10px] text-white font-vazirmatn shrink-0",
+                                            RANK_COLORS[i] || RANK_COLORS[2]
+                                        )}>
+                                            {formatNumber(i + 1)}
+                                        </div>
+                                        <div className="flex-1 min-w-0 space-y-1">
+                                            <div className="flex items-center justify-between gap-2">
+                                                <span className="text-[12px] font-black font-vazirmatn text-ink truncate text-end flex-1">
+                                                    {item.title}
+                                                </span>
+                                                <span className="text-[9px] text-ink/30 font-bold shrink-0">
+                                                    {t("finance.salesCount", { count: item.total_sold })}
+                                                </span>
+                                            </div>
+                                            <div className="h-1 bg-ink/5 rounded-full overflow-hidden">
+                                                <div
+                                                    className={cn("h-full rounded-full bg-gradient-to-r", RANK_COLORS[i] || RANK_COLORS[2])}
+                                                    style={{ width: `${(Number(item.total_revenue || 0) / maxProfit) * 100}%` }}
+                                                />
+                                            </div>
+                                        </div>
+                                        <div className="text-end shrink-0">
+                                            <span className="text-[12px] font-black text-primary font-vazirmatn tabular-nums">
+                                                {formatNumber(Number(item.total_revenue || 0))}
+                                            </span>
+                                            <span className="text-[8px] text-primary/35 ms-0.5">{currencySymbol}</span>
+                                        </div>
+                                    </div>
+                                ))
+                            ) : (
+                                <div className="py-12 text-center text-ink/25 text-[11px] font-black">
+                                    {t("finance.noTopItems")}
+                                </div>
+                            )}
+                        </CardContent>
+                    </Card>
+                </div>
+            )}
+
+            {activeTab === "settlement" && (
+                <SettlementWizard
+                    suppliers={suppliers}
+                    onCalculate={handleCalculateSettlement}
+                    onConfirm={handleConfirmSettlement}
+                    settlementData={settlementData}
+                    isLoading={isSettlementLoading}
+                    isConfirming={isConfirming}
+                    currencySymbol={currencySymbol}
+                />
+            )}
+
+            {activeTab === "history" && (
+                <div className="space-y-2">
+                    {historyLoading && !settlements.length ? (
+                        Array.from({ length: 4 }).map((_, i) => (
+                            <div key={i} className="h-16 bg-parchment/20 rounded-xl animate-pulse" />
+                        ))
+                    ) : settlements.length === 0 ? (
+                        <Card className="border border-white/70 bg-white/70 rounded-2xl">
+                            <CardContent className="p-10 text-center text-ink/30 text-[12px] font-black flex flex-col items-center gap-2">
+                                <AlertTriangle className="w-5 h-5 text-ink/20" />
+                                {t("finance.historyEmpty")}
+                            </CardContent>
+                        </Card>
+                    ) : (
+                        settlements.map((s) => (
+                            <div
+                                key={s.id}
+                                className="rounded-xl border border-white/80 bg-white/75 px-3.5 py-3 flex flex-col sm:flex-row sm:items-center gap-3"
+                            >
+                                <div className="flex items-start gap-2.5 flex-1 min-w-0">
+                                    <div className="w-8 h-8 rounded-lg bg-primary/10 border border-primary/10 flex items-center justify-center shrink-0">
+                                        <FileText className="w-3.5 h-3.5 text-primary" />
+                                    </div>
+                                    <div className="min-w-0 flex-1">
+                                        <div className="flex items-center gap-2 flex-wrap">
+                                            <span className="text-[12px] font-black font-vazirmatn text-ink truncate">
+                                                {s.settlement_number}
+                                            </span>
+                                            <span className="text-[9px] font-mono text-ink/30">
+                                                {s.payment_method}
+                                            </span>
+                                        </div>
+                                        <div className="flex items-center gap-2.5 mt-1 flex-wrap text-[9px] text-ink/35">
+                                            <span className="flex items-center gap-0.5">
+                                                <Building2 className="w-2.5 h-2.5" />
+                                                {s.supplier?.name || "—"}
+                                            </span>
+                                            <span className="flex items-center gap-0.5">
+                                                <CalendarDays className="w-2.5 h-2.5" />
+                                                {formatPeriodDate(s.period_start)} — {formatPeriodDate(s.period_end)}
+                                            </span>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div className="text-end shrink-0">
+                                    <p className="text-[14px] font-black font-vazirmatn tabular-nums text-primary leading-none">
+                                        {formatNumber(Number(s.amount || 0))}
+                                    </p>
+                                    <p className="text-[8px] text-ink/30 mt-0.5">
+                                        {s.currency === "dinar"
+                                            ? t("common.currency.dinarSymbol")
+                                            : t("common.currency.tomanSymbol")}
+                                    </p>
+                                </div>
+                            </div>
+                        ))
+                    )}
+                </div>
+            )}
+        </div>
+    );
+}
+
+function TabBtn({ active, onClick, icon, label }: {
+    active: boolean; onClick: () => void; icon: React.ReactNode; label: string;
+}) {
+    return (
+        <button type="button" onClick={onClick}
+            className={cn(
+                "flex items-center gap-1.5 px-3 py-2 rounded-[9px] font-black text-[10px] font-vazirmatn transition-all",
+                active
+                    ? "bg-white shadow-md text-primary"
+                    : "text-ink/35 hover:bg-white/50 hover:text-ink/60"
+            )}>
+            {icon}
+            <span className="hidden sm:inline">{label}</span>
+        </button>
+    );
+}
