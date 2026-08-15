@@ -215,21 +215,6 @@ export default function DashboardPage() {
         return formatDue(d.due_date);
     };
 
-    const viewAllHref = () => {
-        if (alertFilter === "transfer") return "/dashboard/distribution";
-        if (alertFilter === "check_due") return "/dashboard/checks";
-        if (alertFilter === "credit_due") return "/dashboard/credits";
-        if (alertFilter === "low_stock") return "/dashboard/inventory";
-        if (counts.transfer >= counts.low_stock && counts.transfer >= counts.check_due && counts.transfer >= counts.credit_due) {
-            return "/dashboard/distribution";
-        }
-        if (counts.check_due >= counts.low_stock && counts.check_due >= counts.credit_due) {
-            return "/dashboard/checks";
-        }
-        if (counts.credit_due > counts.low_stock) return "/dashboard/credits";
-        return "/dashboard/inventory";
-    };
-
     const stats = [
         {
             titleKey: "dashboard.totalBooks",
@@ -411,7 +396,7 @@ export default function DashboardPage() {
                             </div>
                             <button
                                 type="button"
-                                onClick={() => router.push(viewAllHref())}
+                                onClick={() => router.push("/dashboard/notifications")}
                                 className="text-[10px] font-bold text-primary/70 hover:text-primary transition-all flex items-center gap-1 shrink-0"
                             >
                                 {t("common.viewAll")}

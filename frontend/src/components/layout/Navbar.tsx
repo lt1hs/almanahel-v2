@@ -65,6 +65,7 @@ const PAGE_TITLE_KEYS: Record<string, string> = {
     "/dashboard/admin/categories": "admin.categorySettings",
     "/dashboard/admin/users": "admin.userManagement",
     "/dashboard/admin/activity": "nav.activityLog",
+    "/dashboard/notifications": "common.notifications.title",
     "/dashboard/reports": "finance.title",
 };
 
@@ -451,7 +452,7 @@ export function Navbar() {
                                 <div className="p-2 border-t border-ink/[0.05] bg-parchment/20 text-center">
                                     <button
                                         type="button"
-                                        onClick={() => { router.push("/dashboard"); setShowNotifs(false); }}
+                                        onClick={() => { router.push("/dashboard/notifications"); setShowNotifs(false); }}
                                         className="text-[9px] font-black text-ink/40 hover:text-primary transition-colors font-vazirmatn"
                                     >
                                         {t("common.notifications.viewAll")}
