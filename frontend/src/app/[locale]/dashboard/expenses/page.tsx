@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { useTranslation } from "@/hooks/useTranslation";
 import { useNotify } from "@/hooks/useNotify";
+import { useAuth } from "@/contexts/AuthContext";
 import { cn } from "@/lib/utils";
 import { apiRequest } from "@/lib/api";
 
@@ -81,9 +82,16 @@ function emptyForm(currency: "toman" | "dinar") {
 }
 
 export default function ExpensesPage() {
-    const { t, formatNumber, isArabic } = useTranslation();
+    const { t, formatNumber, preferredCurrency } = useTranslation();
     const notify = useNotify();
-    const defaultCurrency: "toman" | "dinar" = isArabic ? "dinar" : "toman";
+    const { user } = useAuth();
+    const isAdmin = user?.role === "admin" || user?.role === "super_admin";
+    const userBranchId = user?.branch_id
+        ? Number(user.branch_id)
+        : user?.branch?.id
+            ? Number(user.branch.id)
+            : null;
+    const defaultCurrency: "toman" | "dinar" = preferredCurrency;
     const tomanSymbol = t("common.currency.tomanSymbol");
     const dinarSymbol = t("common.currency.dinarSymbol");
 
@@ -113,37 +121,53 @@ export default function ExpensesPage() {
         [t]
     );
 
+    const allowedBranchIds = useMemo(() => {
+        if (isAdmin) return null as number[] | null;
+        const ids = new Set<number>();
+        if (userBranchId) ids.add(userBranchId);
+        (user?.iraq_only_visible_branches || []).forEach((id) => ids.add(Number(id)));
+        return Array.from(ids);
+    }, [isAdmin, userBranchId, user?.iraq_only_visible_branches]);
+
     const fetchBranches = useCallback(async () => {
         try {
             const bData = await apiRequest("/branches");
             const list = Array.isArray(bData) ? bData : [];
             const stores = list.filter((b: BranchRow) => b.type === "store" || !b.type);
             const seen = new Set<string>();
-            setBranches(
-                stores.filter((b: BranchRow) => {
-                    const key = `${b.name}|${b.type || "store"}`;
-                    if (seen.has(key)) return false;
-                    seen.add(key);
-                    return true;
-                })
-            );
+            let filtered = stores.filter((b: BranchRow) => {
+                const key = `${b.name}|${b.type || "store"}`;
+                if (seen.has(key)) return false;
+                seen.add(key);
+                return true;
+            });
+            if (allowedBranchIds) {
+                filtered = filtered.filter((b: BranchRow) =>
+                    allowedBranchIds.includes(Number(b.id))
+                );
+            }
+            setBranches(filtered);
         } catch {
             notifyRef.current.error("expenses.loadError");
         }
-    }, []);
+    }, [allowedBranchIds]);
 
     const buildQuery = useCallback((pageNum: number) => {
         const params = new URLSearchParams();
         params.set("per_page", "50");
         params.set("page", String(pageNum));
-        if (branchFilter) params.set("branch_id", branchFilter);
+        if (isAdmin) {
+            if (branchFilter) params.set("branch_id", branchFilter);
+        } else if (userBranchId) {
+            params.set("branch_id", String(userBranchId));
+        }
         const bounds = monthBounds(monthFilter);
         if (bounds) {
             params.set("date_from", bounds.from);
             params.set("date_to", bounds.to);
         }
         return `/expenses?${params.toString()}`;
-    }, [branchFilter, monthFilter]);
+    }, [branchFilter, monthFilter, isAdmin, userBranchId]);
 
     const fetchExpenses = useCallback(async (soft = false, pageNum = 1, append = false) => {
         if (append) setLoadingMore(true);
@@ -200,9 +224,14 @@ export default function ExpensesPage() {
         return { toman, dinar, count: filtered.length };
     }, [filtered]);
 
+    const lockedBranchId = !isAdmin && userBranchId ? String(userBranchId) : "";
+
     const openCreate = () => {
         setEditingId(null);
-        setForm(emptyForm(defaultCurrency));
+        setForm({
+            ...emptyForm(defaultCurrency),
+            branch_id: lockedBranchId || (branches[0] ? String(branches[0].id) : ""),
+        });
         setShowForm(true);
     };
 
@@ -226,13 +255,16 @@ export default function ExpensesPage() {
     };
 
     const handleSubmit = async () => {
-        if (!form.branch_id || !form.amount) {
+        const branchId = !isAdmin && userBranchId
+            ? userBranchId
+            : parseInt(form.branch_id, 10);
+        if (!branchId || !form.amount) {
             notify.error("toast.branchAmountRequired");
             return;
         }
         setIsSaving(true);
         const payload = {
-            branch_id: parseInt(form.branch_id, 10),
+            branch_id: branchId,
             amount: parseFloat(form.amount),
             currency: form.currency,
             category: form.category,
@@ -358,16 +390,18 @@ export default function ExpensesPage() {
                         className="w-full h-9 ps-9 pe-3 rounded-xl border border-white bg-white/70 text-[11px] font-vazirmatn outline-none focus:ring-2 focus:ring-primary/15"
                     />
                 </div>
-                <select
-                    value={branchFilter}
-                    onChange={(e) => setBranchFilter(e.target.value)}
-                    className="h-9 rounded-xl border border-white bg-white/70 px-3 text-[11px] font-vazirmatn outline-none min-w-[140px]"
-                >
-                    <option value="">{t("expenses.filters.allBranches")}</option>
-                    {branches.map((b) => (
-                        <option key={b.id} value={b.id}>{b.name}</option>
-                    ))}
-                </select>
+                {isAdmin ? (
+                    <select
+                        value={branchFilter}
+                        onChange={(e) => setBranchFilter(e.target.value)}
+                        className="h-9 rounded-xl border border-white bg-white/70 px-3 text-[11px] font-vazirmatn outline-none min-w-[140px]"
+                    >
+                        <option value="">{t("expenses.filters.allBranches")}</option>
+                        {branches.map((b) => (
+                            <option key={b.id} value={b.id}>{b.name}</option>
+                        ))}
+                    </select>
+                ) : null}
                 <select
                     value={categoryFilter}
                     onChange={(e) => setCategoryFilter(e.target.value)}
@@ -488,17 +522,28 @@ export default function ExpensesPage() {
                                 <X className="w-4 h-4 text-ink/40" />
                             </button>
                         </div>
-                        <select
-                            value={form.branch_id}
-                            onChange={(e) => setForm((f) => ({ ...f, branch_id: e.target.value }))}
-                            disabled={!!editingId}
-                            className="w-full h-10 rounded-xl border border-ink/10 px-3 text-[12px] font-vazirmatn outline-none focus:ring-2 focus:ring-primary/15 disabled:opacity-50"
-                        >
-                            <option value="">{t("expenses.form.selectBranch")}</option>
-                            {branches.map((b) => (
-                                <option key={b.id} value={b.id}>{b.name}</option>
-                            ))}
-                        </select>
+                        {isAdmin ? (
+                            <select
+                                value={form.branch_id}
+                                onChange={(e) => setForm((f) => ({ ...f, branch_id: e.target.value }))}
+                                disabled={!!editingId}
+                                className="w-full h-10 rounded-xl border border-ink/10 px-3 text-[12px] font-vazirmatn outline-none focus:ring-2 focus:ring-primary/15 disabled:opacity-50"
+                            >
+                                <option value="">{t("expenses.form.selectBranch")}</option>
+                                {branches.map((b) => (
+                                    <option key={b.id} value={b.id}>{b.name}</option>
+                                ))}
+                            </select>
+                        ) : (
+                            <div className="w-full h-10 rounded-xl border border-ink/10 bg-parchment/30 px-3 flex items-center gap-2 text-[12px] font-vazirmatn text-ink/70">
+                                <Building2 className="w-3.5 h-3.5 text-ink/35 shrink-0" />
+                                <span className="truncate">
+                                    {user?.branch?.name
+                                        || branches.find((b) => Number(b.id) === userBranchId)?.name
+                                        || "—"}
+                                </span>
+                            </div>
+                        )}
                         <div className="grid grid-cols-2 gap-2">
                             <input
                                 type="number"

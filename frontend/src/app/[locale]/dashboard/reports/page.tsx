@@ -15,9 +15,9 @@ import { apiRequest } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 export default function ReportsPage() {
-    const { t, formatNumber, isArabic } = useTranslation();
+    const { t, formatNumber, isArabic, isDinar } = useTranslation();
     const router = useRouter();
-    const currencySymbol = isArabic ? t("common.currency.dinarSymbol") : t("common.currency.tomanSymbol");
+    const currencySymbol = isDinar ? t("common.currency.dinarSymbol") : t("common.currency.tomanSymbol");
 
     const [dashboard, setDashboard] = useState<any>(null);
     const [branches, setBranches] = useState<any[]>([]);

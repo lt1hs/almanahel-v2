@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Branch;
 use App\Models\Inventory;
 use App\Models\User;
+use App\Support\SalesCogs;
 use Illuminate\Http\Request;
 
 class BranchController extends Controller
@@ -90,7 +91,9 @@ class BranchController extends Controller
     public function profit(Branch $branch)
     {
         $sales = \App\Models\Invoice::where('branch_id', $branch->id)
-            ->where('type', 'sale')
+            ->where(function ($q) {
+                $q->whereNull('type')->orWhere('type', 'sale');
+            })
             ->get();
 
         $expenses = \App\Models\Expense::where('branch_id', $branch->id)->get();
@@ -99,15 +102,27 @@ class BranchController extends Controller
         $totalRevenueToman  = $sales->where('currency', 'toman')->sum('total');
         $totalRevenueDinar  = $sales->where('currency', 'dinar')->sum('total');
         $totalExpenseToman  = $expenses->where('currency', 'toman')->sum('amount');
+        $totalExpenseDinar  = $expenses->where('currency', 'dinar')->sum('amount');
         $totalGiftCostToman = $gifts->where('currency', 'toman')->sum('cost_value');
+        $totalGiftCostDinar = $gifts->where('currency', 'dinar')->sum('cost_value');
+
+        $from = '1970-01-01';
+        $to = now()->toDateString();
+        $cogsToman = SalesCogs::forBranch((int) $branch->id, 'toman', $from, $to);
+        $cogsDinar = SalesCogs::forBranch((int) $branch->id, 'dinar', $from, $to);
 
         return response()->json([
             'branch'              => $branch,
             'revenue_toman'       => $totalRevenueToman,
             'revenue_dinar'       => $totalRevenueDinar,
+            'cogs_toman'          => $cogsToman,
+            'cogs_dinar'          => $cogsDinar,
             'expenses_toman'      => $totalExpenseToman,
+            'expenses_dinar'      => $totalExpenseDinar,
             'gift_costs_toman'    => $totalGiftCostToman,
-            'net_profit_toman'    => $totalRevenueToman - $totalExpenseToman - $totalGiftCostToman,
+            'gift_costs_dinar'    => $totalGiftCostDinar,
+            'net_profit_toman'    => $totalRevenueToman - $cogsToman - $totalExpenseToman - $totalGiftCostToman,
+            'net_profit_dinar'    => $totalRevenueDinar - $cogsDinar - $totalExpenseDinar - $totalGiftCostDinar,
         ]);
     }
 }

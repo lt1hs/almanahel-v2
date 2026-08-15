@@ -8,76 +8,162 @@ import {
     sellingTomanForBranch,
 } from "@/lib/bookFormUtils";
 
+export type { BranchStockKey };
+
 function parsePrice(value: string | undefined): number {
     return parseFloat(parsePriceDigits(value)) || 0;
 }
 
-function costToman(book: any, selling: number): number {
+function costToman(book: any, selling: number): number | null {
     const raw = parsePrice(book.costPriceToman);
-    return raw > 0 ? raw : selling;
+    if (raw > 0) return raw;
+    return selling > 0 ? selling : null;
 }
 
-function costDinar(book: any, selling: number): number {
+function costDinar(book: any, selling: number): number | null {
     const raw = parsePrice(book.costPriceDinar);
-    return raw > 0 ? raw : selling;
+    if (raw > 0) return raw;
+    return selling > 0 ? selling : null;
 }
 
+async function upsertBranchPricing(
+    bookId: number,
+    branchId: number,
+    book: any,
+    key: BranchStockKey,
+    supplierId: number | null,
+    quantity?: number
+) {
+    const isIraq = key === "najaf";
+    const selling = isIraq ? sellingDinarForBranch(book) : sellingTomanForBranch(key, book);
+    const type = book.type === "consignment" ? "consignment" : "owned";
+
+    await apiRequest("/inventory/upsert-pricing", {
+        method: "POST",
+        body: JSON.stringify({
+            branch_id: branchId,
+            book_id: bookId,
+            type,
+            supplier_id: type === "consignment" ? supplierId : null,
+            price_toman: isIraq ? null : selling > 0 ? selling : null,
+            price_dinar: isIraq ? (selling > 0 ? selling : null) : null,
+            cost_price_toman: isIraq ? null : costToman(book, selling),
+            cost_price_dinar: isIraq ? costDinar(book, selling) : null,
+            ...(quantity != null ? { quantity } : {}),
+        }),
+    });
+}
+
+/**
+ * Sync per-branch stock + sell prices.
+ * Sell prices for Qom / Mashhad / Najaf are saved even when quantity is 0.
+ */
 export async function syncBookBranchInventories(
     book: any,
     branches: any[],
     supplierId: number | null,
-    bookId: number
+    bookId: number,
+    options?: {
+        existingInventories?: Array<{ id: number; branch_id: number }>;
+        /** Edit mode: write quantity for every resolved branch */
+        syncQuantities?: boolean;
+    }
 ) {
+    const existing = options?.existingInventories || [];
+    const syncQuantities = Boolean(options?.syncQuantities);
+
     for (const key of BRANCH_STOCK_KEYS) {
         const branchId = resolveBranchId(branches, key);
         if (!branchId) continue;
 
         const qty = parseInt(parsePriceDigits(book.branchStock?.[key]), 10) || 0;
-        if (qty <= 0) continue;
-
         const isIraq = key === "najaf";
         const selling = isIraq ? sellingDinarForBranch(book) : sellingTomanForBranch(key, book);
-        const cost = isIraq ? costDinar(book, selling) : costToman(book, selling);
-        const currency = isIraq ? "dinar" : "toman";
-        const priceToman = isIraq ? null : selling;
-        const priceDinar = isIraq ? selling : null;
+        const existingRow = existing.find((inv) => Number(inv.branch_id) === branchId);
 
-        if (book.type === "consignment" && supplierId) {
-            await apiRequest("/consignments", {
-                method: "POST",
-                body: JSON.stringify({
-                    supplier_id: supplierId,
-                    branch_id: branchId,
-                    currency,
-                    received_at: book.settlementDate || new Date().toISOString().split("T")[0],
-                    notes: book.notes || null,
-                    items: [{
+        // —— Edit: update existing inventory row ——
+        if (existingRow?.id) {
+            const payload: Record<string, unknown> = {
+                quantity: qty,
+                type: book.type === "consignment" ? "consignment" : "owned",
+                supplier_id: book.type === "consignment" ? supplierId : null,
+                cost_price_toman: isIraq ? null : costToman(book, selling),
+                cost_price_dinar: isIraq ? costDinar(book, selling) : null,
+            };
+            if (selling > 0) {
+                payload.price_toman = isIraq ? null : selling;
+                payload.price_dinar = isIraq ? selling : null;
+            }
+            await apiRequest(`/inventory/${existingRow.id}`, {
+                method: "PUT",
+                body: JSON.stringify(payload),
+            });
+            continue;
+        }
+
+        // —— Create/intake: add stock when qty > 0 ——
+        if (qty > 0 && !syncQuantities) {
+            const cost = isIraq
+                ? costDinar(book, selling) || 0
+                : costToman(book, selling) || 0;
+            const currency = isIraq ? "dinar" : "toman";
+            const priceToman = isIraq ? null : selling > 0 ? selling : null;
+            const priceDinar = isIraq ? (selling > 0 ? selling : null) : null;
+
+            if (book.type === "consignment" && supplierId) {
+                await apiRequest("/consignments", {
+                    method: "POST",
+                    body: JSON.stringify({
+                        supplier_id: supplierId,
+                        branch_id: branchId,
+                        currency,
+                        received_at: book.settlementDate || new Date().toISOString().split("T")[0],
+                        notes: book.notes || null,
+                        items: [
+                            {
+                                book_id: bookId,
+                                quantity: qty,
+                                cost_price: cost,
+                                selling_price: selling || cost,
+                                price_toman: priceToman,
+                                price_dinar: priceDinar,
+                            },
+                        ],
+                    }),
+                });
+            } else {
+                await apiRequest("/inventory/purchase", {
+                    method: "POST",
+                    body: JSON.stringify({
+                        branch_id: branchId,
                         book_id: bookId,
                         quantity: qty,
+                        currency,
                         cost_price: cost,
-                        selling_price: selling,
+                        selling_price: selling || cost,
                         price_toman: priceToman,
                         price_dinar: priceDinar,
-                    }],
-                }),
-            });
-        } else {
-            await apiRequest("/inventory/purchase", {
-                method: "POST",
-                body: JSON.stringify({
-                    branch_id: branchId,
-                    book_id: bookId,
-                    quantity: qty,
-                    currency,
-                    cost_price: cost,
-                    selling_price: selling,
-                    price_toman: priceToman,
-                    price_dinar: priceDinar,
-                    supplier_id: supplierId,
-                    notes: book.notes || null,
-                    log_date: book.settlementDate || null,
-                }),
-            });
+                        supplier_id: supplierId,
+                        notes: book.notes || null,
+                        log_date: book.settlementDate || null,
+                    }),
+                });
+            }
+            continue;
+        }
+
+        // —— No row yet: still store sell prices (and qty on edit) ——
+        if (selling > 0) {
+            await upsertBranchPricing(
+                bookId,
+                branchId,
+                book,
+                key,
+                supplierId,
+                syncQuantities ? qty : undefined
+            );
+        } else if (syncQuantities && qty > 0) {
+            await upsertBranchPricing(bookId, branchId, book, key, supplierId, qty);
         }
     }
 }
@@ -138,7 +224,7 @@ export function defaultBookFormState() {
         unpaidSales: "0",
         totalSales: "0",
         iraqOnly: false,
+        language: "fa",
+        low_stock_threshold: "5",
     };
 }
-
-export type { BranchStockKey };

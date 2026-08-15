@@ -73,10 +73,12 @@ function useDebouncedValue<T>(value: T, delay = 300) {
 }
 
 export default function ConsignmentPage() {
-  const { t, tn, formatNumber, isArabic } = useTranslation();
+  const { t, tn, formatNumber, isArabic, isDinar, preferredCurrency } = useTranslation();
   const notify = useNotify();
   const { user } = useAuth();
   const router = useRouter();
+  const isAdmin = user?.role === "admin" || user?.role === "super_admin";
+  const userBranchId = user?.branch_id ? Number(user.branch_id) : user?.branch?.id ? Number(user.branch.id) : null;
 
   const statusLabel = (status: ConsignmentStatus) => {
     if (status === "unsettled") return t("consignment.status.unsettled");
@@ -84,10 +86,9 @@ export default function ConsignmentPage() {
     return t("consignment.status.settled");
   };
 
-  const currencySymbol = isArabic
+  const currencySymbol = isDinar
     ? t("common.currency.dinarSymbol")
     : t("common.currency.tomanSymbol");
-  const preferredCurrency = isArabic ? "dinar" : "toman";
 
   const [receipts, setReceipts] = useState<ConsignmentReceipt[]>([]);
   const [page, setPage] = useState(1);
@@ -199,18 +200,31 @@ export default function ConsignmentPage() {
         apiRequest("/branches?lite=1"),
       ]);
       const supplierList = Array.isArray(sData) ? sData : [];
-      const branchList = Array.isArray(bData) ? bData : [];
+      const branchListRaw = Array.isArray(bData) ? bData : [];
+      const branchList = isAdmin
+        ? branchListRaw
+        : branchListRaw.filter((b: { id: number }) => {
+            const ids = new Set<number>();
+            if (userBranchId) ids.add(userBranchId);
+            (user?.iraq_only_visible_branches || []).forEach((id) => ids.add(Number(id)));
+            return ids.has(Number(b.id));
+          });
       setSuppliers(supplierList.filter((s: { status?: string }) => (s.status || "active") === "active"));
       setBranches(branchList);
       formLoadedRef.current = true;
       setFormReady(true);
 
+      const lockedBranch =
+        !isAdmin && userBranchId
+          ? String(userBranchId)
+          : branchList[0]
+            ? String(branchList[0].id)
+            : "";
+
       setNewReceipt((prev) => ({
         ...prev,
         supplier_id: prev.supplier_id || (supplierFilter ? String(supplierFilter) : ""),
-        branch_id:
-          prev.branch_id ||
-          (user?.branch?.id ? String(user.branch.id) : branchList[0] ? String(branchList[0].id) : ""),
+        branch_id: !isAdmin && userBranchId ? String(userBranchId) : (prev.branch_id || lockedBranch),
         currency: preferredCurrency,
       }));
     } catch (error) {
@@ -219,7 +233,7 @@ export default function ConsignmentPage() {
     } finally {
       setIsLoadingForm(false);
     }
-  }, [notify, preferredCurrency, supplierFilter, user?.branch?.id]);
+  }, [notify, preferredCurrency, supplierFilter, user?.iraq_only_visible_branches, userBranchId, isAdmin]);
 
   const openNewForm = async () => {
     setShowNewForm(true);
@@ -784,10 +798,11 @@ export default function ConsignmentPage() {
                         <select
                           required
                           value={newReceipt.branch_id}
+                          disabled={!isAdmin}
                           onChange={(e) =>
                             setNewReceipt((prev) => ({ ...prev, branch_id: e.target.value }))
                           }
-                          className="h-10 w-full rounded-xl border border-ink/10 bg-parchment/20 px-3 text-[12px] font-vazirmatn outline-none focus:ring-1 focus:ring-primary"
+                          className="h-10 w-full rounded-xl border border-ink/10 bg-parchment/20 px-3 text-[12px] font-vazirmatn outline-none focus:ring-1 focus:ring-primary disabled:opacity-60"
                         >
                           {branches.map((b) => (
                             <option key={b.id} value={b.id}>

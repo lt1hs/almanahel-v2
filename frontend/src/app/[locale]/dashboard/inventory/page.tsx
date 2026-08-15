@@ -93,8 +93,16 @@ function mapInventoryRow(item: any, branch?: { name?: string; type?: string; cit
         const toman = Number(item.price_toman || 0);
         const dinar = Number(item.price_dinar || 0);
         const bands = emptyPriceBands();
-        if (dinar > 0) bands.najaf = dinar;
-        else if (toman > 0) bands[priceBandForBranch(branch || {})] = toman;
+        const band = priceBandForBranch(branch || {});
+        // Prefer currency for this POS — never treat toman as dinar (or vice versa)
+        if (band === "najaf") {
+            if (dinar > 0) bands.najaf = dinar;
+            else if (toman > 0) bands.qom = toman;
+        } else if (toman > 0) {
+            bands[band] = toman;
+        } else if (dinar > 0) {
+            bands.najaf = dinar;
+        }
         return {
             id: String(item.book.id),
             inventory_id: item.id,
@@ -748,8 +756,16 @@ export default function InventoryPage() {
                                             isLowStock(selectedBook) || selectedBook.qty <= 0 ? "text-rose-500" : "text-ink"
                                         )}>
                                             {formatNumber(selectedBook.qty)}
+                                            <span className="text-[11px] font-bold text-ink/30 ms-1.5">
+                                                {t("common.units.volume")}
+                                            </span>
                                         </p>
-                                        <p className="text-[9px] font-bold text-ink/25 mt-0.5">{t("common.units.volume")}</p>
+                                        {isLowStock(selectedBook) && (
+                                            <p className="text-[9px] font-black text-rose-500 mt-1">{t("inventory.lowStock")}</p>
+                                        )}
+                                        {selectedBook.qty <= 0 && (
+                                            <p className="text-[9px] font-black text-ink/35 mt-1">{t("inventory.outOfStock")}</p>
+                                        )}
                                     </div>
                                     <Badge className={cn(
                                         "text-[9px] font-black",
@@ -763,27 +779,46 @@ export default function InventoryPage() {
                             </div>
 
                             {selectedBook.by_branch && selectedBook.by_branch.length > 0 && (
-                                <div className="p-4 rounded-xl bg-white border border-ink/5 space-y-2">
-                                    <h4 className="text-[10px] font-black text-ink/30">{t("inventory.stockByBranch")}</h4>
-                                    {selectedBook.by_branch.map((b) => {
-                                        const rowDinar = Number(b.price_dinar || 0);
-                                        const rowToman = Number(b.price_toman || 0);
-                                        const rowPrice = rowDinar > 0 ? rowDinar : rowToman;
-                                        const rowSymbol = rowDinar > 0 ? dinarSymbol : tomanSymbol;
-                                        return (
-                                        <div key={b.branch_id} className="flex items-center justify-between py-1.5 border-b border-ink/5 last:border-0 gap-3">
-                                            <span className="text-[12px] font-bold font-vazirmatn text-ink/70">{b.branch_name}</span>
-                                            <span className="text-[12px] font-black font-vazirmatn tabular-nums text-ink/80 shrink-0">
-                                                {formatNumber(b.quantity)}
-                                                {rowPrice > 0 && (
-                                                    <span className="text-[10px] font-bold text-primary/70 ms-2">
-                                                        {formatNumber(rowPrice)} {rowSymbol}
-                                                    </span>
-                                                )}
-                                            </span>
-                                        </div>
-                                        );
-                                    })}
+                                <div className="p-4 rounded-xl bg-white border border-ink/5 space-y-1">
+                                    <h4 className="text-[10px] font-black text-ink/30 mb-2">{t("inventory.stockByBranch")}</h4>
+                                    {selectedBook.by_branch
+                                        .slice()
+                                        .sort((a, b) => Number(b.quantity || 0) - Number(a.quantity || 0))
+                                        .map((b) => {
+                                            const qty = Number(b.quantity || 0);
+                                            const rowDinar = Number(b.price_dinar || 0);
+                                            const rowToman = Number(b.price_toman || 0);
+                                            const unitPrice = rowDinar > 0 ? rowDinar : rowToman;
+                                            const unitSymbol = rowDinar > 0 ? dinarSymbol : tomanSymbol;
+                                            return (
+                                                <div
+                                                    key={b.branch_id}
+                                                    className="flex items-center justify-between gap-3 py-2.5 border-b border-ink/5 last:border-0"
+                                                >
+                                                    <div className="min-w-0">
+                                                        <p className="text-[12px] font-bold font-vazirmatn text-ink/80 truncate">
+                                                            {b.branch_name}
+                                                        </p>
+                                                        {unitPrice > 0 && (
+                                                            <p className="text-[9px] font-vazirmatn text-ink/30 mt-0.5 tabular-nums">
+                                                                {t("inventory.sellingPrice")}: {formatNumber(unitPrice)} {unitSymbol}
+                                                            </p>
+                                                        )}
+                                                    </div>
+                                                    <div className="text-end shrink-0">
+                                                        <p className={cn(
+                                                            "text-[15px] font-black font-vazirmatn tabular-nums leading-none",
+                                                            qty <= 0 ? "text-ink/25" : "text-ink"
+                                                        )}>
+                                                            {formatNumber(qty)}
+                                                        </p>
+                                                        <p className="text-[8px] font-bold text-ink/30 mt-1">
+                                                            {t("common.units.volume")}
+                                                        </p>
+                                                    </div>
+                                                </div>
+                                            );
+                                        })}
                                 </div>
                             )}
 

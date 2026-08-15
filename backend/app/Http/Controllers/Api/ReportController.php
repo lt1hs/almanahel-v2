@@ -12,6 +12,7 @@ use App\Models\Check;
 use App\Models\Book;
 use App\Models\Transfer;
 use App\Support\IntakePolicy;
+use App\Support\SalesCogs;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Cache;
@@ -23,14 +24,25 @@ class ReportController extends Controller
         $dateFrom = $request->date_from ?? now()->startOfMonth()->toDateString();
         $dateTo   = $request->date_to   ?? now()->toDateString();
 
-        $branches = Branch::where('type', 'store')->get()->map(function ($branch) use ($dateFrom, $dateTo) {
+        $branches = Branch::where('type', 'store')
+            ->orderBy('id')
+            ->get()
+            ->unique(fn ($b) => mb_strtolower(trim((string) $b->name)))
+            ->values()
+            ->map(function ($branch) use ($dateFrom, $dateTo) {
             $salesToman = Invoice::where('branch_id', $branch->id)
                 ->where('currency', 'toman')
+                ->where(function ($q) {
+                    $q->whereNull('type')->orWhere('type', 'sale');
+                })
                 ->whereBetween(DB::raw('DATE(created_at)'), [$dateFrom, $dateTo])
                 ->sum('total');
 
             $salesDinar = Invoice::where('branch_id', $branch->id)
                 ->where('currency', 'dinar')
+                ->where(function ($q) {
+                    $q->whereNull('type')->orWhere('type', 'sale');
+                })
                 ->whereBetween(DB::raw('DATE(created_at)'), [$dateFrom, $dateTo])
                 ->sum('total');
 
@@ -54,6 +66,9 @@ class ReportController extends Controller
                 ->whereBetween('gifted_at', [$dateFrom, $dateTo])
                 ->sum('cost_value');
 
+            $cogsToman = SalesCogs::forBranch((int) $branch->id, 'toman', $dateFrom, $dateTo);
+            $cogsDinar = SalesCogs::forBranch((int) $branch->id, 'dinar', $dateFrom, $dateTo);
+
             $pendingCreditToman = Invoice::where('branch_id', $branch->id)
                 ->where('payment_method', 'credit')
                 ->where('payment_status', 'pending')
@@ -70,6 +85,8 @@ class ReportController extends Controller
                 'branch'              => $branch,
                 'revenue_toman'       => $salesToman,
                 'revenue_dinar'       => $salesDinar,
+                'cogs_toman'          => $cogsToman,
+                'cogs_dinar'          => $cogsDinar,
                 'expenses_toman'      => $expensesToman,
                 'expenses_dinar'      => $expensesDinar,
                 'gift_costs_toman'    => $giftCostsToman,
@@ -77,8 +94,8 @@ class ReportController extends Controller
                 'pending_credit_toman'=> $pendingCreditToman,
                 'pending_credit_dinar'=> $pendingCreditDinar,
                 'pending_credit'      => $pendingCreditToman + $pendingCreditDinar,
-                'net_profit_toman'    => $salesToman - $expensesToman - $giftCostsToman,
-                'net_profit_dinar'    => $salesDinar - $expensesDinar - $giftCostsDinar,
+                'net_profit_toman'    => $salesToman - $cogsToman - $expensesToman - $giftCostsToman,
+                'net_profit_dinar'    => $salesDinar - $cogsDinar - $expensesDinar - $giftCostsDinar,
             ];
         });
 
@@ -136,14 +153,7 @@ class ReportController extends Controller
             ? Book::whereDoesntHave('inventories', fn ($q) => $q->where('quantity', '>', 0))->count()
             : 0;
 
-        $inventoryValueToman = (float) Inventory::query()
-            ->when($branchFilter, fn ($q) => $q->where('branch_id', $branchFilter))
-            ->selectRaw('COALESCE(SUM(quantity * COALESCE(price_toman, 0)), 0) as total')
-            ->value('total');
-        $inventoryValueDinar = (float) Inventory::query()
-            ->when($branchFilter, fn ($q) => $q->where('branch_id', $branchFilter))
-            ->selectRaw('COALESCE(SUM(quantity * COALESCE(price_dinar, 0)), 0) as total')
-            ->value('total');
+        $inventoryValues = $this->inventoryAssetValues($branchFilter ? (int) $branchFilter : null);
 
         return response()->json([
             'total_titles'           => $totalTitles,
@@ -158,9 +168,76 @@ class ReportController extends Controller
             'low_stock_count'        => $lowStockCount,
             'out_of_stock_count'     => $outOfStockCount,
             'pending_checks'         => $pendingChecks,
-            'inventory_value_toman'  => $inventoryValueToman,
-            'inventory_value_dinar'  => $inventoryValueDinar,
+            'inventory_value_toman'  => $inventoryValues['toman'],
+            'inventory_value_dinar'  => $inventoryValues['dinar'],
         ]);
+    }
+
+    /**
+     * Sell-side inventory asset value per currency — never converts toman↔dinar.
+     * Missing local prices may fall back to the same currency on another branch of the book.
+     *
+     * @return array{toman: float, dinar: float}
+     */
+    private function inventoryAssetValues(?int $branchId): array
+    {
+        $rows = Inventory::query()
+            ->when($branchId, fn ($q) => $q->where('branch_id', $branchId))
+            ->where('quantity', '>', 0)
+            ->get(['book_id', 'quantity', 'price_toman', 'price_dinar']);
+
+        $needTomanIds = $rows
+            ->filter(fn ($inv) => !(float) ($inv->price_toman ?? 0))
+            ->pluck('book_id')
+            ->unique()
+            ->values();
+        $needDinarIds = $rows
+            ->filter(fn ($inv) => !(float) ($inv->price_dinar ?? 0))
+            ->pluck('book_id')
+            ->unique()
+            ->values();
+
+        $tomanDonors = collect();
+        if ($needTomanIds->isNotEmpty()) {
+            $tomanDonors = Inventory::query()
+                ->whereIn('book_id', $needTomanIds)
+                ->where('price_toman', '>', 0)
+                ->get(['book_id', 'price_toman'])
+                ->groupBy('book_id');
+        }
+
+        $dinarDonors = collect();
+        if ($needDinarIds->isNotEmpty()) {
+            $dinarDonors = Inventory::query()
+                ->whereIn('book_id', $needDinarIds)
+                ->where('price_dinar', '>', 0)
+                ->get(['book_id', 'price_dinar'])
+                ->groupBy('book_id');
+        }
+
+        $toman = 0.0;
+        $dinar = 0.0;
+
+        foreach ($rows as $inv) {
+            $pt = (float) ($inv->price_toman ?? 0);
+            $pd = (float) ($inv->price_dinar ?? 0);
+            if ($pt <= 0) {
+                $pt = (float) ($tomanDonors->get($inv->book_id)?->first()?->price_toman ?? 0);
+            }
+            if ($pd <= 0) {
+                $pd = (float) ($dinarDonors->get($inv->book_id)?->first()?->price_dinar ?? 0);
+            }
+
+            $qty = (float) $inv->quantity;
+            if ($pt > 0) {
+                $toman += $qty * $pt;
+            }
+            if ($pd > 0) {
+                $dinar += $qty * $pd;
+            }
+        }
+
+        return ['toman' => $toman, 'dinar' => $dinar];
     }
 
     public function monthlyTrends(Request $request)
@@ -174,26 +251,54 @@ class ReportController extends Controller
             $start = now()->subMonths($i)->startOfMonth();
             $end   = now()->subMonths($i)->endOfMonth();
 
-            $sales = Invoice::where('currency', $currency)
-                ->when($branchId, fn($q) => $q->where('branch_id', $branchId))
-                ->whereBetween('created_at', [$start, $end])
-                ->sum('total');
+            $storeIds = Branch::where('type', 'store')
+                ->orderBy('id')
+                ->get()
+                ->unique(fn ($b) => mb_strtolower(trim((string) $b->name)))
+                ->pluck('id');
+
+            $salesQuery = Invoice::where('currency', $currency)
+                ->where(function ($q) {
+                    $q->whereNull('type')->orWhere('type', 'sale');
+                })
+                ->whereBetween('created_at', [$start, $end]);
+
+            if ($branchId) {
+                $salesQuery->where('branch_id', $branchId);
+            } else {
+                $salesQuery->whereIn('branch_id', $storeIds);
+            }
+            $sales = $salesQuery->sum('total');
 
             $expenses = Expense::where('currency', $currency)
                 ->when($branchId, fn($q) => $q->where('branch_id', $branchId))
+                ->when(!$branchId, fn($q) => $q->whereIn('branch_id', $storeIds))
                 ->whereBetween('date', [$start->toDateString(), $end->toDateString()])
                 ->sum('amount');
 
             $gifts = Gift::where('currency', $currency)
                 ->when($branchId, fn($q) => $q->where('branch_id', $branchId))
+                ->when(!$branchId, fn($q) => $q->whereIn('branch_id', $storeIds))
                 ->whereBetween('gifted_at', [$start->toDateString(), $end->toDateString()])
                 ->sum('cost_value');
+
+            $cogs = 0.0;
+            $cogsBranchIds = $branchId ? [(int) $branchId] : $storeIds->map(fn ($id) => (int) $id)->all();
+            foreach ($cogsBranchIds as $id) {
+                $cogs += SalesCogs::forBranch(
+                    (int) $id,
+                    $currency,
+                    $start->toDateString(),
+                    $end->toDateString()
+                );
+            }
 
             $data[] = [
                 'label'  => $start->format('Y-m'),
                 'month'  => (int) $start->format('n'),
                 'sales'  => (float) $sales,
-                'profit' => (float) ($sales - $expenses - $gifts),
+                'cogs'   => (float) $cogs,
+                'profit' => (float) ($sales - $cogs - $expenses - $gifts),
             ];
         }
 

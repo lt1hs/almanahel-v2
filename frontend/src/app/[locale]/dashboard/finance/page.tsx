@@ -29,12 +29,11 @@ const RANK_COLORS = [
     "from-amber-700/80 to-amber-600/50",
 ];
 
-const COMMISSION_RATE = 0.1;
-
 type FinanceTab = "overview" | "settlement" | "history";
 
 interface FinanceStats {
     total_balance: number;
+    balance_is_dinar?: boolean;
     gross_profit: number;
     supplier_debt: number;
     top_books: any[];
@@ -46,10 +45,10 @@ function formatPeriodDate(value: string | null | undefined): string {
 }
 
 export default function FinancePage() {
-    const { t, formatNumber, isArabic } = useTranslation();
+    const { t, formatNumber, isArabic, isDinar, preferredCurrency } = useTranslation();
     const notify = useNotify();
-    const currencySymbol = isArabic ? t("common.currency.dinarSymbol") : t("common.currency.tomanSymbol");
-    const currency = isArabic ? "dinar" : "toman";
+    const currencySymbol = isDinar ? t("common.currency.dinarSymbol") : t("common.currency.tomanSymbol");
+    const currency = preferredCurrency;
 
     const [activeTab, setActiveTab] = useState<FinanceTab>("overview");
     const [stats, setStats] = useState<FinanceStats | null>(null);
@@ -86,13 +85,16 @@ export default function FinancePage() {
 
             const branches = Array.isArray(balanceData) ? balanceData : [];
 
-            const totalBalance = isArabic
-                ? Number(dashboard.inventory_value_dinar ?? 0)
-                : Number(dashboard.inventory_value_toman ?? 0);
+            const dinarInv = Number(dashboard.inventory_value_dinar ?? 0);
+            const tomanInv = Number(dashboard.inventory_value_toman ?? 0);
+            const useDinarBalance = isDinar
+                ? dinarInv > 0 || tomanInv <= 0
+                : dinarInv > 0 && tomanInv <= 0;
+            const totalBalance = useDinarBalance ? dinarInv : tomanInv;
 
             const grossProfit = branches.reduce(
                 (acc: number, curr: { net_profit_toman?: number | string; net_profit_dinar?: number | string }) =>
-                    acc + Number(isArabic ? curr.net_profit_dinar ?? 0 : curr.net_profit_toman ?? 0),
+                    acc + Number(isDinar ? curr.net_profit_dinar ?? 0 : curr.net_profit_toman ?? 0),
                 0
             );
 
@@ -100,13 +102,14 @@ export default function FinancePage() {
             Object.values(debtData).forEach((supplierCurrencies) => {
                 if (!Array.isArray(supplierCurrencies)) return;
                 supplierCurrencies.forEach((item) => {
-                    if (isArabic && item.currency === "dinar") totalDebt += Number(item.balance ?? 0);
-                    if (!isArabic && item.currency === "toman") totalDebt += Number(item.balance ?? 0);
+                    if (isDinar && item.currency === "dinar") totalDebt += Number(item.balance ?? 0);
+                    if (!isDinar && item.currency === "toman") totalDebt += Number(item.balance ?? 0);
                 });
             });
 
             setStats({
                 total_balance: totalBalance,
+                balance_is_dinar: useDinarBalance,
                 gross_profit: grossProfit,
                 supplier_debt: totalDebt,
                 top_books: Array.isArray(topBooks) ? topBooks : [],
@@ -118,7 +121,7 @@ export default function FinancePage() {
             setIsLoading(false);
             setIsRefreshing(false);
         }
-    }, [isArabic]);
+    }, [isDinar]);
 
     const fetchSuppliers = useCallback(async (force = false) => {
         if (suppliersLoaded && !force) return;
@@ -165,12 +168,16 @@ export default function FinancePage() {
             );
             const items = (data.items || []).map((item: any) => {
                 const total = Number(item.total || 0);
+                const commission = Number(
+                    item.commission ?? total * Number(data.commission_rate ?? 0.1)
+                );
                 return {
                     title: item.title,
                     qty: item.qty_sold,
                     price: item.cost_price,
                     total,
-                    commission: total * COMMISSION_RATE,
+                    commission,
+                    publisherShare: Number(item.publisher_share ?? total - commission),
                 };
             });
             setSettlementData(items);
@@ -225,6 +232,9 @@ export default function FinancePage() {
             label: t("finance.totalBalance"),
             hint: t("finance.totalCashBalance"),
             value: stats?.total_balance || 0,
+            symbol: stats?.balance_is_dinar
+                ? t("common.currency.dinarSymbol")
+                : t("common.currency.tomanSymbol"),
             icon: Wallet,
             color: "text-primary",
             border: "border-primary/15",
@@ -234,6 +244,7 @@ export default function FinancePage() {
             label: t("finance.grossProfit"),
             hint: t("finance.grossProfitThisMonth"),
             value: stats?.gross_profit || 0,
+            symbol: currencySymbol,
             icon: TrendingUp,
             color: "text-emerald-600",
             border: "border-emerald-100",
@@ -243,6 +254,7 @@ export default function FinancePage() {
             label: t("finance.supplierDebt"),
             hint: t("finance.overdueDebt"),
             value: stats?.supplier_debt || 0,
+            symbol: currencySymbol,
             icon: Receipt,
             color: "text-rose-500",
             border: "border-rose-100",
@@ -295,7 +307,7 @@ export default function FinancePage() {
                                     </div>
                                     <p className={cn("text-xl font-black font-vazirmatn tabular-nums leading-none", kpi.color)}>
                                         {isLoading && !stats ? "…" : formatNumber(kpi.value)}
-                                        <span className="text-[10px] text-ink/30 ms-1 font-bold">{currencySymbol}</span>
+                                        <span className="text-[10px] text-ink/30 ms-1 font-bold">{kpi.symbol}</span>
                                     </p>
                                     <p className="text-[9px] text-ink/30 mt-1.5">{kpi.hint}</p>
                                 </CardContent>

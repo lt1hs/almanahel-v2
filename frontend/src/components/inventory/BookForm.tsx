@@ -1,6 +1,6 @@
 ﻿"use client";
 
-import React, { useMemo } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { Scan, Book as BookIcon, DollarSign, AlertCircle, Info, MapPin, FileText, ImageIcon, Upload, X } from "lucide-react";
 import { Input } from "@/components/ui/Input";
 import { cn } from "@/lib/utils";
@@ -40,6 +40,37 @@ export function BookForm({ data, onChange, stockFields = "full" }: BookFormProps
     const notify = useNotify();
     const [isScannerOpen, setIsScannerOpen] = React.useState(false);
     const [isUploadingCover, setIsUploadingCover] = React.useState(false);
+    const [categories, setCategories] = useState<string[]>([...BOOK_CATEGORIES]);
+
+    useEffect(() => {
+        let cancelled = false;
+        apiRequest("/book-categories")
+            .then((res) => {
+                if (cancelled) return;
+                const rows = Array.isArray(res?.categories) ? res.categories : [];
+                const names = rows
+                    .map((row: { name?: string } | string) =>
+                        typeof row === "string" ? row : String(row?.name || "")
+                    )
+                    .map((n: string) => n.trim())
+                    .filter(Boolean);
+                if (names.length) setCategories(names);
+            })
+            .catch(() => {
+                /* keep defaults */
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, []);
+
+    const categoryOptions = useMemo(() => {
+        const current = (data.category || "").trim();
+        if (current && !categories.includes(current)) {
+            return [current, ...categories];
+        }
+        return categories;
+    }, [categories, data.category]);
 
     const coverPreview = data.coverImagePreview || resolveBookCoverUrl(data.coverImage);
 
@@ -195,7 +226,7 @@ export function BookForm({ data, onChange, stockFields = "full" }: BookFormProps
                         className={cn(fieldClass, "w-full px-3 font-vazirmatn outline-none focus:ring-2 focus:ring-primary/15")}
                     >
                         <option value="">{t("inventory.form.categoryPlaceholder")}</option>
-                        {BOOK_CATEGORIES.map((cat) => (
+                        {categoryOptions.map((cat) => (
                             <option key={cat} value={cat}>{cat}</option>
                         ))}
                     </select>

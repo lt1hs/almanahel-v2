@@ -16,6 +16,7 @@ export function LocaleSync({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!urlLocale || urlLocale === language) return;
     setLanguage(urlLocale);
+    // Language switch resets currency to the locale default
     setCurrency(urlLocale === "ar" ? "IQD" : "TOMAN");
   }, [urlLocale, language, setLanguage, setCurrency]);
 

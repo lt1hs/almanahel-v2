@@ -7,6 +7,7 @@ use App\Models\ConsignmentReceipt;
 use App\Models\ConsignmentReceiptItem;
 use App\Models\Inventory;
 use App\Models\Settlement;
+use App\Support\ConsignmentFinance;
 use App\Support\IntakePolicy;
 use App\Support\StockMovementLogger;
 use Illuminate\Http\Request;
@@ -15,6 +16,63 @@ use Illuminate\Support\Str;
 
 class ConsignmentController extends Controller
 {
+    private function isAdmin($user): bool
+    {
+        return in_array($user?->role, ['super_admin', 'admin'], true);
+    }
+
+    /** @return int[]|null null = unrestricted (admin) */
+    private function visibleBranchIds($user): ?array
+    {
+        if ($this->isAdmin($user)) {
+            return null;
+        }
+
+        $ids = [];
+        if ($user?->branch_id) {
+            $ids[] = (int) $user->branch_id;
+        }
+        foreach ($user->iraq_only_visible_branches ?? [] as $id) {
+            $ids[] = (int) $id;
+        }
+
+        return array_values(array_unique(array_filter($ids)));
+    }
+
+    private function scopeReceiptsToUser($query, $user)
+    {
+        $ids = $this->visibleBranchIds($user);
+        if ($ids === null) {
+            return $query;
+        }
+        if (!$ids) {
+            return $query->whereRaw('1 = 0');
+        }
+
+        return $query->whereIn('branch_id', $ids);
+    }
+
+    private function userCanAccessReceipt($user, ConsignmentReceipt $receipt): bool
+    {
+        $ids = $this->visibleBranchIds($user);
+        if ($ids === null) {
+            return true;
+        }
+
+        return in_array((int) $receipt->branch_id, $ids, true);
+    }
+
+    private function assertBranchAllowed($user, int $branchId): void
+    {
+        $ids = $this->visibleBranchIds($user);
+        if ($ids === null) {
+            return;
+        }
+        if (!in_array($branchId, $ids, true)) {
+            abort(403, 'اجازه دسترسی به این شعبه را ندارید');
+        }
+    }
+
     public function index(Request $request)
     {
         // Heal receipts left unsettled after books were cascade-deleted
@@ -40,6 +98,8 @@ class ConsignmentController extends Controller
             ])
             ->withCount('items');
 
+        $this->scopeReceiptsToUser($query, $request->user());
+
         if ($request->filled('supplier_id')) {
             $query->where('supplier_id', $request->supplier_id);
         }
@@ -47,6 +107,7 @@ class ConsignmentController extends Controller
             $query->where('status', $request->status);
         }
         if ($request->filled('branch_id')) {
+            $this->assertBranchAllowed($request->user(), (int) $request->branch_id);
             $query->where('branch_id', $request->branch_id);
         }
         if ($request->filled('q')) {
@@ -87,6 +148,8 @@ class ConsignmentController extends Controller
         if ($denied = IntakePolicy::assertIntakeAllowed($request->user(), (int) $validated['branch_id'], $iraqOnly)) {
             return $denied;
         }
+
+        $this->assertBranchAllowed($request->user(), (int) $validated['branch_id']);
 
         $totalValue = 0;
         foreach ($validated['items'] as $item) {
@@ -150,22 +213,30 @@ class ConsignmentController extends Controller
         });
     }
 
-    public function show(ConsignmentReceipt $consignmentReceipt)
+    public function show(Request $request, ConsignmentReceipt $consignmentReceipt)
     {
+        if (!$this->userCanAccessReceipt($request->user(), $consignmentReceipt)) {
+            abort(403, 'اجازه مشاهده این رسید را ندارید');
+        }
+
         $consignmentReceipt->recalculateFromItems();
 
         return response()->json($consignmentReceipt->fresh()->load(['items.book', 'supplier', 'branch', 'user']));
     }
 
     /** Manually close a receipt that has no remaining items / nothing left to settle. */
-    public function close(ConsignmentReceipt $consignmentReceipt)
+    public function close(Request $request, ConsignmentReceipt $consignmentReceipt)
     {
+        if (!$this->userCanAccessReceipt($request->user(), $consignmentReceipt)) {
+            abort(403, 'اجازه بستن این رسید را ندارید');
+        }
+
         $consignmentReceipt->load('items');
 
+        $soldCost = (float) $consignmentReceipt->items->sum(fn ($i) => $i->quantity_sold * $i->cost_price);
         $soldOutstanding = max(
             0,
-            (float) $consignmentReceipt->items->sum(fn ($i) => $i->quantity_sold * $i->cost_price)
-                - (float) $consignmentReceipt->settled_amount
+            ConsignmentFinance::publisherShare($soldCost) - (float) $consignmentReceipt->settled_amount
         );
 
         if ($consignmentReceipt->items->isNotEmpty() && $soldOutstanding > 0) {
@@ -178,7 +249,7 @@ class ConsignmentController extends Controller
             'status'         => 'settled',
             'settled_amount' => $consignmentReceipt->items->isEmpty()
                 ? 0
-                : (float) $consignmentReceipt->items->sum(fn ($i) => $i->quantity_sold * $i->cost_price),
+                : ConsignmentFinance::publisherShare($soldCost),
             'total_value'    => $consignmentReceipt->items->isEmpty()
                 ? 0
                 : (float) $consignmentReceipt->items->sum(fn ($i) => $i->quantity_received * $i->cost_price),
@@ -190,9 +261,10 @@ class ConsignmentController extends Controller
     /** Sold-based outstanding balance per supplier */
     public function unsettledBySupplier(Request $request)
     {
-        $receipts = ConsignmentReceipt::with(['items'])
-            ->whereIn('status', ['unsettled', 'partially_settled'])
-            ->get();
+        $query = ConsignmentReceipt::with(['items'])
+            ->whereIn('status', ['unsettled', 'partially_settled']);
+        $this->scopeReceiptsToUser($query, $request->user());
+        $receipts = $query->get();
 
         $results = [];
         foreach ($receipts as $receipt) {
@@ -221,10 +293,17 @@ class ConsignmentController extends Controller
         return response()->json($results);
     }
 
-    private function soldValue(ConsignmentReceipt $receipt): float
+    /** Gross sold cost (qty × cost) before commission. */
+    private function soldCost(ConsignmentReceipt $receipt): float
     {
         $receipt->loadMissing('items');
         return (float) $receipt->items->sum(fn ($item) => $item->quantity_sold * $item->cost_price);
+    }
+
+    /** Publisher share of sold cost (after store commission). */
+    private function soldValue(ConsignmentReceipt $receipt): float
+    {
+        return ConsignmentFinance::publisherShare($this->soldCost($receipt));
     }
 
     private function outstandingSoldBalance(ConsignmentReceipt $receipt): float
@@ -248,18 +327,27 @@ class ConsignmentController extends Controller
         ]);
 
         return DB::transaction(function () use ($request, $validated) {
-            $receipts = ConsignmentReceipt::with('items')
+            $user = $request->user();
+            if (!empty($validated['branch_id'])) {
+                $this->assertBranchAllowed($user, (int) $validated['branch_id']);
+            } elseif (!$this->isAdmin($user) && $user?->branch_id) {
+                $validated['branch_id'] = (int) $user->branch_id;
+            }
+
+            $receiptQuery = ConsignmentReceipt::with('items')
                 ->where('supplier_id', $validated['supplier_id'])
                 ->where('currency', $validated['currency'])
-                ->whereIn('status', ['unsettled', 'partially_settled'])
-                ->whereBetween('received_at', [$validated['period_start'], $validated['period_end']])
-                ->lockForUpdate()
-                ->get();
+                ->whereIn('status', ['unsettled', 'partially_settled']);
+            $this->scopeReceiptsToUser($receiptQuery, $user);
+            if (!empty($validated['branch_id'])) {
+                $receiptQuery->where('branch_id', $validated['branch_id']);
+            }
+            $receipts = $receiptQuery->orderBy('received_at')->orderBy('id')->lockForUpdate()->get();
 
             $settlement = Settlement::create([
                 'supplier_id'       => $validated['supplier_id'],
                 'branch_id'         => $validated['branch_id'] ?? null,
-                'user_id'           => $request->user()->id,
+                'user_id'           => $user->id,
                 'settlement_number' => 'SET-' . strtoupper(Str::random(8)),
                 'period_type'       => $validated['period_type'],
                 'period_start'      => $validated['period_start'],
@@ -279,28 +367,38 @@ class ConsignmentController extends Controller
                 $pay = min($balance, $remaining);
                 $receipt->increment('settled_amount', $pay);
                 $receipt->refresh();
-                $soldValue = $this->soldValue($receipt);
-                $newStatus = ($receipt->settled_amount >= $soldValue && $soldValue > 0)
+                $owed = $this->soldValue($receipt);
+                $newStatus = ($receipt->settled_amount >= $owed && $owed > 0)
                     ? 'settled'
                     : 'partially_settled';
                 $receipt->update(['status' => $newStatus]);
                 $remaining -= $pay;
             }
 
-            return response()->json($settlement, 201);
+            return response()->json($settlement->load(['supplier', 'branch']), 201);
         });
     }
 
     public function settlements(Request $request)
     {
         $query = Settlement::with(['supplier', 'branch', 'user']);
+        $ids = $this->visibleBranchIds($request->user());
+        if ($ids !== null) {
+            if (!$ids) {
+                $query->whereRaw('1 = 0');
+            } else {
+                $query->where(function ($q) use ($ids) {
+                    $q->whereIn('branch_id', $ids)->orWhereNull('branch_id');
+                });
+            }
+        }
         if ($request->has('supplier_id')) {
             $query->where('supplier_id', $request->supplier_id);
         }
         return response()->json($query->latest()->paginate(20));
     }
 
-    /** Preview sold items for settlement calculation */
+    /** Preview sold items for settlement — based on sales in the period, not receipt received_at. */
     public function settlementPreview(Request $request)
     {
         $validated = $request->validate([
@@ -308,32 +406,87 @@ class ConsignmentController extends Controller
             'period_start' => 'required|date',
             'period_end'   => 'required|date|after_or_equal:period_start',
             'currency'     => 'nullable|in:toman,dinar',
+            'branch_id'    => 'nullable|exists:branches,id',
         ]);
 
-        $items = ConsignmentReceiptItem::with(['book', 'consignmentReceipt'])
-            ->whereHas('consignmentReceipt', function ($q) use ($validated) {
-                $q->where('supplier_id', $validated['supplier_id'])
-                  ->whereBetween('received_at', [$validated['period_start'], $validated['period_end']]);
-                if (!empty($validated['currency'])) {
-                    $q->where('currency', $validated['currency']);
-                }
+        $user = $request->user();
+        if (!empty($validated['branch_id'])) {
+            $this->assertBranchAllowed($user, (int) $validated['branch_id']);
+        }
+
+        $branchIds = $this->visibleBranchIds($user);
+        $currency = $validated['currency'] ?? 'toman';
+        $costCol = $currency === 'dinar'
+            ? 'inventories.cost_price_dinar'
+            : 'inventories.cost_price_toman';
+        $rate = ConsignmentFinance::commissionRate();
+
+        $query = DB::table('invoice_items')
+            ->join('invoices', 'invoice_items.invoice_id', '=', 'invoices.id')
+            ->join('books', 'invoice_items.book_id', '=', 'books.id')
+            ->join('inventories', function ($join) {
+                $join->on('inventories.book_id', '=', 'invoice_items.book_id')
+                    ->on('inventories.branch_id', '=', 'invoices.branch_id');
             })
-            ->where('quantity_sold', '>', 0)
-            ->get()
-            ->map(fn($item) => [
-                'book_id'    => $item->book_id,
-                'title'      => $item->book?->title,
-                'qty_sold'   => $item->quantity_sold,
-                'cost_price' => $item->cost_price,
-                'total'      => $item->quantity_sold * $item->cost_price,
-                'receipt'    => $item->consignmentReceipt?->receipt_number,
+            ->where('inventories.type', 'consignment')
+            ->where('inventories.supplier_id', $validated['supplier_id'])
+            ->where('invoices.currency', $currency)
+            ->where(function ($q) {
+                $q->whereNull('invoices.type')->orWhere('invoices.type', 'sale');
+            })
+            ->whereBetween(DB::raw('DATE(invoices.created_at)'), [
+                $validated['period_start'],
+                $validated['period_end'],
             ]);
 
-        $totalPayable = $items->sum('total');
+        if (!empty($validated['branch_id'])) {
+            $query->where('invoices.branch_id', $validated['branch_id']);
+        } elseif ($branchIds !== null) {
+            if (!$branchIds) {
+                $query->whereRaw('1 = 0');
+            } else {
+                $query->whereIn('invoices.branch_id', $branchIds);
+            }
+        }
+
+        $rows = $query
+            ->groupBy('invoice_items.book_id', 'books.title')
+            ->select(
+                'invoice_items.book_id',
+                'books.title',
+                DB::raw('SUM(invoice_items.quantity) as qty_sold'),
+                DB::raw("AVG(COALESCE({$costCol}, 0)) as cost_price")
+            )
+            ->get();
+
+        $items = $rows->map(function ($row) use ($rate) {
+            $qty = (int) $row->qty_sold;
+            $cost = (float) $row->cost_price;
+            $total = round($qty * $cost, 2);
+            $commission = round($total * $rate, 2);
+            $publisherShare = round($total - $commission, 2);
+
+            return [
+                'book_id'         => (int) $row->book_id,
+                'title'           => $row->title,
+                'qty_sold'        => $qty,
+                'cost_price'      => $cost,
+                'total'           => $total,
+                'commission'      => $commission,
+                'publisher_share' => $publisherShare,
+            ];
+        });
+
+        $totalCost = (float) $items->sum('total');
+        $totalCommission = (float) $items->sum('commission');
+        $totalPayable = (float) $items->sum('publisher_share');
 
         return response()->json([
-            'items'         => $items,
-            'total_payable' => $totalPayable,
+            'items'            => $items->values(),
+            'commission_rate'  => $rate,
+            'total_cost'       => $totalCost,
+            'total_commission' => $totalCommission,
+            'total_payable'    => $totalPayable,
         ]);
     }
 
@@ -354,7 +507,7 @@ class ConsignmentController extends Controller
 
         $results = [];
         foreach ($validated['settlements'] as $settlementData) {
-            $subRequest = new Request([
+            $payload = [
                 'supplier_id'    => $settlementData['supplier_id'],
                 'period_type'    => $validated['period_type'],
                 'period_start'   => $validated['period_start'],
@@ -363,7 +516,11 @@ class ConsignmentController extends Controller
                 'currency'       => $settlementData['currency'],
                 'payment_method' => $validated['payment_method'],
                 'notes'          => $validated['notes'] ?? null,
-            ]);
+            ];
+            if (!$this->isAdmin($request->user()) && $request->user()?->branch_id) {
+                $payload['branch_id'] = (int) $request->user()->branch_id;
+            }
+            $subRequest = new Request($payload);
             $subRequest->setUserResolver(fn() => $request->user());
             $response = $this->settle($subRequest);
             $results[] = json_decode($response->getContent(), true);

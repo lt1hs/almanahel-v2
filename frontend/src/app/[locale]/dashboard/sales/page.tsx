@@ -25,8 +25,14 @@ const ScannerModal = dynamic(
 
 const LOW_STOCK = 5;
 const EMPTY_PAYMENT: PaymentDetails = {
-    customer_name: "", customer_phone: "", check_number: "",
-    bank_name: "", payer_name: "", payer_phone: "", due_date: "",
+    customer_name: "",
+    customer_phone: "",
+    notes: "",
+    check_number: "",
+    bank_name: "",
+    payer_name: "",
+    payer_phone: "",
+    due_date: "",
 };
 
 type PaymentMethod = "cash" | "check" | "credit";
@@ -47,30 +53,32 @@ interface CartBook extends SalesBook {
     quantity: number;
 }
 
-function mapInventoryItem(item: any, isArabic: boolean): SalesBook | null {
+function mapInventoryItem(item: any, isDinar: boolean): SalesBook | null {
     if (item.book) {
         return {
             id: String(item.book.id),
+            inventory_id: item.id,
             title: item.book.title,
             author: item.book.author || "",
             isbn: item.book.isbn || "",
-            price: isArabic ? Number(item.price_dinar || 0) : Number(item.price_toman || 0),
-            stock: Number(item.quantity ?? 0),
+            price: isDinar ? Number(item.price_dinar || 0) : Number(item.price_toman || 0),
+            stock: Number(item.quantity || 0),
             type: item.type === "consignment" ? "consignment" : "owned",
         };
     }
-    if (item.title) {
+    if (item.id && item.title) {
         const branchInv = item.inventories?.[0];
         return {
             id: String(item.id),
+            inventory_id: branchInv?.id,
             title: item.title,
             author: item.author || "",
             isbn: item.isbn || "",
-            price: isArabic
+            price: isDinar
                 ? Number(branchInv?.price_dinar || 0)
-                : Number(branchInv?.price_toman || item.inventories?.[0]?.price_toman || 0),
-            stock: item.inventories?.reduce((acc: number, inv: any) => acc + Number(inv.quantity || 0), 0) || 0,
-            type: "owned",
+                : Number(branchInv?.price_toman || 0),
+            stock: Number(branchInv?.quantity || item.total_qty || 0),
+            type: branchInv?.type === "consignment" ? "consignment" : "owned",
         };
     }
     return null;
@@ -82,7 +90,7 @@ function resolveBranchId(user: { branch?: { id: number } | null; branch_id?: num
 }
 
 export default function SalesPage() {
-    const { t, formatNumber, isArabic } = useTranslation();
+    const { t, formatNumber, isArabic, isDinar, preferredCurrency } = useTranslation();
     const notify = useNotify();
     const { user, isLoading: authLoading } = useAuth();
 
@@ -184,7 +192,7 @@ export default function SalesPage() {
             const invData = await apiRequest(inventoryEndpoint);
 
             const mapped = (invData || [])
-                .map((item: any) => mapInventoryItem(item, isArabic))
+                .map((item: any) => mapInventoryItem(item, isDinar))
                 .filter(Boolean) as SalesBook[];
 
             setInventory(mapped);
@@ -192,7 +200,7 @@ export default function SalesPage() {
             try {
                 const dashboard = await apiRequest("/reports/dashboard");
                 setStats({
-                    todaySales: isArabic ? dashboard.today_sales_dinar : dashboard.today_sales_toman,
+                    todaySales: isDinar ? dashboard.today_sales_dinar : dashboard.today_sales_toman,
                     invoiceCount: dashboard.today_invoice_count || 0,
                 });
             } catch (statsError) {
@@ -221,7 +229,7 @@ export default function SalesPage() {
             setIsLoading(false);
             setIsRefreshing(false);
         }
-    }, [authLoading, branchId, isArabic, t]);
+    }, [authLoading, branchId, isDinar, t]);
 
     useEffect(() => {
         fetchData();
@@ -320,7 +328,7 @@ export default function SalesPage() {
                 id: String(book.id),
                 title: book.title,
                 author: book.author || "",
-                price: isArabic ? (branchInv?.price_dinar || 0) : (branchInv?.price_toman || 0),
+                price: isDinar ? (branchInv?.price_dinar || 0) : (branchInv?.price_toman || 0),
                 stock: branchInv?.quantity ?? 0,
                 type: branchInv?.type === "consignment" ? "consignment" : "owned",
                 isbn: book.isbn || trimmed,
@@ -380,7 +388,7 @@ export default function SalesPage() {
     }, [inventory, search, typeFilter, stockFilter]);
 
     const cartCount = cartItems.reduce((sum, i) => sum + i.quantity, 0);
-    const currencySymbol = isArabic ? t("common.currency.dinarSymbol") : t("common.currency.tomanSymbol");
+    const currencySymbol = isDinar ? t("common.currency.dinarSymbol") : t("common.currency.tomanSymbol");
     const hasActiveFilters = typeFilter !== "all" || stockFilter !== "all";
 
     return (
@@ -405,7 +413,7 @@ export default function SalesPage() {
                         <StatBadge
                             icon={<TrendingUp className="w-3 h-3" />}
                             label={t("sales.todaySales")}
-                            value={`${formatNumber(stats.todaySales)} ${isArabic ? t("common.dinar") : t("common.toman")}`}
+                            value={`${formatNumber(stats.todaySales)} ${isDinar ? t("common.dinar") : t("common.toman")}`}
                             className="text-primary"
                         />
                         <StatBadge
@@ -608,7 +616,7 @@ export default function SalesPage() {
                             onRemove={removeFromCart}
                             onCheckout={handleCheckout}
                             paymentMethod={payment}
-                            currency={isArabic ? "dinar" : "toman"}
+                            currency={preferredCurrency}
                             paymentDetails={paymentDetails}
                             onPaymentDetailsChange={setPaymentDetails}
                         />
@@ -647,7 +655,12 @@ export default function SalesPage() {
                                 <p className="text-[11px] font-black font-vazirmatn truncate group-hover:text-primary transition-colors">
                                     {inv.invoice_number}
                                 </p>
-                                <p className="text-[9px] text-ink/35">{inv.branch?.name} · {inv.customer_name || t("sales.cash")}</p>
+                                <p className="text-[9px] text-ink/35 truncate">
+                                    {inv.branch?.name}
+                                    {" · "}
+                                    {inv.customer_name || t("sales.cash")}
+                                    {inv.customer_phone ? ` · ${inv.customer_phone}` : ""}
+                                </p>
                             </Link>
                             <div className="flex items-center gap-2 shrink-0">
                                 <button

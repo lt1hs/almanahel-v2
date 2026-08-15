@@ -108,7 +108,7 @@ function alertHref(n: Notification): string {
 
 export default function DashboardPage() {
     const { user } = useAuth();
-    const { t, formatNumber, language, isArabic } = useTranslation();
+    const { t, formatNumber, language, isDinar } = useTranslation();
     const router = useRouter();
     const [alertFilter, setAlertFilter] = useState<AlertFilter>("all");
 
@@ -261,22 +261,26 @@ export default function DashboardPage() {
         },
         {
             titleKey: "dashboard.todaySales",
-            value: isArabic ? (data?.today_sales_dinar || 0) : (data?.today_sales_toman || 0),
-            suffixKey: isArabic ? "common.dinar" : "common.toman",
+            value: isDinar ? (data?.today_sales_dinar || 0) : (data?.today_sales_toman || 0),
+            suffixKey: isDinar ? "common.dinar" : "common.toman",
             icon: TrendingUp,
             color: "text-emerald-500",
             href: "/dashboard/sales",
         },
-        {
-            titleKey: "dashboard.inventoryValue",
-            value: isArabic
-                ? (data?.inventory_value_dinar || 0)
-                : (data?.inventory_value_toman || 0),
-            suffixKey: isArabic ? "common.dinar" : "common.toman",
-            icon: Banknote,
-            color: "text-amber-600",
-            href: "/dashboard/reports",
-        },
+        (() => {
+            const dinarVal = Number(data?.inventory_value_dinar || 0);
+            const tomanVal = Number(data?.inventory_value_toman || 0);
+            // Prefer selected currency; if that side is empty, show the other with its own label
+            const useDinar = isDinar ? dinarVal > 0 || tomanVal <= 0 : dinarVal > 0 && tomanVal <= 0;
+            return {
+                titleKey: "dashboard.inventoryValue",
+                value: useDinar ? dinarVal : tomanVal,
+                suffixKey: useDinar ? "common.dinar" : "common.toman",
+                icon: Banknote,
+                color: "text-amber-600",
+                href: "/dashboard/reports",
+            };
+        })(),
         {
             titleKey: "dashboard.lowStockBooks",
             value: data?.low_stock_count || 0,

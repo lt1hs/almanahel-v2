@@ -99,12 +99,12 @@ function pick(row: BranchProfitRow, currency: Currency) {
 }
 
 export default function BranchProfitPage() {
-    const { t, formatNumber, isArabic } = useTranslation();
+    const { t, formatNumber, preferredCurrency } = useTranslation();
     const notify = useNotify();
     const notifyRef = useRef(notify);
     notifyRef.current = notify;
 
-    const [currency, setCurrency] = useState<Currency>(isArabic ? "dinar" : "toman");
+    const [currency, setCurrency] = useState<Currency>(preferredCurrency);
     const [branches, setBranches] = useState<BranchProfitRow[]>([]);
     const [isLoading, setIsLoading] = useState(true);
     const [isRefreshing, setIsRefreshing] = useState(false);
@@ -120,8 +120,8 @@ export default function BranchProfitPage() {
         : t("common.currency.dinarSymbol");
 
     useEffect(() => {
-        setCurrency(isArabic ? "dinar" : "toman");
-    }, [isArabic]);
+        setCurrency(preferredCurrency);
+    }, [preferredCurrency]);
 
     const bounds = useMemo(
         () => periodBounds(period, customFrom, customTo),

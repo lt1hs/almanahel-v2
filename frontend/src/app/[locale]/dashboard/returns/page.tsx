@@ -47,8 +47,8 @@ interface ConsignmentItem {
 }
 
 export default function ReturnsPage() {
-    const { t, formatNumber, formatDate, isArabic } = useTranslation();
-    const currencySymbol = isArabic ? t("common.currency.dinarSymbol") : t("common.currency.tomanSymbol");
+    const { t, formatNumber, formatDate, isArabic, isDinar } = useTranslation();
+    const currencySymbol = isDinar ? t("common.currency.dinarSymbol") : t("common.currency.tomanSymbol");
     const [activeTab, setActiveTab] = useState<ReturnType>("customer");
     const [returns, setReturns] = useState<any[]>([]);
     const [isLoading, setIsLoading] = useState(true);

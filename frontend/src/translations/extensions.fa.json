@@ -373,8 +373,8 @@
     }
   },
   "finance": {
-    "totalCashBalance": "موجودی کل صندوق",
-    "grossProfitThisMonth": "سود ناخالص ماه جاری",
+    "totalCashBalance": "بر اساس قیمت فروش فعلی",
+    "grossProfitThisMonth": "فروش − بهای تمام‌شده − هزینه − هدیه (ماه جاری)",
     "salesCount": "{{count}} فروش",
     "noTopItems": "کالای پرفروشی ثبت نشده است",
     "branchProfit": {

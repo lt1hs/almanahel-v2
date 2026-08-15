@@ -144,6 +144,7 @@ class InventoryController extends Controller
         }
         if (
             str_contains($city, 'najaf')
+            || str_contains($city, 'نجف')
             || str_contains($name, 'نجف')
             || str_contains($city, 'iraq')
             || str_contains($name, 'عراق')
@@ -164,6 +165,11 @@ class InventoryController extends Controller
                 $dinar = (float) ($inv->price_dinar ?? 0);
                 if ($dinar > 0 && $bands['najaf'] === null) {
                     $bands['najaf'] = $inv->price_dinar;
+                } elseif ($bands['najaf'] === null) {
+                    $toman = (float) ($inv->price_toman ?? 0);
+                    if ($toman > 0) {
+                        $bands['najaf'] = $inv->price_toman;
+                    }
                 }
                 continue;
             }

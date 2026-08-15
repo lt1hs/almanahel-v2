@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Support\ConsignmentFinance;
 use Illuminate\Database\Eloquent\Model;
 
 class ConsignmentReceipt extends Model
@@ -20,6 +21,7 @@ class ConsignmentReceipt extends Model
     /**
      * Recalculate totals/status after items change (e.g. book cascade delete).
      * Empty receipts are auto-closed as settled so they don't block the UI.
+     * Settled target is publisher share of sold cost (after store commission).
      */
     public function recalculateFromItems(): void
     {
@@ -38,14 +40,15 @@ class ConsignmentReceipt extends Model
         $totalValue = (float) $this->items->sum(
             fn ($item) => (float) $item->cost_price * (int) $item->quantity_received
         );
-        $soldValue = (float) $this->items->sum(
+        $soldCost = (float) $this->items->sum(
             fn ($item) => (float) $item->cost_price * (int) $item->quantity_sold
         );
-        $settled = min((float) $this->settled_amount, max($soldValue, $totalValue));
+        $owed = ConsignmentFinance::publisherShare($soldCost);
+        $settled = min((float) $this->settled_amount, max($owed, $totalValue));
 
-        if ($soldValue <= 0 && $settled <= 0) {
+        if ($owed <= 0 && $settled <= 0) {
             $status = 'unsettled';
-        } elseif ($soldValue > 0 && $settled >= $soldValue) {
+        } elseif ($owed > 0 && $settled >= $owed) {
             $status = 'settled';
         } elseif ($settled > 0) {
             $status = 'partially_settled';

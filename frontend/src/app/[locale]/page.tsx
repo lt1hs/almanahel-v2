@@ -3,6 +3,7 @@
 import React, { useEffect } from "react";
 import { useRouter } from "@/i18n/routing";
 import { useAuth } from "@/contexts/AuthContext";
+import { isIraqAccount } from "@/lib/userLocale";
 
 export default function RootPage() {
     const { user, isLoading } = useAuth();
@@ -11,7 +12,9 @@ export default function RootPage() {
     useEffect(() => {
         if (!isLoading) {
             if (user) {
-                router.push("/dashboard");
+                router.push("/dashboard", {
+                    locale: isIraqAccount(user) ? "ar" : undefined,
+                });
             } else {
                 router.push("/login");
             }

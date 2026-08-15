@@ -35,7 +35,13 @@ export function matchBranchKey(
         case "mashhad":
             return city.includes("mashhad") || name.includes("مشهد");
         case "najaf":
-            return city.includes("najaf") || name.includes("نجف") || city.includes("iraq") || name.includes("عراق");
+            return (
+                city.includes("najaf")
+                || city.includes("نجف")
+                || name.includes("نجف")
+                || city.includes("iraq")
+                || name.includes("عراق")
+            );
         case "tehran":
             return city.includes("tehran") || name.includes("طهران");
         default:
@@ -120,13 +126,15 @@ export function collectPriceBands(
             city: row.branch_city,
             name: row.branch_name,
         });
+        const dinar = Number(row.price_dinar || 0);
+        const toman = Number(row.price_toman || 0);
         if (band === "najaf") {
-            const dinar = Number(row.price_dinar || 0);
             if (dinar > 0 && bands.najaf <= 0) bands.najaf = dinar;
+            else if (toman > 0 && bands.najaf <= 0) bands.najaf = toman;
             continue;
         }
-        const toman = Number(row.price_toman || 0);
         if (toman > 0 && bands[band] <= 0) bands[band] = toman;
+        else if (dinar > 0 && bands.najaf <= 0) bands.najaf = dinar;
     }
     return bands;
 }

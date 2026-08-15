@@ -86,11 +86,10 @@ const EMPTY_FORM = {
 };
 
 export default function GiftsPage() {
-  const { t, formatNumber, isArabic } = useTranslation();
+  const { t, formatNumber, isArabic, preferredCurrency } = useTranslation();
   const notify = useNotify();
   const { user } = useAuth();
 
-  const preferredCurrency = isArabic ? "dinar" : "toman";
   const currencySymbol =
     preferredCurrency === "dinar"
       ? t("common.currency.dinarSymbol")

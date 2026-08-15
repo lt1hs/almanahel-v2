@@ -33,6 +33,17 @@ interface LanguageContextType {
 
 const LanguageContext = createContext<LanguageContextType | undefined>(undefined);
 
+function defaultCurrencyForLocale(locale: Language): Currency {
+  return locale === "ar" ? "IQD" : "TOMAN";
+}
+
+function readStoredCurrency(fallback: Currency): Currency {
+  if (typeof window === "undefined") return fallback;
+  const saved = localStorage.getItem("al-manahel-currency");
+  if (saved === "IQD" || saved === "TOMAN") return saved;
+  return fallback;
+}
+
 export function LanguageProvider({
   children,
   initialLocale = "fa",
@@ -43,20 +54,21 @@ export function LanguageProvider({
   // Current locale messages only (from NextIntlClientProvider) — avoids bundling both JSONs
   const messages = useMessages() as Translations;
   const [language, setLanguageState] = useState<Language>(initialLocale);
-  const [currency, setCurrencyState] = useState<Currency>(
-    initialLocale === "ar" ? "IQD" : "TOMAN"
+  const [currency, setCurrencyState] = useState<Currency>(() =>
+    readStoredCurrency(defaultCurrencyForLocale(initialLocale))
   );
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
     setLanguageState(initialLocale);
-    setCurrencyState(initialLocale === "ar" ? "IQD" : "TOMAN");
     localStorage.setItem("al-manahel-language", initialLocale);
-    localStorage.setItem(
-      "al-manahel-currency",
-      initialLocale === "ar" ? "IQD" : "TOMAN"
-    );
     document.documentElement.lang = initialLocale;
+    // Keep an explicit currency choice; only default when nothing stored yet
+    if (!localStorage.getItem("al-manahel-currency")) {
+      const next = defaultCurrencyForLocale(initialLocale);
+      setCurrencyState(next);
+      localStorage.setItem("al-manahel-currency", next);
+    }
     setIsLoading(false);
   }, [initialLocale]);
 

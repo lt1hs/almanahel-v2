@@ -8,11 +8,65 @@ use Illuminate\Http\Request;
 
 class ExpenseController extends Controller
 {
+    private function isAdmin($user): bool
+    {
+        return in_array($user?->role, ['super_admin', 'admin'], true);
+    }
+
+    /** @return int[]|null null = unrestricted (admin) */
+    private function visibleBranchIds($user): ?array
+    {
+        if ($this->isAdmin($user)) {
+            return null;
+        }
+
+        $ids = [];
+        if ($user?->branch_id) {
+            $ids[] = (int) $user->branch_id;
+        }
+        foreach ($user->iraq_only_visible_branches ?? [] as $id) {
+            $ids[] = (int) $id;
+        }
+
+        return array_values(array_unique(array_filter($ids)));
+    }
+
+    private function scopeToUser($query, $user)
+    {
+        $ids = $this->visibleBranchIds($user);
+        if ($ids === null) {
+            return $query;
+        }
+        if (!$ids) {
+            return $query->whereRaw('1 = 0');
+        }
+
+        return $query->whereIn('branch_id', $ids);
+    }
+
+    private function assertBranchAllowed($user, int $branchId): void
+    {
+        $ids = $this->visibleBranchIds($user);
+        if ($ids === null) {
+            return;
+        }
+        if (!in_array($branchId, $ids, true)) {
+            abort(403, 'اجازه دسترسی به این شعبه را ندارید');
+        }
+    }
+
+    private function assertExpenseAccess($user, Expense $expense): void
+    {
+        $this->assertBranchAllowed($user, (int) $expense->branch_id);
+    }
+
     public function index(Request $request)
     {
         $query = Expense::with(['branch', 'user']);
+        $this->scopeToUser($query, $request->user());
 
         if ($request->filled('branch_id')) {
+            $this->assertBranchAllowed($request->user(), (int) $request->branch_id);
             $query->where('branch_id', $request->branch_id);
         }
         if ($request->filled('category')) {
@@ -44,30 +98,43 @@ class ExpenseController extends Controller
             'date'        => 'required|date',
         ]);
 
+        $this->assertBranchAllowed($request->user(), (int) $validated['branch_id']);
+
         $expense = Expense::create([
             ...$validated,
             'user_id' => $request->user()->id,
         ]);
 
-        return response()->json($expense, 201);
+        return response()->json($expense->load(['branch', 'user']), 201);
     }
 
     public function update(Request $request, Expense $expense)
     {
+        $this->assertExpenseAccess($request->user(), $expense);
+
         $validated = $request->validate([
+            'branch_id'   => 'sometimes|required|exists:branches,id',
             'amount'      => 'sometimes|required|numeric|min:0',
             'currency'    => 'sometimes|required|in:toman,dinar',
             'category'    => 'sometimes|required|string|max:100',
             'description' => 'nullable|string',
             'date'        => 'sometimes|required|date',
         ]);
+
+        if (isset($validated['branch_id'])) {
+            $this->assertBranchAllowed($request->user(), (int) $validated['branch_id']);
+        }
+
         $expense->update($validated);
-        return response()->json($expense);
+
+        return response()->json($expense->fresh()->load(['branch', 'user']));
     }
 
-    public function destroy(Expense $expense)
+    public function destroy(Request $request, Expense $expense)
     {
+        $this->assertExpenseAccess($request->user(), $expense);
         $expense->delete();
+
         return response()->json(['message' => 'هزینه با موفقیت حذف شد']);
     }
 }

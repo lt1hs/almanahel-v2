@@ -373,8 +373,8 @@
     }
   },
   "finance": {
-    "totalCashBalance": "إجمالي رصيد الصندوق",
-    "grossProfitThisMonth": "الربح الإجمالي للشهر",
+    "totalCashBalance": "حسب سعر البيع الحالي",
+    "grossProfitThisMonth": "المبيعات − تكلفة البضاعة − المصروف − الهدايا (الشهر الحالي)",
     "salesCount": "{{count}} مبيعة",
     "noTopItems": "لا توجد عناصر مبيعة مسجلة",
     "branchProfit": {

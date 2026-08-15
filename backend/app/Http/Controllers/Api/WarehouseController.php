@@ -132,6 +132,11 @@ class WarehouseController extends Controller
         });
     }
 
+    public function show(WarehouseLog $warehouseLog)
+    {
+        return response()->json($warehouseLog->load(['book', 'user', 'branch']));
+    }
+
     public function inventory(Request $request, $branchId)
     {
         $query = Inventory::query()
@@ -166,10 +171,62 @@ class WarehouseController extends Controller
         $query->orderByDesc('quantity');
 
         if ($request->boolean('lite') || $request->filled('search')) {
-            return response()->json($query->limit(25)->get());
+            $rows = $query->limit(25)->get();
+        } else {
+            $rows = $query->get();
         }
 
-        return response()->json($query->get());
+        $this->fillMissingPricesFromSiblings($rows);
+
+        return response()->json($rows);
+    }
+
+    /**
+     * When a POS row has no sell price (common after Iran→Iraq transfer + empty dinar field),
+     * copy the best available price from another branch of the same book for display/POS use.
+     */
+    private function fillMissingPricesFromSiblings($rows): void
+    {
+        $needBookIds = $rows
+            ->filter(fn ($inv) => !(float) ($inv->price_toman ?? 0) && !(float) ($inv->price_dinar ?? 0))
+            ->pluck('book_id')
+            ->unique()
+            ->values();
+
+        if ($needBookIds->isEmpty()) {
+            return;
+        }
+
+        $siblings = Inventory::query()
+            ->whereIn('book_id', $needBookIds)
+            ->where(function ($q) {
+                $q->where('price_toman', '>', 0)->orWhere('price_dinar', '>', 0);
+            })
+            ->get(['book_id', 'price_toman', 'price_dinar', 'cost_price_toman', 'cost_price_dinar'])
+            ->groupBy('book_id');
+
+        foreach ($rows as $inv) {
+            if ((float) ($inv->price_toman ?? 0) || (float) ($inv->price_dinar ?? 0)) {
+                continue;
+            }
+            $donor = $siblings->get($inv->book_id)?->first();
+            if (!$donor) {
+                continue;
+            }
+            // In-memory only for list display — keep currencies separate (never copy toman into dinar)
+            if ((float) ($donor->price_dinar ?? 0) > 0) {
+                $inv->setAttribute('price_dinar', $donor->price_dinar);
+            }
+            if ((float) ($donor->price_toman ?? 0) > 0) {
+                $inv->setAttribute('price_toman', $donor->price_toman);
+            }
+            if (!(float) ($inv->cost_price_toman ?? 0) && $donor->cost_price_toman) {
+                $inv->setAttribute('cost_price_toman', $donor->cost_price_toman);
+            }
+            if (!(float) ($inv->cost_price_dinar ?? 0) && $donor->cost_price_dinar) {
+                $inv->setAttribute('cost_price_dinar', $donor->cost_price_dinar);
+            }
+        }
     }
 
     public function stats(Request $request, $branchId)
@@ -249,6 +306,72 @@ class WarehouseController extends Controller
                 'log'       => $log->load('book'),
             ], 201);
         });
+    }
+
+    /**
+     * Create or update branch inventory pricing without requiring a stock intake.
+     * Used so Qom / Mashhad / Najaf sell prices can be stored even when qty is 0.
+     */
+    public function upsertPricing(Request $request)
+    {
+        $validated = $request->validate([
+            'branch_id'        => 'required|exists:branches,id',
+            'book_id'          => 'required|exists:books,id',
+            'type'             => 'nullable|in:consignment,owned',
+            'supplier_id'      => 'nullable|exists:suppliers,id',
+            'price_toman'      => 'nullable|numeric|min:0',
+            'price_dinar'      => 'nullable|numeric|min:0',
+            'cost_price_toman' => 'nullable|numeric|min:0',
+            'cost_price_dinar' => 'nullable|numeric|min:0',
+            'quantity'         => 'nullable|integer|min:0',
+        ]);
+
+        $type = $validated['type'] ?? 'owned';
+        $supplierId = array_key_exists('supplier_id', $validated)
+            ? $validated['supplier_id']
+            : null;
+
+        if ($type === 'consignment' && empty($supplierId)) {
+            return response()->json(['message' => 'تأمین‌کننده برای کتاب امانی الزامی است'], 422);
+        }
+
+        $inventory = Inventory::firstOrCreate(
+            [
+                'branch_id' => $validated['branch_id'],
+                'book_id'   => $validated['book_id'],
+            ],
+            [
+                'quantity' => 0,
+                'type'     => $type,
+            ]
+        );
+
+        $updates = [
+            'type' => $type,
+        ];
+
+        if (array_key_exists('supplier_id', $validated)) {
+            $updates['supplier_id'] = $supplierId;
+        }
+        if (array_key_exists('price_toman', $validated)) {
+            $updates['price_toman'] = $validated['price_toman'];
+        }
+        if (array_key_exists('price_dinar', $validated)) {
+            $updates['price_dinar'] = $validated['price_dinar'];
+        }
+        if (array_key_exists('cost_price_toman', $validated)) {
+            $updates['cost_price_toman'] = $validated['cost_price_toman'];
+        }
+        if (array_key_exists('cost_price_dinar', $validated)) {
+            $updates['cost_price_dinar'] = $validated['cost_price_dinar'];
+        }
+        if (array_key_exists('quantity', $validated)) {
+            $updates['quantity'] = $validated['quantity'];
+        }
+
+        $inventory->update($updates);
+
+        return response()->json($inventory->fresh()->load(['book', 'supplier', 'branch']));
     }
 
     public function updateInventory(Request $request, Inventory $inventory)

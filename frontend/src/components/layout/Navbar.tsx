@@ -49,6 +49,7 @@ const PAGE_TITLE_KEYS: Record<string, string> = {
     "/dashboard": "nav.dashboard",
     "/dashboard/inventory": "nav.inventory",
     "/dashboard/warehouse": "nav.warehouse",
+    "/dashboard/warehouse/log": "nav.warehouse",
     "/dashboard/distribution": "nav.distribution",
     "/dashboard/consignment": "nav.consignment",
     "/dashboard/gifts": "nav.gifts",
@@ -61,6 +62,7 @@ const PAGE_TITLE_KEYS: Record<string, string> = {
     "/dashboard/expenses": "nav.expenses",
     "/dashboard/admin": "nav.admin",
     "/dashboard/admin/currency": "admin.currencySettings",
+    "/dashboard/admin/categories": "admin.categorySettings",
     "/dashboard/admin/users": "admin.userManagement",
     "/dashboard/reports": "finance.title",
 };

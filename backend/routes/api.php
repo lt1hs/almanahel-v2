@@ -11,6 +11,7 @@ use App\Http\Controllers\Api\GiftController;
 use App\Http\Controllers\Api\TransferController;
 use App\Http\Controllers\Api\WarehouseController;
 use App\Http\Controllers\Api\ExpenseController;
+use App\Http\Controllers\Api\BookCategoryController;
 use App\Http\Controllers\Api\ReportController;
 use App\Http\Controllers\Api\InventoryController;
 use App\Http\Controllers\Api\UserController;
@@ -96,11 +97,13 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // ─── Warehouse ─────────────────────────────────────────────
     Route::get('/warehouse/logs',              [WarehouseController::class, 'index']);
+    Route::get('/warehouse/logs/{warehouseLog}', [WarehouseController::class, 'show']);
     Route::post('/warehouse/logs',             [WarehouseController::class, 'store']);
     Route::put('/warehouse/logs/{warehouseLog}', [WarehouseController::class, 'updateLog']);
     Route::get('/warehouse/{branchId}/inventory', [WarehouseController::class, 'inventory']);
     Route::get('/warehouse/{branchId}/stats',     [WarehouseController::class, 'stats']);
     Route::post('/inventory/purchase',           [WarehouseController::class, 'purchase']);
+    Route::post('/inventory/upsert-pricing',     [WarehouseController::class, 'upsertPricing']);
     Route::put('/inventory/{inventory}',         [WarehouseController::class, 'updateInventory']);
 
     // ─── Expenses ──────────────────────────────────────────────
@@ -119,6 +122,12 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/reports/distribution-from-qom', [ReportController::class, 'distributionFromQom']);
     Route::get('/settings',             [ReportController::class, 'settings']);
     Route::put('/settings',             [ReportController::class, 'updateSettings']);
+
+    // ─── Book categories ───────────────────────────────────────
+    Route::get('/book-categories',                    [BookCategoryController::class, 'index']);
+    Route::post('/book-categories',                   [BookCategoryController::class, 'store']);
+    Route::put('/book-categories/rename',             [BookCategoryController::class, 'rename']);
+    Route::delete('/book-categories/{category}',      [BookCategoryController::class, 'destroy'])->where('category', '.*');
 
     // ─── Users (admin) ─────────────────────────────────────────
     Route::get('/users',              [UserController::class, 'index']);

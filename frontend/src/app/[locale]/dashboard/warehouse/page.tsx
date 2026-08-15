@@ -8,13 +8,13 @@ import {
 import { Card, CardContent } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
-import { WarehouseLogModal, WarehouseLogFormData, WarehouseLogRecord } from "@/components/warehouse/WarehouseLogModal";
 import { useTranslation } from "@/hooks/useTranslation";
 import { useNotify } from "@/hooks/useNotify";
 import { cn } from "@/lib/utils";
 import { apiRequest } from "@/lib/api";
 import { useAuth } from "@/contexts/AuthContext";
 import { FilterSelect } from "@/components/ui/FilterSelect";
+import { useRouter } from "@/i18n/routing";
 
 const REASON_KEYS: Record<string, string> = {
     received_from_supplier: "warehouse.logTypes.received",
@@ -92,6 +92,7 @@ export default function WarehousePage() {
     const notifyRef = useRef(notify);
     notifyRef.current = notify;
     const { user } = useAuth();
+    const router = useRouter();
     const isAdmin = user?.role === "super_admin" || user?.role === "admin";
 
     const [allBranches, setAllBranches] = useState<BranchRow[]>([]);
@@ -116,11 +117,6 @@ export default function WarehousePage() {
     const [invPage, setInvPage] = useState(1);
     const [logSearch, setLogSearch] = useState("");
     const [logDirectionFilter, setLogDirectionFilter] = useState<"all" | "in" | "out">("all");
-
-    const [showLogForm, setShowLogForm] = useState(false);
-    const [logDirection, setLogDirection] = useState<"in" | "out">("in");
-    const [editingLog, setEditingLog] = useState<WarehouseLogRecord | null>(null);
-    const [isSubmitting, setIsSubmitting] = useState(false);
 
     const branchOptions = useMemo(() => dedupeBranches(allBranches), [allBranches]);
 
@@ -303,10 +299,10 @@ export default function WarehousePage() {
         );
     }, [logs, logSearch, t]);
 
-    const openLogModal = (direction: "in" | "out") => {
-        setEditingLog(null);
-        setLogDirection(direction);
-        setShowLogForm(true);
+    const openLogPage = (direction: "in" | "out") => {
+        const qs = new URLSearchParams({ direction });
+        if (activeBranch?.id) qs.set("branch", String(activeBranch.id));
+        router.push(`/dashboard/warehouse/log?${qs.toString()}`);
     };
 
     const openEditLog = (log: WarehouseLogItem) => {
@@ -314,75 +310,7 @@ export default function WarehousePage() {
             notify.error("warehouse.errors.notEditable");
             return;
         }
-        setEditingLog(log as WarehouseLogRecord);
-        setLogDirection(log.direction);
-        setShowLogForm(true);
-    };
-
-    const closeLogModal = () => {
-        setShowLogForm(false);
-        setEditingLog(null);
-    };
-
-    const handleSubmitLog = async (form: WarehouseLogFormData) => {
-        if (!activeBranch || !form.book_id || !form.handler_name) {
-            notify.error("toast.requiredFields");
-            return;
-        }
-        const qty = parseInt(form.quantity, 10);
-        if (!editingLog) {
-            const selectedOutItem = inventory.find((item) => String(item.book?.id) === form.book_id);
-            if (logDirection === "out" && selectedOutItem && qty > selectedOutItem.quantity) {
-                notify.error("warehouse.errors.insufficientStock");
-                return;
-            }
-        }
-
-        setIsSubmitting(true);
-        try {
-            const payload = {
-                quantity: qty,
-                handler_name: form.handler_name,
-                handler_phone: form.handler_phone || null,
-                reason: form.reason,
-                notes: form.notes || null,
-                log_date: form.log_date,
-            };
-
-            if (editingLog) {
-                await apiRequest(`/warehouse/logs/${editingLog.id}`, {
-                    method: "PUT",
-                    body: JSON.stringify(payload),
-                });
-                notify.success("messages.savedSuccessfully");
-            } else {
-                await apiRequest("/warehouse/logs", {
-                    method: "POST",
-                    body: JSON.stringify({
-                        branch_id: activeBranch.id,
-                        book_id: parseInt(form.book_id, 10),
-                        direction: logDirection,
-                        ...payload,
-                    }),
-                });
-                notify.success("toast.warehouseLogSuccess");
-            }
-
-            closeLogModal();
-            setIsRefreshing(true);
-            await fetchCoreData(activeBranch.id);
-            setLogsLoaded(false);
-            if (activeTab === "log") {
-                await fetchLogs(activeBranch.id, 1, false, logDirectionFilter);
-            }
-        } catch (error) {
-            console.error("Log submit failed:", error);
-            if ((error as Error).message) notify.rawError((error as Error).message);
-            else notify.error(editingLog ? "messages.errorOccurred" : "toast.warehouseLogError");
-        } finally {
-            setIsSubmitting(false);
-            setIsRefreshing(false);
-        }
+        router.push(`/dashboard/warehouse/log?id=${log.id}`);
     };
 
     const kpis = [
@@ -481,14 +409,14 @@ export default function WarehousePage() {
                         variant="outline"
                         size="sm"
                         className="h-9 px-3 rounded-xl text-[11px] border-emerald-200 bg-emerald-50/50 text-emerald-700"
-                        onClick={() => openLogModal("in")}
+                        onClick={() => openLogPage("in")}
                     >
                         <ArrowDown className="w-3.5 h-3.5 ms-1" /> {t("warehouse.logIn")}
                     </Button>
                     <Button
                         size="sm"
                         className="h-9 px-3 rounded-xl text-[11px] bg-rose-500 text-white hover:bg-rose-600"
-                        onClick={() => openLogModal("out")}
+                        onClick={() => openLogPage("out")}
                     >
                         <ArrowUp className="w-3.5 h-3.5 ms-1" /> {t("warehouse.logOut")}
                     </Button>
@@ -776,16 +704,6 @@ export default function WarehousePage() {
                     )}
                 </Card>
             )}
-
-            <WarehouseLogModal
-                isOpen={showLogForm}
-                onClose={closeLogModal}
-                direction={logDirection}
-                inventory={inventory}
-                isSubmitting={isSubmitting}
-                editLog={editingLog}
-                onSubmit={handleSubmitLog}
-            />
         </div>
     );
 }

@@ -18,10 +18,56 @@ use Illuminate\Support\Str;
 
 class ReturnController extends Controller
 {
+    private function isAdmin($user): bool
+    {
+        return in_array($user?->role, ['super_admin', 'admin'], true);
+    }
+
+    /** @return int[]|null */
+    private function visibleBranchIds($user): ?array
+    {
+        if ($this->isAdmin($user)) {
+            return null;
+        }
+        $ids = [];
+        if ($user?->branch_id) {
+            $ids[] = (int) $user->branch_id;
+        }
+        foreach ($user->iraq_only_visible_branches ?? [] as $id) {
+            $ids[] = (int) $id;
+        }
+        return array_values(array_unique(array_filter($ids)));
+    }
+
+    private function scopeToUserBranch($query, $user, string $column = 'branch_id')
+    {
+        $ids = $this->visibleBranchIds($user);
+        if ($ids === null) {
+            return $query;
+        }
+        if (!$ids) {
+            return $query->whereRaw('1 = 0');
+        }
+        return $query->whereIn($column, $ids);
+    }
+
+    private function assertBranchAllowed($user, int $branchId): void
+    {
+        $ids = $this->visibleBranchIds($user);
+        if ($ids === null) {
+            return;
+        }
+        if (!in_array($branchId, $ids, true)) {
+            abort(403, 'اجازه دسترسی به این شعبه را ندارید');
+        }
+    }
+
     public function customerReturns(Request $request)
     {
         $query = CustomerReturn::with(['invoice', 'branch', 'user', 'items.book']);
+        $this->scopeToUserBranch($query, $request->user());
         if ($request->has('branch_id')) {
+            $this->assertBranchAllowed($request->user(), (int) $request->branch_id);
             $query->where('branch_id', $request->branch_id);
         }
         return response()->json($query->latest()->paginate(20));
@@ -42,6 +88,7 @@ class ReturnController extends Controller
 
         return DB::transaction(function () use ($request, $validated) {
         $invoice = Invoice::findOrFail($validated['invoice_id']);
+        $this->assertBranchAllowed($request->user(), (int) $invoice->branch_id);
         $refundAmount = collect($validated['items'])->sum(fn($i) => $i['unit_price'] * $i['quantity']);
 
         $return = CustomerReturn::create([
@@ -90,7 +137,9 @@ class ReturnController extends Controller
     public function consignmentReturns(Request $request)
     {
         $query = ConsignmentReturn::with(['supplier', 'branch', 'user', 'items.book']);
+        $this->scopeToUserBranch($query, $request->user());
         if ($request->has('branch_id')) {
+            $this->assertBranchAllowed($request->user(), (int) $request->branch_id);
             $query->where('branch_id', $request->branch_id);
         }
         if ($request->has('supplier_id')) {
@@ -110,6 +159,8 @@ class ReturnController extends Controller
             'items.*.quantity'   => 'required|integer|min:1',
             'items.*.cost_price' => 'required|numeric|min:0',
         ]);
+
+        $this->assertBranchAllowed($request->user(), (int) $validated['branch_id']);
 
         return DB::transaction(function () use ($request, $validated) {
         foreach ($validated['items'] as $item) {

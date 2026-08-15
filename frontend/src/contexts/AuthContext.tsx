@@ -9,6 +9,11 @@ import React, {
   useState,
 } from "react";
 import { useRouter } from "@/i18n/routing";
+import {
+  isIraqAccount,
+  persistLocalePreference,
+  type AppLocale,
+} from "@/lib/userLocale";
 
 export type UserRole =
   | "super_admin"
@@ -22,7 +27,13 @@ interface User {
   name: string;
   role: UserRole;
   branch_id?: number | null;
-  branch?: { id: number; name: string; city: string; type: string } | null;
+  branch?: {
+    id: number;
+    name: string;
+    city: string;
+    type: string;
+    country?: string;
+  } | null;
   iraq_only_visible_branches?: number[];
 }
 
@@ -37,12 +48,12 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000/api";
 
-const INVALID_CREDENTIALS: Record<"ar" | "fa", string> = {
+const INVALID_CREDENTIALS: Record<AppLocale, string> = {
   fa: "ایمیل یا رمز عبور اشتباه است",
   ar: "البريد الإلكتروني أو كلمة المرور غير صحيحة",
 };
 
-function getLocaleFromPath(): "ar" | "fa" {
+function getLocaleFromPath(): AppLocale {
   if (typeof window === "undefined") return "fa";
   return window.location.pathname.startsWith("/ar") ? "ar" : "fa";
 }
@@ -107,7 +118,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         const data = await res.json();
         localStorage.setItem("al-manahel-token", data.token);
         setUser(data.user);
-        router.push("/dashboard");
+
+        const locale: AppLocale = isIraqAccount(data.user)
+          ? "ar"
+          : getLocaleFromPath();
+        persistLocalePreference(locale);
+        router.push("/dashboard", { locale });
       } finally {
         setIsLoading(false);
       }
@@ -124,8 +140,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }).catch(() => {});
     }
     localStorage.removeItem("al-manahel-token");
+    const locale = getLocaleFromPath();
     setUser(null);
-    router.push("/login");
+    router.push("/login", { locale });
   }, [router]);
 
   const value = useMemo(

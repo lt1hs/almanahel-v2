@@ -16,17 +16,13 @@ import { useAuth } from "@/contexts/AuthContext";
 import { useSearchParams } from "next/navigation";
 import { useRouter } from "@/i18n/routing";
 import { apiRequest } from "@/lib/api";
-import { bookPayloadFromForm } from "@/lib/bookIntake";
+import { bookPayloadFromForm, syncBookBranchInventories } from "@/lib/bookIntake";
 import { cn } from "@/lib/utils";
 import {
-    BRANCH_STOCK_KEYS,
     branchStockFromInventories,
     defaultBranchStock,
-    parsePriceDigits,
-    resolveBranchId,
     resolveBookCoverUrl,
-    sellingDinarForBranch,
-    sellingTomanForBranch,
+    resolveBranchId,
     totalBranchStock,
 } from "@/lib/bookFormUtils";
 
@@ -180,59 +176,16 @@ function EditBookContent() {
                 }),
             });
 
-            const stock = { ...defaultBranchStock(), ...(book.branchStock || {}) };
-
-            for (const key of BRANCH_STOCK_KEYS) {
-                const branchId = resolveBranchId(branches, key);
-                if (!branchId) continue;
-
-                const qty = parseInt(parsePriceDigits(stock[key]), 10) || 0;
-                const existing = inventories.find((inv) => Number(inv.branch_id) === branchId);
-                const isIraq = key === "najaf";
-                const selling = isIraq ? sellingDinarForBranch(book) : sellingTomanForBranch(key, book);
-                const costTomanRaw = parseFloat(parsePriceDigits(book.costPriceToman));
-                const costDinarRaw = parseFloat(parsePriceDigits(book.costPriceDinar));
-                const cost_price_toman = Number.isFinite(costTomanRaw) && costTomanRaw > 0
-                    ? costTomanRaw
-                    : (isIraq ? null : (selling > 0 ? selling : null));
-                const cost_price_dinar = Number.isFinite(costDinarRaw) && costDinarRaw > 0
-                    ? costDinarRaw
-                    : (isIraq && selling > 0 ? selling : null);
-                const price_toman = isIraq ? null : (selling > 0 ? selling : null);
-                const price_dinar = isIraq ? (selling > 0 ? selling : null) : null;
-
-                if (existing?.id) {
-                    await apiRequest(`/inventory/${existing.id}`, {
-                        method: "PUT",
-                        body: JSON.stringify({
-                            quantity: qty,
-                            type: book.type,
-                            supplier_id: supplier?.id ?? null,
-                            price_toman,
-                            price_dinar,
-                            cost_price_toman,
-                            cost_price_dinar,
-                        }),
-                    });
-                } else if (qty > 0) {
-                    await apiRequest("/inventory/purchase", {
-                        method: "POST",
-                        body: JSON.stringify({
-                            branch_id: branchId,
-                            book_id: Number(bookId),
-                            quantity: qty,
-                            currency: isIraq ? "dinar" : "toman",
-                            cost_price: isIraq ? (cost_price_dinar ?? selling) : (cost_price_toman ?? selling),
-                            selling_price: selling,
-                            price_toman,
-                            price_dinar,
-                            supplier_id: supplier?.id ?? null,
-                            notes: book.notes || null,
-                            log_date: book.settlementDate || null,
-                        }),
-                    });
+            await syncBookBranchInventories(
+                book,
+                branches,
+                supplier?.id ?? null,
+                Number(bookId),
+                {
+                    existingInventories: inventories,
+                    syncQuantities: true,
                 }
-            }
+            );
 
             notifyToast.success("messages.savedSuccessfully");
             router.push("/dashboard/inventory");

@@ -7,12 +7,16 @@ import { Link } from "@/i18n/routing";
 import { useTranslation } from "@/hooks/useTranslation";
 import { useNotify } from "@/hooks/useNotify";
 import { apiRequest } from "@/lib/api";
+import { useAuth } from "@/contexts/AuthContext";
 import { SettlementWizard } from "@/components/finance/SettlementWizard";
 import { cn } from "@/lib/utils";
 
 export default function ConsignmentSettlePage() {
-  const { t, isArabic } = useTranslation();
+  const { t, isArabic, preferredCurrency } = useTranslation();
   const notify = useNotify();
+  const { user } = useAuth();
+  const isAdmin = user?.role === "admin" || user?.role === "super_admin";
+  const userBranchId = user?.branch_id ?? user?.branch?.id ?? null;
 
   const [suppliers, setSuppliers] = useState<{ id: number; name: string }[]>([]);
   const [settlementData, setSettlementData] = useState<any[]>([]);
@@ -35,8 +39,9 @@ export default function ConsignmentSettlePage() {
     async (supplierId: number, fromDate: string, toDate: string) => {
       setIsLoading(true);
       try {
+        const branchQs = !isAdmin && userBranchId ? `&branch_id=${userBranchId}` : "";
         const data = await apiRequest(
-          `/consignments/settlement-preview?supplier_id=${supplierId}&period_start=${fromDate}&period_end=${toDate}&currency=${isArabic ? "dinar" : "toman"}`
+          `/consignments/settlement-preview?supplier_id=${supplierId}&period_start=${fromDate}&period_end=${toDate}&currency=${preferredCurrency}${branchQs}`
         );
         setSettlementData(
           (data.items || []).map((item: any) => ({
@@ -55,7 +60,7 @@ export default function ConsignmentSettlePage() {
         setIsLoading(false);
       }
     },
-    [isArabic, notify]
+    [preferredCurrency, notify, isAdmin, userBranchId]
   );
 
   const handleConfirm = async (
@@ -74,8 +79,9 @@ export default function ConsignmentSettlePage() {
           period_start: fromDate,
           period_end: toDate,
           amount,
-          currency: isArabic ? "dinar" : "toman",
+          currency: preferredCurrency,
           payment_method: "bank_transfer",
+          ...(!isAdmin && userBranchId ? { branch_id: Number(userBranchId) } : {}),
         }),
       });
       setSettlementData([]);

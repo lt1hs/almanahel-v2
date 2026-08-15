@@ -14,6 +14,7 @@ interface SettlementItem {
     price: number;
     total: number;
     commission: number;
+    publisherShare?: number;
 }
 
 interface SettlementWizardProps {
@@ -57,7 +58,7 @@ export function SettlementWizard({
     }, [suppliers, initialSupplierId]);
 
     const totalPayable = settlementData.reduce(
-        (acc, item) => acc + (item.total - item.commission), 0
+        (acc, item) => acc + (item.publisherShare ?? item.total - item.commission), 0
     );
 
     const tableHeaders = [
@@ -204,7 +205,7 @@ export function SettlementWizard({
                                             {formatNumber(item.commission)}
                                         </td>
                                         <td className="px-5 py-3.5 text-[14px] font-black font-vazirmatn tabular-nums text-primary">
-                                            {formatNumber(item.total - item.commission)}
+                                            {formatNumber(item.publisherShare ?? item.total - item.commission)}
                                         </td>
                                     </tr>
                                 ))}
@@ -237,7 +238,7 @@ export function SettlementWizard({
                             <div className="grid grid-cols-3 gap-2 pt-2 border-t border-ink/5">
                                 <MobileStat label={t("finance.settlement.total")} value={formatNumber(item.total)} />
                                 <MobileStat label={t("finance.settlement.commission")} value={formatNumber(item.commission)} danger />
-                                <MobileStat label={t("finance.settlement.publisherShare")} value={formatNumber(item.total - item.commission)} primary />
+                                <MobileStat label={t("finance.settlement.publisherShare")} value={formatNumber(item.publisherShare ?? item.total - item.commission)} primary />
                             </div>
                         </CardContent>
                     </Card>

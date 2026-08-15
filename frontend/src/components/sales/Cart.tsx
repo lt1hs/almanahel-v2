@@ -17,6 +17,7 @@ interface CartItem {
 export interface PaymentDetails {
     customer_name: string;
     customer_phone: string;
+    notes: string;
     check_number: string;
     bank_name: string;
     payer_name: string;
@@ -38,6 +39,7 @@ interface CartProps {
 const EMPTY_PAYMENT: PaymentDetails = {
     customer_name: "",
     customer_phone: "",
+    notes: "",
     check_number: "",
     bank_name: "",
     payer_name: "",
@@ -142,6 +144,7 @@ export function Cart({
 
             if (paymentDetails.customer_name) payload.customer_name = paymentDetails.customer_name;
             if (paymentDetails.customer_phone) payload.customer_phone = paymentDetails.customer_phone;
+            if (paymentDetails.notes.trim()) payload.notes = paymentDetails.notes.trim();
             if (paymentDetails.due_date) payload.due_date = paymentDetails.due_date;
 
             if (paymentMethod === "check") {
@@ -158,6 +161,7 @@ export function Cart({
     };
 
     const needsPaymentForm = paymentMethod === "check" || paymentMethod === "credit";
+    const showBuyerForm = items.length > 0;
 
     return (
         <div className="flex flex-col h-full min-h-0 overflow-hidden">
@@ -231,6 +235,47 @@ export function Cart({
                     </motion.div>
                 )}
 
+                {showBuyerForm && (
+                    <div className="space-y-2 p-2.5 rounded-xl bg-parchment/40 border border-ink/[0.06]">
+                        <p className="text-[9px] font-black text-ink/45 uppercase tracking-widest px-0.5">
+                            {t("sales.buyerInfo")}
+                        </p>
+                        <div className="grid grid-cols-2 gap-1.5">
+                            <input
+                                type="text"
+                                placeholder={
+                                    paymentMethod === "credit"
+                                        ? `${t("sales.customerName")} *`
+                                        : t("sales.customerName")
+                                }
+                                value={paymentDetails.customer_name}
+                                onChange={(e) => updatePayment("customer_name", e.target.value)}
+                                className={cn(fieldClass, "col-span-2")}
+                                autoComplete="name"
+                            />
+                            <input
+                                type="tel"
+                                inputMode="tel"
+                                placeholder={t("sales.customerPhone")}
+                                value={paymentDetails.customer_phone}
+                                onChange={(e) => updatePayment("customer_phone", e.target.value)}
+                                className={cn(fieldClass, "col-span-2")}
+                                autoComplete="tel"
+                            />
+                            <textarea
+                                placeholder={t("sales.customerNotesPlaceholder")}
+                                value={paymentDetails.notes}
+                                onChange={(e) => updatePayment("notes", e.target.value)}
+                                rows={2}
+                                className={cn(
+                                    fieldClass,
+                                    "col-span-2 h-auto min-h-[52px] py-2 resize-none"
+                                )}
+                            />
+                        </div>
+                    </div>
+                )}
+
                 {needsPaymentForm && (
                     <div className="space-y-2 p-2.5 rounded-xl bg-indigo-50/50 border border-indigo-100/60">
                         <p className="text-[9px] font-black text-indigo-600 uppercase tracking-widest px-0.5">
@@ -266,46 +311,18 @@ export function Cart({
                                     title={`${t("sales.dueDate")} *`}
                                     value={paymentDetails.due_date}
                                     onChange={(e) => updatePayment("due_date", e.target.value)}
-                                    className={fieldClass}
-                                />
-                                <input
-                                    type="tel"
-                                    placeholder={t("sales.customerPhone")}
-                                    value={paymentDetails.customer_phone}
-                                    onChange={(e) => updatePayment("customer_phone", e.target.value)}
-                                    className={fieldClass}
-                                />
-                                <input
-                                    type="text"
-                                    placeholder={t("sales.customerName")}
-                                    value={paymentDetails.customer_name}
-                                    onChange={(e) => updatePayment("customer_name", e.target.value)}
                                     className={cn(fieldClass, "col-span-2")}
                                 />
                             </div>
                         ) : (
                             <div className="grid grid-cols-2 gap-1.5">
                                 <input
-                                    type="text"
-                                    placeholder={`${t("sales.customerName")} *`}
-                                    value={paymentDetails.customer_name}
-                                    onChange={(e) => updatePayment("customer_name", e.target.value)}
-                                    className={cn(fieldClass, "col-span-2")}
-                                />
-                                <input
-                                    type="tel"
-                                    placeholder={t("sales.customerPhone")}
-                                    value={paymentDetails.customer_phone}
-                                    onChange={(e) => updatePayment("customer_phone", e.target.value)}
-                                    className={fieldClass}
-                                />
-                                <input
                                     type="date"
                                     aria-label={`${t("sales.dueDate")} *`}
                                     title={`${t("sales.dueDate")} *`}
                                     value={paymentDetails.due_date}
                                     onChange={(e) => updatePayment("due_date", e.target.value)}
-                                    className={fieldClass}
+                                    className={cn(fieldClass, "col-span-2")}
                                 />
                             </div>
                         )}

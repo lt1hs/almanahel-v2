@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/Input";
 import { useAuth } from "@/contexts/AuthContext";
 import { useTranslation } from "@/hooks/useTranslation";
 import { useNotify } from "@/hooks/useNotify";
+import { isIraqAccount } from "@/lib/userLocale";
 
 export default function LoginPage() {
     const { login, user, isLoading: isAuthLoading } = useAuth();
@@ -22,7 +23,9 @@ export default function LoginPage() {
 
     useEffect(() => {
         if (!isAuthLoading && user) {
-            router.push("/dashboard");
+            router.push("/dashboard", {
+                locale: isIraqAccount(user) ? "ar" : undefined,
+            });
         }
     }, [user, isAuthLoading, router]);
 

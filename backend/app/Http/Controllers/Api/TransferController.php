@@ -228,10 +228,11 @@ class TransferController extends Controller
                     $destInv->update([
                         'type'             => $srcInv->type,
                         'supplier_id'      => $srcInv->supplier_id,
-                        'price_toman'      => $srcInv->price_toman,
-                        'price_dinar'      => $srcInv->price_dinar,
-                        'cost_price_toman' => $srcInv->cost_price_toman,
-                        'cost_price_dinar' => $srcInv->cost_price_dinar,
+                        // Never overwrite a set dest price with null from source
+                        'price_toman'      => $srcInv->price_toman ?? $destInv->price_toman,
+                        'price_dinar'      => $srcInv->price_dinar ?? $destInv->price_dinar,
+                        'cost_price_toman' => $srcInv->cost_price_toman ?? $destInv->cost_price_toman,
+                        'cost_price_dinar' => $srcInv->cost_price_dinar ?? $destInv->cost_price_dinar,
                     ]);
                 }
 

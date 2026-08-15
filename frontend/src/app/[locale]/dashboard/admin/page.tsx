@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import {
     Building2, Plus, UserCog, Globe, AlertOctagon, RefreshCw,
-    Pencil, X, Warehouse, Store, Users,
+    Pencil, X, Warehouse, Store, Users, FolderOpen,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
@@ -36,6 +36,7 @@ type BranchForm = {
 const QUICK_LINKS = [
     { labelKey: "admin.userManagement", icon: UserCog, color: "text-primary", href: "/dashboard/admin/users" },
     { labelKey: "admin.currencySettings", icon: Globe, color: "text-accent", href: "/dashboard/admin/currency" },
+    { labelKey: "admin.categorySettings", icon: FolderOpen, color: "text-emerald-600", href: "/dashboard/admin/categories" },
 ] as const;
 
 function emptyForm(defaultCountry: string): BranchForm {
