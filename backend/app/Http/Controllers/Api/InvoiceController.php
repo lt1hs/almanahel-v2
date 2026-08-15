@@ -7,6 +7,7 @@ use App\Models\Invoice;
 use App\Models\InvoiceItem;
 use App\Models\Inventory;
 use App\Models\Check;
+use App\Support\ActivityLogger;
 use App\Support\ConsignmentSync;
 use App\Support\StockMovementLogger;
 use Illuminate\Http\Request;
@@ -157,6 +158,21 @@ class InvoiceController extends Controller
                 ]);
             }
 
+            ActivityLogger::record(
+                'sales',
+                'sold',
+                "فروش فاکتور {$invoice->invoice_number} — {$netTotal} {$validated['currency']}",
+                $invoice,
+                [
+                    'invoice_number' => $invoice->invoice_number,
+                    'payment_method' => $validated['payment_method'],
+                    'total' => $netTotal,
+                    'currency' => $validated['currency'],
+                    'items_count' => count($validated['items']),
+                ],
+                (int) $validated['branch_id'],
+            );
+
             return response()->json($invoice->load(['items.book', 'branch', 'user']), 201);
         });
     }
@@ -244,6 +260,19 @@ class InvoiceController extends Controller
             $check->invoice->update(['payment_status' => 'pending']);
         }
 
+        ActivityLogger::record(
+            'sales',
+            'status_changed',
+            "وضعیت چک {$check->check_number} → {$validated['status']}",
+            $check,
+            [
+                'check_number' => $check->check_number,
+                'status' => $validated['status'],
+                'invoice_id' => $check->invoice_id,
+            ],
+            (int) $check->branch_id,
+        );
+
         return response()->json($check->load(['invoice', 'branch']));
     }
 
@@ -313,6 +342,18 @@ class InvoiceController extends Controller
         ]);
 
         $invoice->update(['payment_status' => $validated['payment_status']]);
+
+        ActivityLogger::record(
+            'sales',
+            'status_changed',
+            "وضعیت نسیه {$invoice->invoice_number} → {$validated['payment_status']}",
+            $invoice,
+            [
+                'invoice_number' => $invoice->invoice_number,
+                'payment_status' => $validated['payment_status'],
+            ],
+            (int) $invoice->branch_id,
+        );
 
         return response()->json($invoice->load(['branch', 'user', 'items.book']));
     }

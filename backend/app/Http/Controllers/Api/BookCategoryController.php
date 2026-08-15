@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\Book;
+use App\Support\ActivityLogger;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -135,6 +136,14 @@ class BookCategoryController extends Controller
         $list[] = $name;
         $categories = $this->persist($list);
 
+        ActivityLogger::record(
+            'categories',
+            'created',
+            "ایجاد دسته‌بندی «{$name}»",
+            null,
+            ['name' => $name],
+        );
+
         return response()->json([
             'categories' => array_map(
                 fn ($n) => ['name' => $n, 'books_count' => $this->usageCounts([$n])[$n] ?? 0],
@@ -172,6 +181,14 @@ class BookCategoryController extends Controller
 
         Book::where('category', $from)->update(['category' => $to]);
 
+        ActivityLogger::record(
+            'categories',
+            'updated',
+            "تغییر نام دسته «{$from}» به «{$to}»",
+            null,
+            ['from' => $from, 'to' => $to],
+        );
+
         return response()->json([
             'categories' => array_map(
                 fn ($n) => ['name' => $n, 'books_count' => $this->usageCounts([$n])[$n] ?? 0],
@@ -208,6 +225,14 @@ class BookCategoryController extends Controller
 
         $list = array_values(array_filter($list, fn ($n) => $n !== $name));
         $categories = $this->persist($list);
+
+        ActivityLogger::record(
+            'categories',
+            'deleted',
+            "حذف دسته‌بندی «{$name}»",
+            null,
+            ['name' => $name, 'cleared_books' => $clearBooks ? $inUse : 0],
+        );
 
         return response()->json([
             'categories' => array_map(

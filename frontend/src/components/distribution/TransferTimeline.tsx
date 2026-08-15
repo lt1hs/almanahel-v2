@@ -49,9 +49,15 @@ function isAdmin(user?: TimelineUser | null) {
     return user?.role === "admin" || user?.role === "super_admin";
 }
 
-function canShip(user: TimelineUser | null | undefined, transfer: any) {
+function canShip(user: TimelineUser | null | undefined, transfer: any, branches: any[] = []) {
     if (!user) return false;
-    if (isAdmin(user) || user.role === "warehouse_staff") return true;
+    if (isAdmin(user)) return true;
+
+    const from = branches.find((b) => Number(b.id) === Number(transfer.from_branch_id));
+    if (from?.type === "warehouse") {
+        return user.role === "warehouse_staff";
+    }
+    if (user.role === "warehouse_staff") return true;
     return Number(user.branch_id) === Number(transfer.from_branch_id);
 }
 
@@ -62,8 +68,17 @@ function senderId(transfer: any): number | null {
     return Number.isFinite(n) ? n : null;
 }
 
-function canReceive(user: TimelineUser | null | undefined, transfer: any) {
-    if (!user?.branch_id) return false;
+function canReceive(user: TimelineUser | null | undefined, transfer: any, branches: any[] = []) {
+    if (!user) return false;
+    if (isAdmin(user)) return true;
+
+    const to = branches.find((b) => Number(b.id) === Number(transfer.to_branch_id))
+        || transfer.to_branch;
+    if (to?.type === "warehouse" && user.role === "warehouse_staff") {
+        return true;
+    }
+
+    if (!user.branch_id) return false;
     const fromUser = senderId(transfer);
     if (fromUser != null && Number(user.id) === fromUser) return false;
     return Number(user.branch_id) === Number(transfer.to_branch_id);
@@ -201,9 +216,9 @@ export function TransferTimeline({
                             const items = Array.isArray(transfer.items) ? transfer.items : [];
                             const steps = Array.isArray(transfer.status_log) ? transfer.status_log : [];
                             const busy = updatingId === transfer.id;
-                            const showShip = transfer.status === "pending" && canShip(user, transfer);
-                            const showReceive = transfer.status === "shipped" && canReceive(user, transfer);
-                            const showCancel = transfer.status === "pending" && canShip(user, transfer);
+                            const showShip = transfer.status === "pending" && canShip(user, transfer, branches);
+                            const showReceive = transfer.status === "shipped" && canReceive(user, transfer, branches);
+                            const showCancel = transfer.status === "pending" && canShip(user, transfer, branches);
                             const destName = transfer.to_branch?.name || branchName(transfer.to_branch_id);
 
                             return (

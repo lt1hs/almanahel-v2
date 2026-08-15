@@ -4,9 +4,12 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\Book;
+use App\Models\Branch;
 use App\Models\Transfer;
 use App\Models\Inventory;
 use App\Models\WarehouseLog;
+use App\Support\ActivityLogger;
+use App\Support\IntakePolicy;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
@@ -76,6 +79,11 @@ class TransferController extends Controller
         ]);
 
         return DB::transaction(function () use ($request, $validated) {
+            $user = $request->user();
+            if ($denied = $this->assertTransferRouteAllowed($user, (int) $validated['from_branch_id'], (int) $validated['to_branch_id'])) {
+                return $denied;
+            }
+
             foreach ($validated['items'] as $item) {
                 $inv = Inventory::where('branch_id', $validated['from_branch_id'])
                     ->where('book_id', $item['book_id'])
@@ -90,7 +98,6 @@ class TransferController extends Controller
                 }
             }
 
-            $user = $request->user();
             $items = array_values($validated['items']);
             $items[] = ['_status_log' => [$this->statusEvent('pending', $user)]];
             $transfer = Transfer::create([
@@ -129,6 +136,20 @@ class TransferController extends Controller
             $transfer->load(['fromBranch', 'toBranch', 'user']);
             $transfer->setAttribute('status_log', $transfer->statusLog());
             $transfer->setAttribute('items', $transfer->lineItems());
+
+            ActivityLogger::record(
+                'transfers',
+                'created',
+                "ایجاد انتقال #{$transfer->id} از {$transfer->fromBranch?->name} به {$transfer->toBranch?->name}",
+                $transfer,
+                [
+                    'from_branch_id' => $transfer->from_branch_id,
+                    'to_branch_id' => $transfer->to_branch_id,
+                    'items_count' => count($validated['items']),
+                    'status' => $transfer->status,
+                ],
+                (int) $transfer->from_branch_id,
+            );
 
             return response()->json($transfer, 201);
         });
@@ -288,6 +309,26 @@ class TransferController extends Controller
         $transfer->setAttribute('status_log', $transfer->statusLog());
         $transfer->setAttribute('items', $transfer->lineItems());
 
+        $action = match ($nextStatus) {
+            'shipped' => 'shipped',
+            'received' => 'received',
+            default => 'status_changed',
+        };
+
+        ActivityLogger::record(
+            'transfers',
+            $action,
+            "وضعیت انتقال #{$transfer->id}: {$previousStatus} → {$nextStatus}",
+            $transfer,
+            [
+                'from_status' => $previousStatus,
+                'to_status' => $nextStatus,
+                'from_branch_id' => $transfer->from_branch_id,
+                'to_branch_id' => $transfer->to_branch_id,
+            ],
+            (int) $transfer->from_branch_id,
+        );
+
         return response()->json($transfer);
         });
     }
@@ -367,6 +408,12 @@ class TransferController extends Controller
         if ($this->isAdmin($user)) {
             return true;
         }
+
+        $from = $transfer->fromBranch ?? Branch::find($transfer->from_branch_id);
+        if ($from?->type === 'warehouse') {
+            return $user->role === 'warehouse_staff';
+        }
+
         if ($user->role === 'warehouse_staff') {
             return true;
         }
@@ -376,6 +423,15 @@ class TransferController extends Controller
 
     private function canReceive($user, Transfer $transfer): bool
     {
+        if ($this->isAdmin($user)) {
+            return true;
+        }
+
+        $to = $transfer->toBranch ?? Branch::find($transfer->to_branch_id);
+        if ($to?->type === 'warehouse' && $user->role === 'warehouse_staff') {
+            return true;
+        }
+
         if (!$user?->branch_id) {
             return false;
         }
@@ -385,6 +441,69 @@ class TransferController extends Controller
         }
 
         return (int) $user->branch_id === (int) $transfer->to_branch_id;
+    }
+
+    /**
+     * POS branch managers may only ship from their own store to Qom or central warehouse.
+     * Warehouse stock is controlled by admin / warehouse staff only.
+     */
+    private function assertTransferRouteAllowed($user, int $fromId, int $toId): ?\Illuminate\Http\JsonResponse
+    {
+        if ($this->isAdmin($user)) {
+            return null;
+        }
+
+        $from = Branch::find($fromId);
+        $to = Branch::find($toId);
+        if (!$from || !$to) {
+            return response()->json(['message' => 'شعبه یافت نشد'], 404);
+        }
+
+        if ($from->type === 'warehouse') {
+            if ($user->role !== 'warehouse_staff') {
+                return response()->json([
+                    'message' => 'فقط مدیر یا انباردار می‌تواند از انبار مرکزی ارسال کند',
+                ], 403);
+            }
+
+            return null;
+        }
+
+        if ($user->role === 'warehouse_staff') {
+            return null;
+        }
+
+        // Branch POS / managers: only from own branch
+        if (!(int) $user->branch_id || (int) $user->branch_id !== $fromId) {
+            return response()->json([
+                'message' => 'فقط می‌توانید از شعبه خودتان ارسال کنید',
+            ], 403);
+        }
+
+        $allowedDest = $this->posAllowedDestinationIds();
+        if (!in_array($toId, $allowedDest, true)) {
+            return response()->json([
+                'message' => 'شعبه‌ها فقط می‌توانند به شعبه قم یا انبار مرکزی ارسال کنند',
+            ], 403);
+        }
+
+        return null;
+    }
+
+    /** @return int[] */
+    private function posAllowedDestinationIds(): array
+    {
+        $ids = [];
+        $qom = IntakePolicy::qomBranch();
+        if ($qom) {
+            $ids[] = (int) $qom->id;
+        }
+        // All warehouses (central hub)
+        foreach (Branch::where('type', 'warehouse')->pluck('id') as $id) {
+            $ids[] = (int) $id;
+        }
+
+        return array_values(array_unique(array_filter($ids)));
     }
 
     private function statusEvent(string $status, $user): array

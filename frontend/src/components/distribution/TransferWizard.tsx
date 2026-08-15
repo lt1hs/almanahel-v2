@@ -22,15 +22,29 @@ interface Branch {
 interface TransferWizardProps {
     branches: Branch[];
     userName?: string;
+    userRole?: string | null;
+    userBranchId?: number | null;
     onSuccess: () => void;
     prefillFrom?: string;
     prefillTo?: string;
     recentTransfers?: any[];
 }
 
+function isHqRole(role?: string | null) {
+    return role === "admin" || role === "super_admin";
+}
+
+function isQomStore(branch: Branch) {
+    const city = (branch.city || "").trim();
+    const name = (branch.name || "").trim();
+    return branch.type === "store" && (city === "قم" || name.includes("قم"));
+}
+
 export function TransferWizard({
     branches,
     userName,
+    userRole,
+    userBranchId,
     onSuccess,
     prefillFrom,
     prefillTo,
@@ -60,25 +74,47 @@ export function TransferWizard({
         t("distribution.wizard.stepConfirm"),
     ];
 
+    const canControlWarehouse = isHqRole(userRole) || userRole === "warehouse_staff";
+    const isPosUser = !canControlWarehouse;
+
     const storeBranches = useMemo(
         () => branches.filter((b) => b.type === "store" || b.type === "warehouse"),
         [branches]
     );
 
-    /** مبدأ: only branches that currently hold this book */
+    /** مبدأ: POS = own store only; admin/warehouse = all with stock (warehouse ok) */
     const fromBranches = useMemo(() => {
-        if (!selectedBook) return storeBranches;
+        let list = storeBranches;
+        if (isPosUser && userBranchId) {
+            list = list.filter((b) => Number(b.id) === Number(userBranchId) && b.type !== "warehouse");
+        } else if (!canControlWarehouse) {
+            list = list.filter((b) => b.type !== "warehouse");
+        }
+        if (!selectedBook) return list;
         const ids = new Set(Object.keys(stockByBranch));
-        return storeBranches.filter((b) => ids.has(String(b.id)));
-    }, [storeBranches, selectedBook, stockByBranch]);
+        return list.filter((b) => ids.has(String(b.id)));
+    }, [storeBranches, selectedBook, stockByBranch, isPosUser, userBranchId, canControlWarehouse]);
 
-    /** مقصد: all branches */
-    const toBranches = storeBranches;
+    /** مقصد: POS = Qom store + warehouse only; admin = all */
+    const toBranches = useMemo(() => {
+        if (!isPosUser) return storeBranches;
+        return storeBranches.filter((b) => b.type === "warehouse" || isQomStore(b));
+    }, [storeBranches, isPosUser]);
 
     useEffect(() => {
-        if (prefillFrom) setFromBranch(prefillFrom);
-        if (prefillTo) setToBranch(prefillTo);
-    }, [prefillFrom, prefillTo]);
+        if (prefillFrom) {
+            const allowed = !isPosUser || String(prefillFrom) === String(userBranchId || "");
+            const fromMeta = storeBranches.find((b) => String(b.id) === String(prefillFrom));
+            if (allowed && !(isPosUser && fromMeta?.type === "warehouse")) {
+                setFromBranch(prefillFrom);
+            }
+        }
+        if (prefillTo) {
+            const dest = storeBranches.find((b) => String(b.id) === String(prefillTo));
+            const allowedDest = !isPosUser || dest?.type === "warehouse" || (dest ? isQomStore(dest) : false);
+            if (allowedDest) setToBranch(prefillTo);
+        }
+    }, [prefillFrom, prefillTo, isPosUser, userBranchId, storeBranches]);
 
     const recentBooks = useMemo(() => {
         const seen = new Set<string>();
@@ -182,6 +218,15 @@ export function TransferWizard({
 
         return () => { cancelled = true; };
     }, [selectedBook?.id]);
+
+    // POS: lock source to own branch when it has stock
+    useEffect(() => {
+        if (!isPosUser || !userBranchId) return;
+        const own = String(userBranchId);
+        if (stockByBranch[own] != null) {
+            setFromBranch(own);
+        }
+    }, [isPosUser, userBranchId, stockByBranch]);
 
     // Keep sourceStock in sync with selected from-branch
     useEffect(() => {
@@ -420,6 +465,11 @@ export function TransferWizard({
                     {step === 1 && (
                         <motion.div key="s1" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="space-y-4">
                             <p className="text-[11px] text-ink/45 font-vazirmatn">{t("distribution.wizard.routeHint")}</p>
+                            {isPosUser && (
+                                <p className="text-[10px] font-bold text-primary/80 bg-primary/5 border border-primary/10 rounded-xl px-3 py-2">
+                                    {t("distribution.wizard.posRouteHint")}
+                                </p>
+                            )}
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                 <div className="space-y-2">
                                     <span className="text-[9px] font-black text-ink/30 uppercase tracking-widest px-1">{t("distribution.wizard.from")}</span>

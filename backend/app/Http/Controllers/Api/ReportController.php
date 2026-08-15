@@ -11,6 +11,7 @@ use App\Models\Inventory;
 use App\Models\Check;
 use App\Models\Book;
 use App\Models\Transfer;
+use App\Support\ActivityLogger;
 use App\Support\IntakePolicy;
 use App\Support\SalesCogs;
 use Illuminate\Http\Request;
@@ -557,6 +558,14 @@ class ReportController extends Controller
         if (array_key_exists('rate_notes', $validated)) {
             Cache::forever('almanahel.rate_notes', $validated['rate_notes'] ?? '');
         }
+
+        ActivityLogger::record(
+            'settings',
+            'updated',
+            'به‌روزرسانی تنظیمات سیستم',
+            null,
+            $validated,
+        );
 
         return response()->json([
             'low_stock_threshold' => (int) Cache::get(

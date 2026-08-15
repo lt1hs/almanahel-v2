@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Branch;
 use App\Models\Inventory;
 use App\Models\User;
+use App\Support\ActivityLogger;
 use App\Support\SalesCogs;
 use Illuminate\Http\Request;
 
@@ -54,6 +55,16 @@ class BranchController extends Controller
         ]);
 
         $branch = Branch::create($validated);
+
+        ActivityLogger::record(
+            'branches',
+            'created',
+            "ایجاد شعبه «{$branch->name}»",
+            $branch,
+            ['name' => $branch->name, 'city' => $branch->city, 'type' => $branch->type],
+            (int) $branch->id,
+        );
+
         return response()->json(
             $this->branchListQuery()->findOrFail($branch->id),
             201
@@ -76,6 +87,16 @@ class BranchController extends Controller
         ]);
 
         $branch->update($validated);
+
+        ActivityLogger::record(
+            'branches',
+            'updated',
+            "ویرایش شعبه «{$branch->name}»",
+            $branch,
+            ['name' => $branch->name, 'city' => $branch->city, 'status' => $branch->status],
+            (int) $branch->id,
+        );
+
         return response()->json(
             $this->branchListQuery()->findOrFail($branch->id)
         );
@@ -83,7 +104,21 @@ class BranchController extends Controller
 
     public function destroy(Branch $branch)
     {
+        $snapshot = [
+            'branch_id' => $branch->id,
+            'name' => $branch->name,
+            'city' => $branch->city,
+        ];
         $branch->delete();
+
+        ActivityLogger::record(
+            'branches',
+            'deleted',
+            "حذف شعبه «{$snapshot['name']}»",
+            null,
+            $snapshot,
+        );
+
         return response()->json(['message' => 'شعبه با موفقیت حذف شد']);
     }
 

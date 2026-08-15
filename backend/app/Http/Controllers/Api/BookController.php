@@ -13,6 +13,7 @@ use App\Models\Inventory;
 use App\Models\InvoiceItem;
 use App\Models\Transfer;
 use App\Models\WarehouseLog;
+use App\Support\ActivityLogger;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -110,6 +111,15 @@ class BookController extends Controller
         ]);
 
         $book = Book::create($validated);
+
+        ActivityLogger::record(
+            'books',
+            'created',
+            "ایجاد کتاب «{$book->title}»",
+            $book,
+            ['isbn' => $book->isbn, 'author' => $book->author],
+        );
+
         return response()->json($book, 201);
     }
 
@@ -120,6 +130,14 @@ class BookController extends Controller
         ]);
 
         $path = $validated['image']->store('books/covers', 'public');
+
+        ActivityLogger::record(
+            'books',
+            'updated',
+            'آپلود تصویر جلد کتاب',
+            null,
+            ['path' => $path],
+        );
 
         return response()->json([
             'path' => $path,
@@ -154,6 +172,15 @@ class BookController extends Controller
         ]);
 
         $book->update($validated);
+
+        ActivityLogger::record(
+            'books',
+            'updated',
+            "ویرایش کتاب «{$book->title}»",
+            $book,
+            ['isbn' => $book->isbn, 'author' => $book->author],
+        );
+
         return response()->json($book);
     }
 
@@ -198,6 +225,14 @@ class BookController extends Controller
                 'user_email' => $user->email,
                 ...$snapshot,
             ]);
+
+            ActivityLogger::record(
+                'books',
+                'deleted',
+                "حذف کتاب «{$snapshot['title']}»",
+                null,
+                $snapshot,
+            );
 
             return response()->json(['message' => 'کتاب با موفقیت حذف شد']);
         });

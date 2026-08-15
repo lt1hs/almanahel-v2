@@ -11,8 +11,19 @@ import { Card, CardContent } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { useTranslation } from "@/hooks/useTranslation";
+import { useAuth } from "@/contexts/AuthContext";
 import { cn } from "@/lib/utils";
 import { parsePriceDigits } from "@/lib/bookFormUtils";
+
+function dedupeBranchesByName<T extends { id: number; name?: string }>(list: T[]): T[] {
+    const seen = new Set<string>();
+    return list.filter((b) => {
+        const key = (b.name || "").trim().toLowerCase();
+        if (!key || seen.has(key)) return false;
+        seen.add(key);
+        return true;
+    });
+}
 
 const stagger: Variants = {
     hidden: { opacity: 0 },
@@ -48,6 +59,14 @@ interface ConsignmentItem {
 
 export default function ReturnsPage() {
     const { t, formatNumber, formatDate, isArabic, isDinar } = useTranslation();
+    const { user } = useAuth();
+    const isAdmin = user?.role === "admin" || user?.role === "super_admin";
+    const userBranchId = user?.branch_id
+        ? Number(user.branch_id)
+        : user?.branch?.id
+            ? Number(user.branch.id)
+            : null;
+    const canPickBranch = isAdmin;
     const currencySymbol = isDinar ? t("common.currency.dinarSymbol") : t("common.currency.tomanSymbol");
     const [activeTab, setActiveTab] = useState<ReturnType>("customer");
     const [returns, setReturns] = useState<any[]>([]);
@@ -80,7 +99,7 @@ export default function ReturnsPage() {
         setSelectedItems({});
         setReturnQtys({});
         setSupplierId("");
-        setBranchId("");
+        setBranchId(!canPickBranch && userBranchId ? String(userBranchId) : "");
         setConsignmentItems([]);
         setConsignmentReason("");
         setError(null);
@@ -108,11 +127,20 @@ export default function ReturnsPage() {
             Promise.all([apiRequest("/suppliers"), apiRequest("/branches")])
                 .then(([s, b]) => {
                     setSuppliers(Array.isArray(s) ? s : []);
-                    setBranches((Array.isArray(b) ? b : []).filter((x: any) => x.type === "store" || x.type === "warehouse"));
+                    const raw = (Array.isArray(b) ? b : []).filter(
+                        (x: any) => x.type === "store" || x.type === "warehouse"
+                    );
+                    const visible = canPickBranch
+                        ? dedupeBranchesByName(raw)
+                        : raw.filter((x: any) => Number(x.id) === Number(userBranchId));
+                    setBranches(visible);
+                    if (!canPickBranch && userBranchId) {
+                        setBranchId(String(userBranchId));
+                    }
                 })
                 .catch(console.error);
         }
-    }, [showForm, activeTab]);
+    }, [showForm, activeTab, canPickBranch, userBranchId]);
 
     const loadConsignmentInventory = async (supId: string, brId: string) => {
         if (!supId || !brId) return;
@@ -195,14 +223,17 @@ export default function ReturnsPage() {
                 });
             } else {
                 const items = consignmentItems.filter((i) => i.quantity > 0);
-                if (!supplierId || !branchId) throw new Error(t("toast.supplierBranchRequired"));
+                const lockedBranch = !canPickBranch && userBranchId
+                    ? String(userBranchId)
+                    : branchId;
+                if (!supplierId || !lockedBranch) throw new Error(t("toast.supplierBranchRequired"));
                 if (items.length === 0) throw new Error(t("toast.minOneBook"));
 
                 await apiRequest("/returns/consignment", {
                     method: "POST",
                     body: JSON.stringify({
                         supplier_id: Number(supplierId),
-                        branch_id: Number(branchId),
+                        branch_id: Number(lockedBranch),
                         reason: consignmentReason || null,
                         items: items.map((i) => ({
                             book_id: i.book_id,
@@ -614,10 +645,18 @@ export default function ReturnsPage() {
                                                 </div>
                                                 <div className="space-y-1.5">
                                                     <label className="text-[10px] font-black text-ink/40 uppercase tracking-widest">{t("distribution.branchFallback")}</label>
-                                                    <select value={branchId} onChange={(e) => setBranchId(e.target.value)}
-                                                        className="w-full h-10 rounded-xl border border-ink/10 px-3 text-[12px] font-vazirmatn outline-none">
-                                                        <option value="">{t("expenses.form.selectBranch")}</option>
-                                                        {branches.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+                                                    <select
+                                                        value={branchId}
+                                                        disabled={!canPickBranch}
+                                                        onChange={(e) => setBranchId(e.target.value)}
+                                                        className="w-full h-10 rounded-xl border border-ink/10 px-3 text-[12px] font-vazirmatn outline-none disabled:opacity-60 disabled:bg-parchment/30"
+                                                    >
+                                                        {canPickBranch && (
+                                                            <option value="">{t("expenses.form.selectBranch")}</option>
+                                                        )}
+                                                        {branches.map((b) => (
+                                                            <option key={b.id} value={b.id}>{b.name}</option>
+                                                        ))}
                                                     </select>
                                                 </div>
                                             </div>

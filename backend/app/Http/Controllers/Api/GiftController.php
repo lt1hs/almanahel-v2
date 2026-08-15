@@ -6,12 +6,45 @@ use App\Http\Controllers\Controller;
 use App\Models\Gift;
 use App\Models\Inventory;
 use App\Models\ConsignmentReceipt;
+use App\Support\ActivityLogger;
 use App\Support\StockMovementLogger;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
 class GiftController extends Controller
 {
+    private function isAdmin($user): bool
+    {
+        return in_array($user?->role, ['super_admin', 'admin'], true);
+    }
+
+    /** @return int[]|null null = unrestricted */
+    private function visibleBranchIds($user): ?array
+    {
+        if ($this->isAdmin($user)) {
+            return null;
+        }
+        $ids = [];
+        if ($user?->branch_id) {
+            $ids[] = (int) $user->branch_id;
+        }
+        foreach ($user->iraq_only_visible_branches ?? [] as $id) {
+            $ids[] = (int) $id;
+        }
+        return array_values(array_unique(array_filter($ids)));
+    }
+
+    private function assertBranchAllowed($user, int $branchId): void
+    {
+        $ids = $this->visibleBranchIds($user);
+        if ($ids === null) {
+            return;
+        }
+        if (!in_array($branchId, $ids, true)) {
+            abort(403, 'اجازه دسترسی به این شعبه را ندارید');
+        }
+    }
+
     public function index(Request $request)
     {
         $query = Gift::query()
@@ -27,7 +60,17 @@ class GiftController extends Controller
             ])
             ->latest('gifted_at');
 
+        $ids = $this->visibleBranchIds($request->user());
+        if ($ids !== null) {
+            if (!$ids) {
+                $query->whereRaw('1 = 0');
+            } else {
+                $query->whereIn('branch_id', $ids);
+            }
+        }
+
         if ($request->filled('branch_id')) {
+            $this->assertBranchAllowed($request->user(), (int) $request->branch_id);
             $query->where('branch_id', $request->branch_id);
         }
         if ($request->filled('status')) {
@@ -59,6 +102,8 @@ class GiftController extends Controller
             'supplier_id'      => 'nullable|exists:suppliers,id',
             'gifted_at'        => 'required|date',
         ]);
+
+        $this->assertBranchAllowed($request->user(), (int) $validated['branch_id']);
 
         if (($validated['is_consignment'] ?? false) && empty($validated['supplier_id'])) {
             return response()->json(['message' => 'برای هدیه امانی، انتخاب تأمین‌کننده الزامی است'], 422);
@@ -92,17 +137,35 @@ class GiftController extends Controller
                 "هدیه به {$validated['recipient_name']}",
             );
 
+            ActivityLogger::record(
+                'gifts',
+                'created',
+                "هدیه به {$validated['recipient_name']} — کتاب #{$validated['book_id']} ×{$validated['quantity']}",
+                $gift,
+                [
+                    'book_id' => $validated['book_id'],
+                    'quantity' => $validated['quantity'],
+                    'recipient_name' => $validated['recipient_name'],
+                    'cost_value' => $validated['cost_value'],
+                    'currency' => $validated['currency'],
+                ],
+                (int) $validated['branch_id'],
+            );
+
             return response()->json($gift->load(['book', 'branch', 'supplier']), 201);
         });
     }
 
-    public function show(Gift $gift)
+    public function show(Request $request, Gift $gift)
     {
+        $this->assertBranchAllowed($request->user(), (int) $gift->branch_id);
         return response()->json($gift->load(['book', 'branch', 'supplier', 'user']));
     }
 
     public function updateStatus(Request $request, Gift $gift)
     {
+        $this->assertBranchAllowed($request->user(), (int) $gift->branch_id);
+
         $validated = $request->validate([
             'accounting_status' => 'required|in:pending,settled',
         ]);
@@ -123,6 +186,19 @@ class GiftController extends Controller
                 'notes'          => "تسویه هدیه به {$gift->recipient_name}",
             ]);
         }
+
+        ActivityLogger::record(
+            'gifts',
+            'status_changed',
+            "وضعیت هدیه #{$gift->id} → {$validated['accounting_status']}",
+            $gift,
+            [
+                'accounting_status' => $validated['accounting_status'],
+                'recipient_name' => $gift->recipient_name,
+                'book_id' => $gift->book_id,
+            ],
+            (int) $gift->branch_id,
+        );
 
         return response()->json($gift->load(['book', 'branch', 'supplier']));
     }

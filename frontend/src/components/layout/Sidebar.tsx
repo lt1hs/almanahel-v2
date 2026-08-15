@@ -22,6 +22,7 @@ import {
     CreditCard,
     HandCoins,
     Users,
+    Activity,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth, UserRole } from "@/contexts/AuthContext";
@@ -80,6 +81,7 @@ const NAV_GROUPS: NavGroup[] = [
         items: [
             { titleKey: "nav.suppliers", href: "/dashboard/suppliers", icon: Users, roles: ["super_admin", "admin"], color: "text-amber-600" },
             { titleKey: "nav.admin", href: "/dashboard/admin", icon: Settings, roles: ["super_admin", "admin"], color: "text-slate-500" },
+            { titleKey: "nav.activityLog", href: "/dashboard/admin/activity", icon: Activity, roles: ["super_admin", "admin"], color: "text-teal-600" },
         ],
     },
 ];

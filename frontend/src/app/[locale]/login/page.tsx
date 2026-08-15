@@ -1,9 +1,10 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
+import Image from "next/image";
 import { useRouter } from "@/i18n/routing";
 import { motion } from "framer-motion";
-import { Lock, Mail, BookOpen } from "lucide-react";
+import { Lock, Mail } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/Card";
 import { Input } from "@/components/ui/Input";
@@ -84,9 +85,16 @@ export default function LoginPage() {
                                 initial={{ scale: 0.5, opacity: 0 }}
                                 animate={{ scale: 1, opacity: 1 }}
                                 transition={{ delay: 0.3, type: "spring", stiffness: 200 }}
-                                className="mx-auto w-14 h-14 bg-gradient-to-br from-white to-primary/5 rounded-xl flex items-center justify-center mb-4 border border-primary/10 shadow-inner group-hover:border-primary/20 transition-colors duration-500"
+                                className="mx-auto w-16 h-16 bg-gradient-to-br from-white to-primary/5 rounded-xl flex items-center justify-center mb-4 border border-primary/10 shadow-inner group-hover:border-primary/20 transition-colors duration-500 p-2.5"
                             >
-                                <BookOpen className="w-7 h-7 text-primary drop-shadow-sm" />
+                                <Image
+                                    src="/logo-3.svg"
+                                    alt={t("common.appName")}
+                                    width={40}
+                                    height={40}
+                                    className="w-10 h-10 object-contain"
+                                    priority
+                                />
                             </motion.div>
                             <CardTitle className="text-2xl font-vazirmatn text-ink font-bold tracking-tight">
                                 {t("common.appName")}
@@ -104,7 +112,7 @@ export default function LoginPage() {
                                     transition={{ delay: 0.5 }}
                                 >
                                     <Input
-                                        label={`${t("auth.email")} (admin@almanahel.com)`}
+                                        label={t("auth.email")}
                                         type="email"
                                         placeholder={t("auth.emailPlaceholder")}
                                         value={email}
@@ -121,7 +129,7 @@ export default function LoginPage() {
                                     transition={{ delay: 0.6 }}
                                 >
                                     <Input
-                                        label={`${t("auth.password")} (password)`}
+                                        label={t("auth.password")}
                                         type="password"
                                         placeholder={t("auth.passwordPlaceholder")}
                                         value={password}
@@ -149,13 +157,6 @@ export default function LoginPage() {
                                 </motion.div>
                             </form>
                         </CardContent>
-
-                        <div className="text-center pb-8 px-6">
-                            <div className="w-12 h-[1px] bg-gradient-to-r from-transparent via-accent/20 to-transparent mx-auto mb-4" />
-                            <p className="text-xs font-vazirmatn text-ink/40 italic font-scheherazade text-lg leading-relaxed opacity-80">
-                                &ldquo;{t("auth.tagline")}&rdquo;
-                            </p>
-                        </div>
                     </Card>
                 </div>
             </motion.div>

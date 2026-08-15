@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\Supplier;
+use App\Support\ActivityLogger;
 use Illuminate\Http\Request;
 
 class SupplierController extends Controller
@@ -50,6 +51,15 @@ class SupplierController extends Controller
         $validated['type'] = $validated['type'] ?? 'publisher';
 
         $supplier = Supplier::create($validated);
+
+        ActivityLogger::record(
+            'suppliers',
+            'created',
+            "ایجاد تأمین‌کننده «{$supplier->name}»",
+            $supplier,
+            ['name' => $supplier->name, 'type' => $supplier->type, 'city' => $supplier->city],
+        );
+
         return response()->json($supplier->loadCount(['consignmentReceipts', 'inventories', 'settlements']), 201);
     }
 
@@ -70,6 +80,15 @@ class SupplierController extends Controller
             'status'  => 'nullable|in:active,inactive',
         ]);
         $supplier->update($validated);
+
+        ActivityLogger::record(
+            'suppliers',
+            'updated',
+            "ویرایش تأمین‌کننده «{$supplier->name}»",
+            $supplier,
+            ['name' => $supplier->name, 'type' => $supplier->type, 'status' => $supplier->status],
+        );
+
         return response()->json($supplier->fresh()->loadCount(['consignmentReceipts', 'inventories', 'settlements']));
     }
 
@@ -91,7 +110,21 @@ class SupplierController extends Controller
             ], 422);
         }
 
+        $snapshot = [
+            'supplier_id' => $supplier->id,
+            'name' => $supplier->name,
+            'type' => $supplier->type,
+        ];
         $supplier->delete();
+
+        ActivityLogger::record(
+            'suppliers',
+            'deleted',
+            "حذف تأمین‌کننده «{$snapshot['name']}»",
+            null,
+            $snapshot,
+        );
+
         return response()->json(['message' => 'تامین‌کننده با موفقیت حذف شد']);
     }
 

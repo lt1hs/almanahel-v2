@@ -10,6 +10,7 @@ use App\Models\ConsignmentReturnItem;
 use App\Models\ConsignmentReceiptItem;
 use App\Models\Invoice;
 use App\Models\Inventory;
+use App\Support\ActivityLogger;
 use App\Support\ConsignmentSync;
 use App\Support\StockMovementLogger;
 use Illuminate\Http\Request;
@@ -130,6 +131,21 @@ class ReturnController extends Controller
             }
         }
 
+        ActivityLogger::record(
+            'returns',
+            'created',
+            "مرجوعی مشتری {$return->return_number}",
+            $return,
+            [
+                'return_number' => $return->return_number,
+                'invoice_id' => $invoice->id,
+                'refund_amount' => $refundAmount,
+                'refund_method' => $validated['refund_method'],
+                'items_count' => count($validated['items']),
+            ],
+            (int) $invoice->branch_id,
+        );
+
         return response()->json($return->load(['items.book', 'invoice']), 201);
         });
     }
@@ -216,6 +232,19 @@ class ReturnController extends Controller
                 "مرجوعی امانی به ناشر — {$return->return_number}",
             );
         }
+
+        ActivityLogger::record(
+            'returns',
+            'created',
+            "مرجوعی امانی {$return->return_number}",
+            $return,
+            [
+                'return_number' => $return->return_number,
+                'supplier_id' => $validated['supplier_id'],
+                'items_count' => count($validated['items']),
+            ],
+            (int) $validated['branch_id'],
+        );
 
         return response()->json($return->load(['items.book', 'supplier', 'branch']), 201);
         });

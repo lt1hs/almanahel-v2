@@ -89,6 +89,13 @@ export default function GiftsPage() {
   const { t, formatNumber, isArabic, preferredCurrency } = useTranslation();
   const notify = useNotify();
   const { user } = useAuth();
+  const isAdmin = user?.role === "admin" || user?.role === "super_admin";
+  const userBranchId = user?.branch_id
+    ? Number(user.branch_id)
+    : user?.branch?.id
+      ? Number(user.branch.id)
+      : null;
+  const canPickBranch = isAdmin;
 
   const currencySymbol =
     preferredCurrency === "dinar"
@@ -160,7 +167,10 @@ export default function GiftsPage() {
         apiRequest("/branches?lite=1"),
         apiRequest("/suppliers?status=active"),
       ]);
-      const branchList = Array.isArray(brData) ? brData : [];
+      const branchListRaw = Array.isArray(brData) ? brData : [];
+      const branchList = canPickBranch
+        ? branchListRaw
+        : branchListRaw.filter((b: { id: number }) => Number(b.id) === Number(userBranchId));
       const supplierList = Array.isArray(sData) ? sData : [];
       setBranches(branchList);
       setSuppliers(supplierList);
@@ -168,9 +178,11 @@ export default function GiftsPage() {
       setFormReady(true);
 
       const defaultBranch =
-        user?.branch?.id && branchList.some((b: { id: number }) => b.id === user.branch?.id)
-          ? String(user.branch.id)
-          : "";
+        !canPickBranch && userBranchId
+          ? String(userBranchId)
+          : user?.branch?.id && branchList.some((b: { id: number }) => b.id === user.branch?.id)
+            ? String(user.branch.id)
+            : "";
       setForm((f) => ({
         ...f,
         branch_id: f.branch_id || defaultBranch,
@@ -182,7 +194,7 @@ export default function GiftsPage() {
     } finally {
       setIsLoadingForm(false);
     }
-  }, [notify, preferredCurrency, user?.branch?.id]);
+  }, [notify, preferredCurrency, user?.branch?.id, userBranchId, canPickBranch]);
 
   const openForm = async () => {
     setCostManualOverride(false);
@@ -192,7 +204,7 @@ export default function GiftsPage() {
     setForm({
       ...EMPTY_FORM,
       currency: preferredCurrency,
-      branch_id: user?.branch?.id ? String(user.branch.id) : "",
+      branch_id: !canPickBranch && userBranchId ? String(userBranchId) : user?.branch?.id ? String(user.branch.id) : "",
     });
     setShowForm(true);
     await loadFormData();
@@ -282,7 +294,10 @@ export default function GiftsPage() {
   };
 
   const handleSubmit = async () => {
-    if (!form.book_id || !form.branch_id || !form.recipient_name || form.cost_value === "") {
+    const lockedBranchId = !canPickBranch && userBranchId
+      ? String(userBranchId)
+      : form.branch_id;
+    if (!form.book_id || !lockedBranchId || !form.recipient_name || form.cost_value === "") {
       notify.error("toast.requiredFields");
       return;
     }
@@ -307,7 +322,7 @@ export default function GiftsPage() {
         method: "POST",
         body: JSON.stringify({
           book_id: parseInt(form.book_id, 10),
-          branch_id: parseInt(form.branch_id, 10),
+          branch_id: parseInt(lockedBranchId, 10),
           quantity: qty,
           recipient_name: form.recipient_name.trim(),
           cost_value: parseFloat(form.cost_value),
@@ -363,7 +378,19 @@ export default function GiftsPage() {
   }, [gifts, totalCount, preferredCurrency, currencySymbol, formatNumber, t]);
 
   const unitCost = unitCostFor(selectedInventory, form.currency);
-  const storeBranches = branches.filter((b) => b.type === "store" || !b.type);
+  const storeBranches = useMemo(() => {
+    const list = branches.filter((b) => b.type === "store" || b.type === "warehouse" || !b.type);
+    if (canPickBranch) {
+      const seen = new Set<string>();
+      return list.filter((b) => {
+        const key = (b.name || "").trim().toLowerCase();
+        if (!key || seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+    }
+    return list.filter((b) => Number(b.id) === Number(userBranchId));
+  }, [branches, canPickBranch, userBranchId]);
 
   return (
     <div className="space-y-5 pb-10">
@@ -548,15 +575,18 @@ export default function GiftsPage() {
                       </label>
                       <select
                         value={form.branch_id}
+                        disabled={!canPickBranch}
                         onChange={(e) => {
                           setSelectedInventory(null);
                           setBookSearch("");
                           setForm((f) => ({ ...f, branch_id: e.target.value, book_id: "", cost_value: "" }));
                           setCostManualOverride(false);
                         }}
-                        className="h-10 w-full rounded-xl border border-ink/10 px-3 text-[12px] font-vazirmatn outline-none"
+                        className="h-10 w-full rounded-xl border border-ink/10 px-3 text-[12px] font-vazirmatn outline-none disabled:opacity-60 disabled:bg-parchment/30"
                       >
-                        <option value="">{t("expenses.form.selectBranch")}</option>
+                        {canPickBranch && (
+                          <option value="">{t("expenses.form.selectBranch")}</option>
+                        )}
                         {storeBranches.map((b) => (
                           <option key={b.id} value={b.id}>
                             {b.name}

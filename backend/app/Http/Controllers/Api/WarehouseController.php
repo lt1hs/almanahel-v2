@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\WarehouseLog;
 use App\Models\Inventory;
+use App\Support\ActivityLogger;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use App\Support\IntakePolicy;
@@ -79,6 +80,20 @@ class WarehouseController extends Controller
                 $inventory->decrement('quantity', $validated['quantity']);
             }
 
+            ActivityLogger::record(
+                'warehouse',
+                'created',
+                "ثبت تراکنش انبار — {$validated['direction']} ×{$validated['quantity']}",
+                $log,
+                [
+                    'book_id' => $validated['book_id'],
+                    'direction' => $validated['direction'],
+                    'quantity' => $validated['quantity'],
+                    'reason' => $validated['reason'],
+                ],
+                (int) $validated['branch_id'],
+            );
+
             return response()->json($log->load(['book', 'user']), 201);
         });
     }
@@ -128,6 +143,19 @@ class WarehouseController extends Controller
 
             $warehouseLog->update($validated);
 
+            ActivityLogger::record(
+                'warehouse',
+                'updated',
+                "ویرایش تراکنش انبار #{$warehouseLog->id}",
+                $warehouseLog,
+                [
+                    'book_id' => $warehouseLog->book_id,
+                    'quantity' => $warehouseLog->quantity,
+                    'direction' => $warehouseLog->direction,
+                ],
+                (int) $warehouseLog->branch_id,
+            );
+
             return response()->json($warehouseLog->fresh()->load(['book', 'user']));
         });
     }
@@ -139,6 +167,27 @@ class WarehouseController extends Controller
 
     public function inventory(Request $request, $branchId)
     {
+        $user = $request->user();
+        if (!in_array($user?->role, ['super_admin', 'admin'], true)) {
+            $allowed = [];
+            if ($user?->branch_id) {
+                $allowed[] = (int) $user->branch_id;
+            }
+            foreach ($user->iraq_only_visible_branches ?? [] as $id) {
+                $allowed[] = (int) $id;
+            }
+            if ($user?->role === 'warehouse_staff') {
+                $allowed = array_merge(
+                    $allowed,
+                    \App\Models\Branch::where('type', 'warehouse')->pluck('id')->map(fn ($id) => (int) $id)->all()
+                );
+            }
+            $allowed = array_values(array_unique(array_filter($allowed)));
+            if (!in_array((int) $branchId, $allowed, true)) {
+                abort(403, 'اجازه دسترسی به موجودی این شعبه را ندارید');
+            }
+        }
+
         $query = Inventory::query()
             ->where('branch_id', $branchId)
             ->where('quantity', '>', 0);
@@ -301,6 +350,22 @@ class WarehouseController extends Controller
                 'user_id'      => $request->user()->id,
             ]);
 
+            ActivityLogger::record(
+                'inventory',
+                'created',
+                "خرید نقدی — کتاب #{$validated['book_id']} ×{$validated['quantity']}",
+                $inventory,
+                [
+                    'book_id' => $validated['book_id'],
+                    'quantity' => $validated['quantity'],
+                    'currency' => $validated['currency'],
+                    'cost_price' => $validated['cost_price'],
+                    'selling_price' => $validated['selling_price'],
+                    'warehouse_log_id' => $log->id,
+                ],
+                (int) $validated['branch_id'],
+            );
+
             return response()->json([
                 'inventory' => $inventory->load('book'),
                 'log'       => $log->load('book'),
@@ -371,6 +436,20 @@ class WarehouseController extends Controller
 
         $inventory->update($updates);
 
+        ActivityLogger::record(
+            'inventory',
+            'priced',
+            "ثبت قیمت موجودی — کتاب #{$inventory->book_id}",
+            $inventory,
+            [
+                'book_id' => $inventory->book_id,
+                'type' => $inventory->type,
+                'price_toman' => $inventory->price_toman,
+                'price_dinar' => $inventory->price_dinar,
+            ],
+            (int) $inventory->branch_id,
+        );
+
         return response()->json($inventory->fresh()->load(['book', 'supplier', 'branch']));
     }
 
@@ -396,6 +475,19 @@ class WarehouseController extends Controller
         }
 
         $inventory->update($validated);
+
+        ActivityLogger::record(
+            'inventory',
+            'updated',
+            "ویرایش موجودی — کتاب #{$inventory->book_id}",
+            $inventory,
+            [
+                'book_id' => $inventory->book_id,
+                'quantity' => $inventory->quantity,
+                'type' => $inventory->type,
+            ],
+            (int) $inventory->branch_id,
+        );
 
         return response()->json($inventory->load(['book', 'supplier', 'branch']));
     }

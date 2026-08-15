@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\User;
+use App\Support\ActivityLogger;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Validation\Rule;
@@ -83,6 +84,20 @@ class UserController extends Controller
             'status' => $validated['status'] ?? 'active',
         ]);
 
+        ActivityLogger::record(
+            'users',
+            'created',
+            "ایجاد کاربر «{$user->name}»",
+            $user,
+            [
+                'email' => $user->email,
+                'role' => $user->role,
+                'branch_id' => $user->branch_id,
+                'status' => $user->status,
+            ],
+            $user->branch_id ? (int) $user->branch_id : null,
+        );
+
         return response()->json($user->load('branch')->makeHidden(['password', 'remember_token']), 201);
     }
 
@@ -128,6 +143,21 @@ class UserController extends Controller
 
         $user->update($validated);
 
+        ActivityLogger::record(
+            'users',
+            'updated',
+            "ویرایش کاربر «{$user->name}»",
+            $user,
+            [
+                'email' => $user->email,
+                'role' => $user->role,
+                'branch_id' => $user->branch_id,
+                'status' => $user->status,
+                'password_changed' => array_key_exists('password', $validated),
+            ],
+            $user->branch_id ? (int) $user->branch_id : null,
+        );
+
         return response()->json($user->fresh()->load('branch')->makeHidden(['password', 'remember_token']));
     }
 
@@ -146,6 +176,19 @@ class UserController extends Controller
         }
 
         $user->update(['status' => 'inactive']);
+
+        ActivityLogger::record(
+            'users',
+            'deleted',
+            "غیرفعال‌سازی کاربر «{$user->name}»",
+            $user,
+            [
+                'email' => $user->email,
+                'role' => $user->role,
+                'status' => 'inactive',
+            ],
+            $user->branch_id ? (int) $user->branch_id : null,
+        );
 
         return response()->json(['message' => 'کاربر غیرفعال شد']);
     }

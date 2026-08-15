@@ -173,8 +173,15 @@ export default function DistributionPage() {
         const ids = new Set<number>();
         if (user.branch_id) ids.add(Number(user.branch_id));
         (user.iraq_only_visible_branches || []).forEach((id) => ids.add(Number(id)));
-        const warehouse = branches.find((b) => b.type === "warehouse");
-        if (warehouse) ids.add(Number(warehouse.id));
+        // Hubs POS may ship to (display + destination), but not control as source
+        branches.forEach((b) => {
+            if (b.type === "warehouse") ids.add(Number(b.id));
+            const city = (b.city || "").trim();
+            const name = (b.name || "").trim();
+            if (b.type === "store" && (city === "قم" || name.includes("قم"))) {
+                ids.add(Number(b.id));
+            }
+        });
         if (!ids.size) return [];
         return branches.filter((b) => ids.has(Number(b.id)));
     }, [branches, user, isHqUser]);
@@ -204,20 +211,39 @@ export default function DistributionPage() {
     }, []);
 
     const handleAlertClick = (alert: AlertItem) => {
-        const from = warehouseId ? String(warehouseId) : "";
-        const to = alert.branchId ? String(alert.branchId) : "";
-        if (from) setPrefillFrom(from);
-        if (to && to !== from) setPrefillTo(to);
+        // Admin/warehouse: restock from warehouse → branch. POS: return from own POS → hub.
+        if (isHqUser || user?.role === "warehouse_staff") {
+            const from = warehouseId ? String(warehouseId) : "";
+            const to = alert.branchId ? String(alert.branchId) : "";
+            if (from) setPrefillFrom(from);
+            if (to && to !== from) setPrefillTo(to);
+        } else {
+            if (user?.branch_id) setPrefillFrom(String(user.branch_id));
+            const hub = warehouseId
+                ? String(warehouseId)
+                : String(branches.find((b) => (b.city || "").trim() === "قم" || (b.name || "").includes("قم"))?.id || "");
+            if (hub) setPrefillTo(hub);
+        }
         scrollToWizard();
     };
 
     const handleBranchClick = (branch: BranchRow) => {
-        if (branch.type === "warehouse") {
-            setPrefillFrom(String(branch.id));
-            setPrefillTo("");
+        if (isHqUser || user?.role === "warehouse_staff") {
+            if (branch.type === "warehouse") {
+                setPrefillFrom(String(branch.id));
+                setPrefillTo("");
+            } else {
+                setPrefillFrom(warehouseId ? String(warehouseId) : "");
+                setPrefillTo(String(branch.id));
+            }
         } else {
-            setPrefillFrom(warehouseId ? String(warehouseId) : "");
-            setPrefillTo(String(branch.id));
+            // POS: always ship from own store; warehouse/Qom only as destination
+            if (user?.branch_id) setPrefillFrom(String(user.branch_id));
+            if (branch.type === "warehouse" || (branch.city || "").trim() === "قم" || (branch.name || "").includes("قم")) {
+                setPrefillTo(String(branch.id));
+            } else {
+                setPrefillTo(warehouseId ? String(warehouseId) : "");
+            }
         }
         scrollToWizard();
     };
@@ -448,8 +474,10 @@ export default function DistributionPage() {
 
             <div ref={wizardRef}>
                 <TransferWizard
-                    branches={scopedBranches}
+                    branches={isHqUser || user?.role === "warehouse_staff" ? branches : scopedBranches}
                     userName={user?.name}
+                    userRole={user?.role}
+                    userBranchId={user?.branch_id ?? null}
                     onSuccess={handleTransferSuccess}
                     prefillFrom={prefillFrom}
                     prefillTo={prefillTo}
@@ -461,7 +489,7 @@ export default function DistributionPage() {
                 <div className="xl:col-span-8">
                     <TransferTimeline
                         transfers={transfers}
-                        branches={scopedBranches}
+                        branches={branches}
                         isLoading={isLoading && !transfers.length}
                         onNewTransfer={scrollToWizard}
                         hasMore={transferHasMore}

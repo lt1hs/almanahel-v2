@@ -64,6 +64,7 @@ const PAGE_TITLE_KEYS: Record<string, string> = {
     "/dashboard/admin/currency": "admin.currencySettings",
     "/dashboard/admin/categories": "admin.categorySettings",
     "/dashboard/admin/users": "admin.userManagement",
+    "/dashboard/admin/activity": "nav.activityLog",
     "/dashboard/reports": "finance.title",
 };
 

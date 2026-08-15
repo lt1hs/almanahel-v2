@@ -15,6 +15,7 @@ use App\Http\Controllers\Api\BookCategoryController;
 use App\Http\Controllers\Api\ReportController;
 use App\Http\Controllers\Api\InventoryController;
 use App\Http\Controllers\Api\UserController;
+use App\Http\Controllers\Api\ActivityLogController;
 use Illuminate\Support\Facades\Route;
 
 // Public Routes
@@ -134,4 +135,10 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/users',             [UserController::class, 'store']);
     Route::put('/users/{user}',       [UserController::class, 'update']);
     Route::delete('/users/{user}',    [UserController::class, 'destroy']);
+
+    // ─── Activity logs (admin) ─────────────────────────────────
+    Route::get('/activity-logs',              [ActivityLogController::class, 'index']);
+    Route::get('/activity-logs/meta',         [ActivityLogController::class, 'meta']);
+    Route::get('/activity-logs/export',       [ActivityLogController::class, 'export']);
+    Route::get('/activity-logs/{activityLog}', [ActivityLogController::class, 'show']);
 });

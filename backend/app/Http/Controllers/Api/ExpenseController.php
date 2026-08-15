@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\Expense;
+use App\Support\ActivityLogger;
 use Illuminate\Http\Request;
 
 class ExpenseController extends Controller
@@ -105,6 +106,20 @@ class ExpenseController extends Controller
             'user_id' => $request->user()->id,
         ]);
 
+        ActivityLogger::record(
+            'expenses',
+            'created',
+            "ثبت هزینه {$validated['category']} — {$validated['amount']} {$validated['currency']}",
+            $expense,
+            [
+                'amount' => $expense->amount,
+                'currency' => $expense->currency,
+                'category' => $expense->category,
+                'date' => $expense->date,
+            ],
+            (int) $expense->branch_id,
+        );
+
         return response()->json($expense->load(['branch', 'user']), 201);
     }
 
@@ -127,13 +142,44 @@ class ExpenseController extends Controller
 
         $expense->update($validated);
 
+        ActivityLogger::record(
+            'expenses',
+            'updated',
+            "ویرایش هزینه #{$expense->id} — {$expense->category}",
+            $expense,
+            [
+                'amount' => $expense->amount,
+                'currency' => $expense->currency,
+                'category' => $expense->category,
+            ],
+            (int) $expense->branch_id,
+        );
+
         return response()->json($expense->fresh()->load(['branch', 'user']));
     }
 
     public function destroy(Request $request, Expense $expense)
     {
         $this->assertExpenseAccess($request->user(), $expense);
+
+        $snapshot = [
+            'expense_id' => $expense->id,
+            'amount' => $expense->amount,
+            'currency' => $expense->currency,
+            'category' => $expense->category,
+            'branch_id' => $expense->branch_id,
+        ];
+        $branchId = (int) $expense->branch_id;
         $expense->delete();
+
+        ActivityLogger::record(
+            'expenses',
+            'deleted',
+            "حذف هزینه #{$snapshot['expense_id']} — {$snapshot['category']}",
+            null,
+            $snapshot,
+            $branchId,
+        );
 
         return response()->json(['message' => 'هزینه با موفقیت حذف شد']);
     }

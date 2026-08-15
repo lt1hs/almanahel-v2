@@ -7,6 +7,7 @@ use App\Models\ConsignmentReceipt;
 use App\Models\ConsignmentReceiptItem;
 use App\Models\Inventory;
 use App\Models\Settlement;
+use App\Support\ActivityLogger;
 use App\Support\ConsignmentFinance;
 use App\Support\IntakePolicy;
 use App\Support\StockMovementLogger;
@@ -209,6 +210,21 @@ class ConsignmentController extends Controller
             );
         }
 
+        ActivityLogger::record(
+            'consignment',
+            'created',
+            "رسید امانی {$receipt->receipt_number}",
+            $receipt,
+            [
+                'receipt_number' => $receipt->receipt_number,
+                'supplier_id' => $receipt->supplier_id,
+                'total_value' => $receipt->total_value,
+                'currency' => $receipt->currency,
+                'items_count' => count($validated['items']),
+            ],
+            (int) $validated['branch_id'],
+        );
+
         return response()->json($receipt->load(['items.book', 'supplier', 'branch']), 201);
         });
     }
@@ -254,6 +270,18 @@ class ConsignmentController extends Controller
                 ? 0
                 : (float) $consignmentReceipt->items->sum(fn ($i) => $i->quantity_received * $i->cost_price),
         ])->save();
+
+        ActivityLogger::record(
+            'consignment',
+            'closed',
+            "بستن رسید امانی {$consignmentReceipt->receipt_number}",
+            $consignmentReceipt,
+            [
+                'receipt_number' => $consignmentReceipt->receipt_number,
+                'supplier_id' => $consignmentReceipt->supplier_id,
+            ],
+            (int) $consignmentReceipt->branch_id,
+        );
 
         return response()->json($consignmentReceipt->fresh()->load(['supplier', 'branch'])->loadCount('items'));
     }
@@ -374,6 +402,21 @@ class ConsignmentController extends Controller
                 $receipt->update(['status' => $newStatus]);
                 $remaining -= $pay;
             }
+
+            ActivityLogger::record(
+                'settlements',
+                'settled',
+                "تسویه {$settlement->settlement_number} — {$validated['amount']} {$validated['currency']}",
+                $settlement,
+                [
+                    'settlement_number' => $settlement->settlement_number,
+                    'supplier_id' => $validated['supplier_id'],
+                    'amount' => $validated['amount'],
+                    'currency' => $validated['currency'],
+                    'payment_method' => $validated['payment_method'],
+                ],
+                !empty($validated['branch_id']) ? (int) $validated['branch_id'] : null,
+            );
 
             return response()->json($settlement->load(['supplier', 'branch']), 201);
         });
@@ -525,6 +568,19 @@ class ConsignmentController extends Controller
             $response = $this->settle($subRequest);
             $results[] = json_decode($response->getContent(), true);
         }
+
+        ActivityLogger::record(
+            'settlements',
+            'settled',
+            'تسویه گروهی — '.count($results).' تأمین‌کننده',
+            null,
+            [
+                'count' => count($results),
+                'period_start' => $validated['period_start'],
+                'period_end' => $validated['period_end'],
+                'payment_method' => $validated['payment_method'],
+            ],
+        );
 
         return response()->json(['settlements' => $results], 201);
     }
