@@ -43,13 +43,13 @@ class Transfer extends Model
         }
 
         $steps = [[
-            'status' => 'pending',
+            'status' => in_array($this->status, ['pending', 'shipped'], true) ? 'shipped' : 'pending',
             'at' => optional($this->created_at)?->toIso8601String(),
             'user_id' => $this->user_id,
             'user_name' => $this->user?->name,
         ]];
 
-        if (in_array($this->status, ['shipped', 'received', 'cancelled'], true)) {
+        if ($this->status === 'received' || $this->status === 'cancelled') {
             $steps[] = [
                 'status' => $this->status,
                 'at' => optional($this->updated_at)?->toIso8601String(),

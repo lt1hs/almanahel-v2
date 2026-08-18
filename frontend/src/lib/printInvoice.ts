@@ -65,8 +65,26 @@ function formatDateTime(value: unknown): string {
   });
 }
 
+type PrintInvoiceDoc = {
+  payment_method?: string;
+  payment_status?: string;
+  items?: Array<Record<string, unknown>>;
+  invoice_number?: string;
+  created_at?: string;
+  branch?: { name?: string };
+  user?: { name?: string };
+  customer_name?: string;
+  customer_phone?: string;
+  due_date?: string;
+  subtotal?: number;
+  discount_amount?: number;
+  total?: number;
+  check?: Record<string, unknown>;
+  [key: string]: unknown;
+};
+
 export function printInvoice(
-  invoice: any,
+  invoice: PrintInvoiceDoc,
   opts: {
     formatNumber: (n: number) => string;
     currencySymbol: string;
@@ -92,18 +110,19 @@ export function printInvoice(
         ? labels.statusOverdue
         : labels.statusPending;
 
-  const items: any[] = invoice.items || [];
+  const items: Array<Record<string, unknown>> = invoice.items || [];
   const rows = items
     .map((item, idx) => {
       const qty = Number(item.quantity || 0);
       const price = Number(item.actual_price || 0);
       const discount = Number(item.discount || 0);
       const line = Math.max(0, qty * price - qty * discount);
+      const book = item.book as { title?: string; author?: string } | undefined;
       return `
         <tr>
           <td>${idx + 1}</td>
-          <td class="title">${esc(item.book?.title || `#${item.book_id}`)}${
-            item.book?.author ? `<div class="muted">${esc(item.book.author)}</div>` : ""
+          <td class="title">${esc(book?.title || `#${String(item.book_id ?? "")}`)}${
+            book?.author ? `<div class="muted">${esc(book.author)}</div>` : ""
           }</td>
           <td>${esc(formatNumber(qty))}</td>
           <td>${esc(formatNumber(price))}</td>

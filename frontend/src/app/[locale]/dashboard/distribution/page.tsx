@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Truck, MapPin, RefreshCw, Plus, Warehouse, AlertTriangle, Package, Clock, CheckCircle2 } from "lucide-react";
+import { Truck, MapPin, RefreshCw, Plus, Warehouse, AlertTriangle, Package } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Card, CardContent } from "@/components/ui/Card";
 import { LowStockAlerts } from "@/components/distribution/LowStockAlerts";
@@ -285,14 +285,14 @@ export default function DistributionPage() {
 
     const actionableNotifs = useMemo(
         () => transferNotifs.filter((n) =>
-            n.type === "transfer_shipped" || n.type === "transfer_pending" || n.type === "transfer_incoming"
+            n.type === "transfer_sending" || n.type === "transfer_shipped" || n.type === "transfer_pending" || n.type === "transfer_incoming"
         ),
         [transferNotifs]
     );
 
     const kpis = [
         {
-            label: t("distribution.inTransit"),
+            label: t("distribution.sending"),
             value: stats.inTransit,
             icon: Truck,
             color: "text-primary",
@@ -300,7 +300,7 @@ export default function DistributionPage() {
             bg: "bg-primary/[0.04]",
         },
         {
-            label: t("distribution.delivered"),
+            label: t("distribution.receiving"),
             value: stats.received,
             icon: Package,
             color: "text-emerald-600",
@@ -381,32 +381,18 @@ export default function DistributionPage() {
             {actionableNotifs.length > 0 && (
                 <div className="space-y-2">
                     {actionableNotifs.slice(0, 4).map((n) => {
-                        const shipped = n.type === "transfer_shipped";
-                        const pending = n.type === "transfer_pending";
-                        const Icon = shipped ? CheckCircle2 : pending ? Truck : Clock;
+                        const Icon = Truck;
                         return (
                             <div
                                 key={`${n.type}-${n.data?.transfer_id ?? n.message}`}
-                                className={cn(
-                                    "rounded-2xl border px-4 py-3 flex items-start gap-3",
-                                    shipped ? "bg-emerald-50/80 border-emerald-100" :
-                                    pending ? "bg-amber-50/80 border-amber-100" :
-                                    "bg-sky-50/80 border-sky-100"
-                                )}
+                                className="rounded-2xl border px-4 py-3 flex items-start gap-3 bg-sky-50/80 border-sky-100"
                             >
-                                <div className={cn(
-                                    "w-8 h-8 rounded-xl border flex items-center justify-center shrink-0",
-                                    shipped ? "bg-emerald-100 border-emerald-200 text-emerald-700" :
-                                    pending ? "bg-amber-100 border-amber-200 text-amber-700" :
-                                    "bg-sky-100 border-sky-200 text-sky-700"
-                                )}>
+                                <div className="w-8 h-8 rounded-xl border flex items-center justify-center shrink-0 bg-sky-100 border-sky-200 text-sky-700">
                                     <Icon className="w-4 h-4" />
                                 </div>
                                 <div className="min-w-0">
                                     <p className="text-[11px] font-black font-vazirmatn text-ink">
-                                        {shipped ? t("common.notifications.transferShipped") :
-                                            pending ? t("common.notifications.transferPending") :
-                                            t("common.notifications.transferIncoming")}
+                                        {t("common.notifications.transferSending")}
                                     </p>
                                     <p className="text-[10px] text-ink/55 mt-0.5 font-vazirmatn leading-relaxed">
                                         {n.message}

@@ -43,7 +43,7 @@ const baseOptions: Partial<ChartOptions<"line">> = {
             cornerRadius: 10,
             displayColors: false,
             callbacks: {
-                label: (ctx) => `  ${ctx.parsed.y.toLocaleString()}`,
+                label: (ctx) => `  ${(ctx.parsed.y ?? 0).toLocaleString()}`,
             },
         },
     },

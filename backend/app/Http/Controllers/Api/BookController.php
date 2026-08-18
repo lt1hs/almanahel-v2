@@ -31,14 +31,9 @@ class BookController extends Controller
             ? Book::query()->select(['id', 'title', 'author', 'isbn', 'iraq_only'])
             : Book::with(['inventories.branch', 'inventories.supplier']);
 
-        // Iraq-only filtering: hide iraq_only books from branches not configured to see them
-        if ($user->role !== 'super_admin' && $user->role !== 'admin') {
-            $visibleBranches = $user->iraq_only_visible_branches ?? [];
-            $userBranchId = $user->branch_id;
-
-            if (!in_array($userBranchId, $visibleBranches)) {
-                $query->where('iraq_only', false);
-            }
+        // Iraq-only filtering: hide iraq_only books from unauthorized users
+        if (!\App\Support\Authorization\BranchAccess::canSeeIraqOnlyBooks($user)) {
+            $query->where('iraq_only', false);
         }
 
         if ($request->has('branch_id')) {
@@ -93,7 +88,7 @@ class BookController extends Controller
     {
         $validated = $request->validate([
             'title'               => 'required|string|max:255',
-            'author'              => 'required|string|max:255',
+            'author'              => 'nullable|string|max:255',
             'isbn'                => 'nullable|string|unique:books,isbn',
             'publisher'           => 'nullable|string|max:255',
             'size'                => 'nullable|string|max:100',
@@ -147,6 +142,8 @@ class BookController extends Controller
 
     public function show(Book $book)
     {
+        \App\Support\Authorization\BranchAccess::assertIraqBookVisible(request()->user(), $book);
+
         return response()->json($book->load(['inventories.branch', 'inventories.supplier']));
     }
 
@@ -154,7 +151,7 @@ class BookController extends Controller
     {
         $validated = $request->validate([
             'title'               => 'sometimes|required|string|max:255',
-            'author'              => 'sometimes|required|string|max:255',
+            'author'              => 'sometimes|nullable|string|max:255',
             'isbn'                => 'nullable|string|unique:books,isbn,' . $book->id,
             'publisher'           => 'nullable|string|max:255',
             'size'                => 'nullable|string|max:100',

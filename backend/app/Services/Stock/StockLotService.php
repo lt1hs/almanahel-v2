@@ -1,0 +1,563 @@
+<?php
+
+namespace App\Services\Stock;
+
+use App\Exceptions\DomainException;
+use App\Models\Branch;
+use App\Models\ConsignmentReceiptItem;
+use App\Models\ConsignmentReturnLotAllocation;
+use App\Models\Gift;
+use App\Models\GiftLotAllocation;
+use App\Models\Inventory;
+use App\Models\InvoiceItem;
+use App\Models\SaleLotAllocation;
+use App\Models\StockAdjustment;
+use App\Models\StockLot;
+use App\Models\StockLotMovement;
+use App\Models\Transfer;
+use App\Models\TransferItem;
+use App\Models\TransferItemLotSplit;
+use App\Support\IntakePolicy;
+use App\Support\Money;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
+
+class StockLotService
+{
+    public function resolveOrigin(Branch $branch, bool $iraqOnlyBook = false): string
+    {
+        if ($iraqOnlyBook || (bool) ($branch->is_iraq_store ?? false) || IntakePolicy::isIraqStore($branch)) {
+            return 'iraq_local';
+        }
+        if ((bool) ($branch->is_intake_hub ?? false)
+            || (bool) ($branch->is_central_warehouse ?? false)
+            || IntakePolicy::isIntakeHub($branch)) {
+            return 'qom_distributed';
+        }
+
+        return 'other';
+    }
+
+    public function ensureAggregate(int $branchId, int $bookId, array $attrs = []): Inventory
+    {
+        $existing = Inventory::query()
+            ->where('branch_id', $branchId)
+            ->where('book_id', $bookId)
+            ->whereNull('superseded_by_inventory_id')
+            ->lockForUpdate()
+            ->orderBy('id')
+            ->first();
+
+        if ($existing) {
+            return $existing;
+        }
+
+        return Inventory::create(array_merge([
+            'branch_id' => $branchId,
+            'book_id' => $bookId,
+            'quantity' => 0,
+            'type' => 'owned',
+        ], $attrs));
+    }
+
+    public function syncAggregateQuantity(int $branchId, int $bookId): Inventory
+    {
+        $inventory = $this->ensureAggregate($branchId, $bookId);
+        $sum = (int) StockLot::where('branch_id', $branchId)
+            ->where('book_id', $bookId)
+            ->sum('qty_available');
+        $inventory->quantity = $sum;
+
+        $lots = StockLot::where('branch_id', $branchId)
+            ->where('book_id', $bookId)
+            ->where('qty_available', '>', 0)
+            ->get();
+
+        if ($lots->isNotEmpty()) {
+            $types = $lots->pluck('ownership_type')->unique();
+            $suppliers = $lots->pluck('supplier_id')->unique()->filter();
+            $currencies = $lots->pluck('currency')->unique();
+            if ($types->count() === 1) {
+                $inventory->type = $types->first();
+            }
+            if ($suppliers->count() === 1) {
+                $inventory->supplier_id = $suppliers->first();
+            } elseif ($suppliers->count() > 1) {
+                $inventory->supplier_id = null;
+            }
+            if ($currencies->count() > 1) {
+                // Keep sell prices; do not collapse mixed lot cost onto the aggregate.
+            }
+        }
+
+        $inventory->save();
+
+        return $inventory->fresh();
+    }
+
+    public function setSellPrices(Inventory $inventory, array $prices): Inventory
+    {
+        $allowed = ['price_toman', 'price_dinar'];
+        $updates = [];
+        foreach ($allowed as $key) {
+            if (array_key_exists($key, $prices)) {
+                $updates[$key] = $prices[$key];
+            }
+        }
+        if ($updates) {
+            $inventory->update($updates);
+        }
+
+        return $inventory->fresh();
+    }
+
+    public function createIntakeLot(array $data, ?Model $reference = null): StockLot
+    {
+        $qty = (int) $data['quantity'];
+        if ($qty < 1) {
+            throw new DomainException('مقدار ورود کالا باید مثبت باشد');
+        }
+
+        $lot = StockLot::create([
+            'book_id' => $data['book_id'],
+            'branch_id' => $data['branch_id'],
+            'source_branch_id' => $data['source_branch_id'] ?? null,
+            'consignment_receipt_item_id' => $data['consignment_receipt_item_id'] ?? null,
+            'supplier_id' => $data['supplier_id'] ?? null,
+            'ownership_type' => $data['ownership_type'],
+            'currency' => $data['currency'],
+            'unit_cost' => Money::of($data['unit_cost']),
+            'qty_original' => $qty,
+            'qty_available' => $qty,
+            'qty_reserved' => 0,
+            'origin' => $data['origin'],
+            'parent_lot_id' => $data['parent_lot_id'] ?? null,
+            'legacy_uncertain' => $data['legacy_uncertain'] ?? false,
+            'legacy_inventory_id' => $data['legacy_inventory_id'] ?? null,
+            'migration_source' => $data['migration_source'] ?? 'intake',
+        ]);
+
+        $this->move($lot, 'intake', $qty, $reference);
+        $this->syncAggregateQuantity((int) $data['branch_id'], (int) $data['book_id']);
+
+        return $lot;
+    }
+
+    public function adjust(int $branchId, int $bookId, int $delta, string $reason, ?Model $reference = null, array $meta = []): StockAdjustment
+    {
+        if ($delta === 0) {
+            throw new DomainException('مقدار تعدیل نمی‌تواند صفر باشد');
+        }
+
+        $adjustment = StockAdjustment::create([
+            'branch_id' => $branchId,
+            'book_id' => $bookId,
+            'user_id' => Auth::id(),
+            'quantity_delta' => $delta,
+            'reason' => $reason,
+            'meta' => $meta ?: null,
+        ]);
+
+        if ($delta > 0) {
+            $inventory = $this->ensureAggregate($branchId, $bookId);
+            $branch = Branch::find($branchId);
+            $currency = (!Money::isZero($inventory->cost_price_dinar ?? 0) && Money::isZero($inventory->cost_price_toman ?? 0))
+                ? 'dinar'
+                : 'toman';
+            $this->createIntakeLot([
+                'book_id' => $bookId,
+                'branch_id' => $branchId,
+                'ownership_type' => $inventory->type === 'consignment' ? 'consignment' : 'owned',
+                'supplier_id' => $inventory->supplier_id,
+                'currency' => $currency,
+                'unit_cost' => $currency === 'dinar' ? ($inventory->cost_price_dinar ?? 0) : ($inventory->cost_price_toman ?? 0),
+                'quantity' => $delta,
+                'origin' => $branch ? $this->resolveOrigin($branch) : 'other',
+                'migration_source' => 'adjustment',
+            ], $adjustment);
+        } else {
+            $this->consumeLots($branchId, $bookId, abs($delta), 'adjustment', $reference ?? $adjustment, null);
+            $this->syncAggregateQuantity($branchId, $bookId);
+        }
+
+        return $adjustment;
+    }
+
+    /** @return SaleLotAllocation[] */
+    public function allocateSale(InvoiceItem $invoiceItem, int $branchId, int $quantity, string $currency): array
+    {
+        $this->lockBookStock($branchId, (int) $invoiceItem->book_id);
+        $available = $this->availableQty($branchId, (int) $invoiceItem->book_id, $currency);
+        if ($available < $quantity) {
+            throw new DomainException('موجودی کافی برای تخصیص لات وجود ندارد', 422, [
+                'book_id' => $invoiceItem->book_id,
+            ]);
+        }
+
+        $remaining = $quantity;
+        $allocations = [];
+        foreach ($this->fifoLots($branchId, (int) $invoiceItem->book_id, $currency) as $lot) {
+            if ($remaining <= 0) {
+                break;
+            }
+            $take = min((int) $lot->qty_available, $remaining);
+            if ($take <= 0) {
+                continue;
+            }
+            $this->decrementAvailable($lot, $take);
+            $this->move($lot, 'sale', -$take, $invoiceItem);
+            $alloc = SaleLotAllocation::create([
+                'invoice_item_id' => $invoiceItem->id,
+                'stock_lot_id' => $lot->id,
+                'quantity' => $take,
+                'unit_cost' => $lot->unit_cost,
+                'currency' => $lot->currency,
+                'quantity_returned' => 0,
+            ]);
+            $allocations[] = $alloc;
+            if ($lot->ownership_type === 'consignment' && $lot->consignment_receipt_item_id) {
+                ConsignmentReceiptItem::where('id', $lot->consignment_receipt_item_id)
+                    ->increment('quantity_sold', $take);
+            }
+            $remaining -= $take;
+        }
+
+        if ($remaining > 0) {
+            throw new DomainException("موجودی کافی برای تخصیص لات وجود ندارد (book {$invoiceItem->book_id})");
+        }
+
+        $this->syncAggregateQuantity($branchId, (int) $invoiceItem->book_id);
+
+        return $allocations;
+    }
+
+    public function reverseSaleAllocations(InvoiceItem $invoiceItem, int $quantity): void
+    {
+        $remaining = $quantity;
+        $allocs = SaleLotAllocation::where('invoice_item_id', $invoiceItem->id)
+            ->orderByDesc('id')
+            ->lockForUpdate()
+            ->get();
+
+        foreach ($allocs as $alloc) {
+            if ($remaining <= 0) {
+                break;
+            }
+            $restorable = (int) $alloc->quantity - (int) $alloc->quantity_returned;
+            if ($restorable <= 0) {
+                continue;
+            }
+            $take = min($restorable, $remaining);
+            $lot = StockLot::where('id', $alloc->stock_lot_id)->lockForUpdate()->first();
+            if (!$lot) {
+                throw new DomainException('بازگردانی موجودی از تخصیص فروش ناقص ماند');
+            }
+            $lot->increment('qty_available', $take);
+            $alloc->increment('quantity_returned', $take);
+            $this->move($lot, 'return', $take, $invoiceItem);
+            if ($lot->ownership_type === 'consignment' && $lot->consignment_receipt_item_id) {
+                $item = ConsignmentReceiptItem::where('id', $lot->consignment_receipt_item_id)->lockForUpdate()->first();
+                if ($item) {
+                    $item->decrement('quantity_sold', min($take, (int) $item->quantity_sold));
+                }
+            }
+            $remaining -= $take;
+            $this->syncAggregateQuantity((int) $lot->branch_id, (int) $lot->book_id);
+        }
+
+        if ($remaining > 0) {
+            throw new DomainException('بازگردانی موجودی از تخصیص فروش ناقص ماند');
+        }
+    }
+
+    public function reserveForTransfer(Transfer $transfer, array $items): void
+    {
+        $aggregated = [];
+        foreach ($items as $item) {
+            $bookId = (int) $item['book_id'];
+            $aggregated[$bookId] = ($aggregated[$bookId] ?? 0) + (int) $item['quantity'];
+        }
+
+        foreach ($aggregated as $bookId => $quantity) {
+            $this->lockBookStock((int) $transfer->from_branch_id, $bookId);
+            if ($this->availableQty((int) $transfer->from_branch_id, $bookId) < $quantity) {
+                throw new DomainException('موجودی کافی برای رزرو انتقال وجود ندارد', 422, ['book_id' => $bookId]);
+            }
+
+            $transferItem = TransferItem::create([
+                'transfer_id' => $transfer->id,
+                'book_id' => $bookId,
+                'quantity' => $quantity,
+            ]);
+
+            $remaining = $quantity;
+            foreach ($this->fifoLots((int) $transfer->from_branch_id, $bookId) as $lot) {
+                if ($remaining <= 0) {
+                    break;
+                }
+                $take = min((int) $lot->qty_available, $remaining);
+                $this->decrementAvailable($lot, $take);
+                $lot->increment('qty_reserved', $take);
+                $this->move($lot, 'transfer_out', -$take, $transfer);
+                TransferItemLotSplit::create([
+                    'transfer_item_id' => $transferItem->id,
+                    'source_lot_id' => $lot->id,
+                    'quantity' => $take,
+                ]);
+                $remaining -= $take;
+            }
+            if ($remaining > 0) {
+                throw new DomainException('موجودی کافی برای رزرو انتقال وجود ندارد');
+            }
+            $this->syncAggregateQuantity((int) $transfer->from_branch_id, $bookId);
+        }
+    }
+
+    public function receiveTransfer(Transfer $transfer): void
+    {
+        $items = TransferItem::with('lotSplits.sourceLot')->where('transfer_id', $transfer->id)->lockForUpdate()->get();
+        if ($items->isEmpty()) {
+            throw new DomainException('انتقال بدون رزرو لات قابل دریافت نیست');
+        }
+
+        foreach ($items as $item) {
+            foreach ($item->lotSplits as $split) {
+                if ($split->dest_lot_id) {
+                    continue;
+                }
+                $source = StockLot::where('id', $split->source_lot_id)->lockForUpdate()->first();
+                if (!$source) {
+                    throw new DomainException('لات مبدأ انتقال یافت نشد');
+                }
+                $qty = (int) $split->quantity;
+                $source->decrement('qty_reserved', min($qty, (int) $source->qty_reserved));
+                $dest = $this->createIntakeLot([
+                    'book_id' => $source->book_id,
+                    'branch_id' => $transfer->to_branch_id,
+                    'source_branch_id' => $transfer->from_branch_id,
+                    'consignment_receipt_item_id' => $source->consignment_receipt_item_id,
+                    'supplier_id' => $source->supplier_id,
+                    'ownership_type' => $source->ownership_type,
+                    'currency' => $source->currency,
+                    'unit_cost' => $source->unit_cost,
+                    'quantity' => $qty,
+                    'origin' => $source->origin,
+                    'parent_lot_id' => $source->id,
+                    'migration_source' => 'transfer',
+                ], $transfer);
+                StockLotMovement::where('stock_lot_id', $dest->id)->latest('id')->first()
+                    ?->update(['type' => 'transfer_in']);
+                $split->update(['dest_lot_id' => $dest->id]);
+            }
+            $this->syncAggregateQuantity((int) $transfer->to_branch_id, (int) $item->book_id);
+        }
+    }
+
+    public function cancelTransferReservation(Transfer $transfer): void
+    {
+        $items = TransferItem::with('lotSplits')->where('transfer_id', $transfer->id)->lockForUpdate()->get();
+        foreach ($items as $item) {
+            foreach ($item->lotSplits as $split) {
+                if ($split->dest_lot_id) {
+                    throw new DomainException('انتقال دریافت‌شده قابل لغو از مبدأ نیست');
+                }
+                $lot = StockLot::where('id', $split->source_lot_id)->lockForUpdate()->first();
+                if (!$lot) {
+                    throw new DomainException('لات رزرو شده یافت نشد');
+                }
+                $qty = (int) $split->quantity;
+                $lot->decrement('qty_reserved', min($qty, (int) $lot->qty_reserved));
+                $lot->increment('qty_available', $qty);
+                $this->move($lot, 'adjustment', $qty, $transfer, ['reason' => 'transfer_cancelled']);
+            }
+            $this->syncAggregateQuantity((int) $transfer->from_branch_id, (int) $item->book_id);
+        }
+    }
+
+    /** @return list<array{lot: StockLot, quantity: int, cost: string, currency: string}> */
+    public function allocateConsignmentReturn(int $branchId, int $supplierId, int $bookId, int $quantity, ?Model $reference = null): array
+    {
+        $this->lockBookStock($branchId, $bookId);
+        $splits = [];
+        $remaining = $quantity;
+        $lots = StockLot::where('branch_id', $branchId)
+            ->where('book_id', $bookId)
+            ->where('supplier_id', $supplierId)
+            ->where('ownership_type', 'consignment')
+            ->where('qty_available', '>', 0)
+            ->orderBy('id')
+            ->lockForUpdate()
+            ->get();
+
+        $currency = null;
+        foreach ($lots as $lot) {
+            if ($remaining <= 0) {
+                break;
+            }
+            if ($currency && $lot->currency !== $currency) {
+                throw new DomainException('مرجوعی امانی نمی‌تواند چند ارز را در یک قلم ترکیب کند');
+            }
+            $currency = $lot->currency;
+            $take = min((int) $lot->qty_available, $remaining);
+            $this->decrementAvailable($lot, $take);
+            $this->move($lot, 'consignment_return', -$take, $reference);
+            if ($lot->consignment_receipt_item_id) {
+                ConsignmentReceiptItem::where('id', $lot->consignment_receipt_item_id)
+                    ->increment('quantity_returned', $take);
+            }
+            $splits[] = [
+                'lot' => $lot,
+                'quantity' => $take,
+                'cost' => Money::mul($lot->unit_cost, $take),
+                'currency' => $lot->currency,
+            ];
+            $remaining -= $take;
+        }
+
+        if ($remaining > 0) {
+            throw new DomainException('موجودی امانی قابل مرجوعی برای این ناشر کافی نیست');
+        }
+
+        $this->syncAggregateQuantity($branchId, $bookId);
+
+        return $splits;
+    }
+
+    /** @return GiftLotAllocation[] */
+    public function allocateGift(Gift $gift): array
+    {
+        $branchId = (int) $gift->branch_id;
+        $bookId = (int) $gift->book_id;
+        $quantity = (int) $gift->quantity;
+        $this->lockBookStock($branchId, $bookId);
+
+        if ($this->availableQty($branchId, $bookId, $gift->currency) < $quantity) {
+            throw new DomainException('موجودی کافی برای هدیه وجود ندارد');
+        }
+
+        $remaining = $quantity;
+        $created = [];
+        foreach ($this->fifoLots($branchId, $bookId, $gift->currency) as $lot) {
+            if ($remaining <= 0) {
+                break;
+            }
+            $take = min((int) $lot->qty_available, $remaining);
+            $this->decrementAvailable($lot, $take);
+            $this->move($lot, 'gift', -$take, $gift);
+            if ($lot->ownership_type === 'consignment' && $lot->consignment_receipt_item_id) {
+                ConsignmentReceiptItem::where('id', $lot->consignment_receipt_item_id)
+                    ->increment('quantity_sold', $take);
+            }
+            $created[] = GiftLotAllocation::create([
+                'gift_id' => $gift->id,
+                'stock_lot_id' => $lot->id,
+                'quantity' => $take,
+                'unit_cost' => $lot->unit_cost,
+                'currency' => $lot->currency,
+                'ownership_type' => $lot->ownership_type,
+                'supplier_id' => $lot->supplier_id,
+            ]);
+            $remaining -= $take;
+        }
+
+        if ($remaining > 0) {
+            throw new DomainException('موجودی کافی برای هدیه وجود ندارد');
+        }
+
+        $this->syncAggregateQuantity($branchId, $bookId);
+
+        return $created;
+    }
+
+    public function persistReturnSplits(int $returnItemId, array $splits): void
+    {
+        foreach ($splits as $split) {
+            ConsignmentReturnLotAllocation::create([
+                'consignment_return_item_id' => $returnItemId,
+                'stock_lot_id' => $split['lot']->id,
+                'quantity' => $split['quantity'],
+                'unit_cost' => $split['lot']->unit_cost,
+                'currency' => $split['currency'],
+            ]);
+        }
+    }
+
+    private function consumeLots(int $branchId, int $bookId, int $quantity, string $type, ?Model $reference, ?string $currency): void
+    {
+        $remaining = $quantity;
+        foreach ($this->fifoLots($branchId, $bookId, $currency) as $lot) {
+            if ($remaining <= 0) {
+                break;
+            }
+            $take = min((int) $lot->qty_available, $remaining);
+            $this->decrementAvailable($lot, $take);
+            $this->move($lot, $type, -$take, $reference);
+            $remaining -= $take;
+        }
+        if ($remaining > 0) {
+            throw new DomainException('موجودی کافی برای این عملیات وجود ندارد', 422, ['book_id' => $bookId]);
+        }
+    }
+
+    private function fifoLots(int $branchId, int $bookId, ?string $currency = null)
+    {
+        $q = StockLot::where('branch_id', $branchId)
+            ->where('book_id', $bookId)
+            ->where('qty_available', '>', 0)
+            ->orderBy('id')
+            ->lockForUpdate();
+        if ($currency) {
+            $q->where('currency', $currency);
+        }
+
+        return $q->get();
+    }
+
+    private function availableQty(int $branchId, int $bookId, ?string $currency = null): int
+    {
+        $q = StockLot::where('branch_id', $branchId)->where('book_id', $bookId);
+        if ($currency) {
+            $q->where('currency', $currency);
+        }
+
+        return (int) $q->sum('qty_available');
+    }
+
+    private function lockBookStock(int $branchId, int $bookId): void
+    {
+        Inventory::where('branch_id', $branchId)
+            ->where('book_id', $bookId)
+            ->whereNull('superseded_by_inventory_id')
+            ->lockForUpdate()
+            ->get();
+        StockLot::where('branch_id', $branchId)
+            ->where('book_id', $bookId)
+            ->lockForUpdate()
+            ->get();
+    }
+
+    private function decrementAvailable(StockLot $lot, int $take): void
+    {
+        if ((int) $lot->qty_available < $take) {
+            throw new DomainException('موجودی لات کافی نیست');
+        }
+        $lot->decrement('qty_available', $take);
+        $lot->refresh();
+        if ((int) $lot->qty_available < 0) {
+            throw new DomainException('موجودی نمی‌تواند منفی شود');
+        }
+    }
+
+    private function move(StockLot $lot, string $type, int $quantity, ?Model $reference = null, array $meta = []): void
+    {
+        StockLotMovement::create([
+            'stock_lot_id' => $lot->id,
+            'type' => $type,
+            'quantity' => $quantity,
+            'reference_type' => $reference ? $reference::class : null,
+            'reference_id' => $reference?->getKey(),
+            'meta' => $meta ?: null,
+        ]);
+    }
+}

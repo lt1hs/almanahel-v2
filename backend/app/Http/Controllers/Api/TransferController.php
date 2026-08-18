@@ -84,40 +84,46 @@ class TransferController extends Controller
                 return $denied;
             }
 
+            $aggregated = [];
             foreach ($validated['items'] as $item) {
+                $bookId = (int) $item['book_id'];
+                $aggregated[$bookId] = ($aggregated[$bookId] ?? 0) + (int) $item['quantity'];
+            }
+            $lineItems = [];
+            foreach ($aggregated as $bookId => $qty) {
+                $lineItems[] = ['book_id' => $bookId, 'quantity' => $qty];
+            }
+
+            foreach ($lineItems as $item) {
                 $inv = Inventory::where('branch_id', $validated['from_branch_id'])
                     ->where('book_id', $item['book_id'])
+                    ->whereNull('superseded_by_inventory_id')
                     ->lockForUpdate()
                     ->first();
 
                 if (!$inv || $inv->quantity < $item['quantity']) {
-                    return response()->json([
-                        'message' => 'موجودی کافی در شعبه مبدأ وجود ندارد',
+                    throw new \App\Exceptions\DomainException('موجودی کافی در شعبه مبدأ وجود ندارد', 422, [
                         'book_id' => $item['book_id'],
-                    ], 422);
+                    ]);
                 }
             }
 
-            $items = array_values($validated['items']);
-            $items[] = ['_status_log' => [$this->statusEvent('pending', $user)]];
+            $items = array_values($lineItems);
+            $items[] = ['_status_log' => [$this->statusEvent('shipped', $user)]];
             $transfer = Transfer::create([
                 'from_branch_id' => $validated['from_branch_id'],
                 'to_branch_id'   => $validated['to_branch_id'],
-                'status'         => 'pending',
+                'status'         => 'shipped',
                 'user_id'        => $user->id,
                 'items'          => $items,
             ]);
 
             $transfer->load(['toBranch', 'fromBranch']);
 
-            foreach ($validated['items'] as $item) {
-                $inv = Inventory::where('branch_id', $validated['from_branch_id'])
-                    ->where('book_id', $item['book_id'])
-                    ->lockForUpdate()
-                    ->first();
+            $lotService = app(\App\Services\Stock\StockLotService::class);
+            $lotService->reserveForTransfer($transfer, $lineItems);
 
-                $inv->decrement('quantity', $item['quantity']);
-
+            foreach ($lineItems as $item) {
                 WarehouseLog::create([
                     'branch_id'           => $transfer->from_branch_id,
                     'book_id'             => $item['book_id'],
@@ -129,7 +135,7 @@ class TransferController extends Controller
                     'log_date'            => now()->toDateString(),
                     'user_id'             => $user->id,
                     'notes'               => $validated['notes']
-                        ?? "رزرو برای انتقال به شعبه {$transfer->toBranch?->name} (در انتظار ارسال)",
+                        ?? "ارسال به شعبه {$transfer->toBranch?->name} — در راه (منتظر دریافت مقصد)",
                 ]);
             }
 
@@ -168,8 +174,8 @@ class TransferController extends Controller
         $transfer->load(['toBranch', 'fromBranch', 'user']);
 
         $allowed = [
-            'pending'   => ['shipped', 'cancelled'],
-            'shipped'   => ['received'],
+            'pending'   => ['shipped', 'received', 'cancelled'],
+            'shipped'   => ['received', 'cancelled'],
             'received'  => [],
             'cancelled' => [],
         ];
@@ -206,57 +212,25 @@ class TransferController extends Controller
         }
 
         if ($nextStatus === 'received' && $previousStatus !== 'received') {
+            $lotService = app(\App\Services\Stock\StockLotService::class);
             foreach ($transfer->lineItems() as $item) {
                 $srcInv = Inventory::where('branch_id', $transfer->from_branch_id)
                     ->where('book_id', $item['book_id'])
+                    ->whereNull('superseded_by_inventory_id')
                     ->first();
-
-                // Legacy transfers created before source reservation — deduct now
-                $sourceAlreadyLogged = WarehouseLog::where('related_transfer_id', $transfer->id)
-                    ->where('book_id', $item['book_id'])
-                    ->where('direction', 'out')
-                    ->exists();
-
-                if (!$sourceAlreadyLogged) {
-                    if (!$srcInv || $srcInv->quantity < $item['quantity']) {
-                        abort(422, 'موجودی کافی در شعبه مبدأ وجود ندارد');
-                    }
-
-                    $srcInv->decrement('quantity', $item['quantity']);
-
-                    WarehouseLog::create([
-                        'branch_id'           => $transfer->from_branch_id,
-                        'book_id'             => $item['book_id'],
-                        'direction'           => 'out',
-                        'quantity'            => $item['quantity'],
-                        'handler_name'        => $user->name,
-                        'reason'              => 'transferred_to_branch',
-                        'related_transfer_id' => $transfer->id,
-                        'log_date'            => now()->toDateString(),
-                        'user_id'             => $user->id,
-                        'notes'               => "انتقال به شعبه {$transfer->toBranch?->name}",
-                    ]);
-                }
-
-                $destInv = Inventory::firstOrCreate(
-                    ['branch_id' => $transfer->to_branch_id, 'book_id' => $item['book_id']],
-                    ['quantity' => 0, 'type' => $srcInv?->type ?? 'owned']
+                $destInv = $lotService->ensureAggregate(
+                    (int) $transfer->to_branch_id,
+                    (int) $item['book_id']
                 );
-                $destInv = Inventory::where('id', $destInv->id)->lockForUpdate()->first();
-                $destInv->increment('quantity', $item['quantity']);
-
                 if ($srcInv) {
-                    $destInv->update([
-                        'type'             => $srcInv->type,
-                        'supplier_id'      => $srcInv->supplier_id,
-                        // Never overwrite a set dest price with null from source
-                        'price_toman'      => $srcInv->price_toman ?? $destInv->price_toman,
-                        'price_dinar'      => $srcInv->price_dinar ?? $destInv->price_dinar,
-                        'cost_price_toman' => $srcInv->cost_price_toman ?? $destInv->cost_price_toman,
-                        'cost_price_dinar' => $srcInv->cost_price_dinar ?? $destInv->cost_price_dinar,
+                    $lotService->setSellPrices($destInv, [
+                        'price_toman' => $srcInv->price_toman ?? $destInv->price_toman,
+                        'price_dinar' => $srcInv->price_dinar ?? $destInv->price_dinar,
                     ]);
                 }
-
+            }
+            $lotService->receiveTransfer($transfer);
+            foreach ($transfer->lineItems() as $item) {
                 WarehouseLog::create([
                     'branch_id'           => $transfer->to_branch_id,
                     'book_id'             => $item['book_id'],
@@ -272,24 +246,9 @@ class TransferController extends Controller
             }
         }
 
-        if ($nextStatus === 'cancelled' && $previousStatus === 'pending') {
+        if ($nextStatus === 'cancelled' && in_array($previousStatus, ['pending', 'shipped'], true)) {
+            app(\App\Services\Stock\StockLotService::class)->cancelTransferReservation($transfer);
             foreach ($transfer->lineItems() as $item) {
-                $wasDeducted = WarehouseLog::where('related_transfer_id', $transfer->id)
-                    ->where('book_id', $item['book_id'])
-                    ->where('direction', 'out')
-                    ->exists();
-
-                if (!$wasDeducted) {
-                    continue;
-                }
-
-                $inv = Inventory::where('branch_id', $transfer->from_branch_id)
-                    ->where('book_id', $item['book_id'])
-                    ->first();
-                if ($inv) {
-                    $inv->increment('quantity', $item['quantity']);
-                }
-
                 WarehouseLog::create([
                     'branch_id'           => $transfer->from_branch_id,
                     'book_id'             => $item['book_id'],

@@ -47,7 +47,11 @@ class InventoryController extends Controller
             ->orderBy('type')
             ->orderBy('name')
             ->orderBy('id')
-            ->get(['id', 'name', 'type', 'city', 'status'])
+            ->get([
+                'id', 'name', 'type', 'city', 'status',
+                'is_central_warehouse', 'is_intake_hub', 'is_iraq_store',
+                'supports_dinar', 'supports_toman',
+            ])
             ->unique(fn (Branch $b) => mb_strtolower(trim($b->name)))
             ->values();
 

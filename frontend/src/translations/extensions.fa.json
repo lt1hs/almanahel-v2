@@ -12,6 +12,7 @@
     "partialDeleteError": "برخی کتاب‌ها حذف نشدند.",
     "bookNotFound": "کتاب یافت نشد",
     "titleAuthorRequired": "عنوان و نویسنده الزامی است",
+    "titleRequired": "عنوان کتاب الزامی است",
     "selectSupplierFirst": "لطفاً ابتدا یک تأمین‌کننده انتخاب کنید",
     "titleQtyRequired": "لطفاً عنوان و تعداد کتاب را وارد کنید",
     "ledgerSaving": "در حال ثبت در دفتر کل...",
@@ -363,7 +364,9 @@
       "revenue": "درآمد",
       "expenses": "هزینه‌ها",
       "netProfit": "سود خالص",
-      "salesCount": "تعداد فروش"
+      "salesCount": "تعداد فروش",
+      "iraqLocal": "محلی عراق",
+      "qomDistributed": "توزیع‌شده از قم"
     },
     "links": {
       "overdueChecks": "چک‌های معوق",

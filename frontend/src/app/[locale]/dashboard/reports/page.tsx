@@ -13,8 +13,17 @@ import { useTranslation } from "@/hooks/useTranslation";
 import { useRouter } from "@/i18n/routing";
 import { apiRequest } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { RequireRole } from "@/components/auth/RequireRole";
 
 export default function ReportsPage() {
+    return (
+        <RequireRole roles={["super_admin", "admin", "accountant"]}>
+            <ReportsPageContent />
+        </RequireRole>
+    );
+}
+
+function ReportsPageContent() {
     const { t, formatNumber, isArabic, isDinar } = useTranslation();
     const router = useRouter();
     const currencySymbol = isDinar ? t("common.currency.dinarSymbol") : t("common.currency.tomanSymbol");
@@ -170,18 +179,48 @@ export default function ReportsPage() {
                                 {t("reports.iraqProfit.title")}
                             </CardTitle>
                         </CardHeader>
-                        <CardContent className="p-5 grid grid-cols-2 md:grid-cols-4 gap-4">
-                            {[
-                                { label: t("reports.iraqProfit.revenue"), value: iraqProfit.revenue },
-                                { label: t("reports.iraqProfit.expenses"), value: iraqProfit.expenses },
-                                { label: t("reports.iraqProfit.netProfit"), value: iraqProfit.net_profit },
-                                { label: t("reports.iraqProfit.salesCount"), value: iraqProfit.sales_count },
-                            ].map((item, i) => (
-                                <div key={i} className="p-3 rounded-xl bg-ink/[0.02] border border-ink/5">
-                                    <p className="text-[9px] text-ink/30 font-black uppercase mb-1">{item.label}</p>
-                                    <p className="text-lg font-black font-vazirmatn text-ink">{formatNumber(item.value || 0)}</p>
+                        <CardContent className="p-5 space-y-4">
+                            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                                {[
+                                    { label: t("reports.iraqProfit.revenue"), value: iraqProfit.revenue },
+                                    { label: t("reports.iraqProfit.expenses"), value: iraqProfit.expenses },
+                                    { label: t("reports.iraqProfit.netProfit"), value: iraqProfit.net_profit },
+                                    { label: t("reports.iraqProfit.salesCount"), value: iraqProfit.sales_count },
+                                ].map((item, i) => (
+                                    <div key={i} className="p-3 rounded-xl bg-ink/[0.02] border border-ink/5">
+                                        <p className="text-[9px] text-ink/30 font-black uppercase mb-1">{item.label}</p>
+                                        <p className="text-lg font-black font-vazirmatn text-ink">{formatNumber(item.value || 0)}</p>
+                                    </div>
+                                ))}
+                            </div>
+                            {(iraqProfit.iraq_local || iraqProfit.qom_distributed) && (
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-1">
+                                    {iraqProfit.iraq_local && (
+                                        <div className="p-3 rounded-xl bg-sky-50/60 border border-sky-100/80">
+                                            <p className="text-[10px] font-black text-sky-700/80 mb-2">
+                                                {t("reports.iraqProfit.iraqLocal")}
+                                            </p>
+                                            <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] font-vazirmatn text-ink/70">
+                                                <span>{t("reports.iraqProfit.revenue")}: {formatNumber(iraqProfit.iraq_local.revenue || 0)}</span>
+                                                <span>{t("reports.iraqProfit.netProfit")}: {formatNumber(iraqProfit.iraq_local.net_profit || 0)}</span>
+                                                <span>{t("reports.iraqProfit.salesCount")}: {formatNumber(iraqProfit.iraq_local.sales_count || 0)}</span>
+                                            </div>
+                                        </div>
+                                    )}
+                                    {iraqProfit.qom_distributed && (
+                                        <div className="p-3 rounded-xl bg-primary/[0.04] border border-primary/10">
+                                            <p className="text-[10px] font-black text-primary/80 mb-2">
+                                                {t("reports.iraqProfit.qomDistributed")}
+                                            </p>
+                                            <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] font-vazirmatn text-ink/70">
+                                                <span>{t("reports.iraqProfit.revenue")}: {formatNumber(iraqProfit.qom_distributed.revenue || 0)}</span>
+                                                <span>{t("reports.iraqProfit.netProfit")}: {formatNumber(iraqProfit.qom_distributed.net_profit || 0)}</span>
+                                                <span>{t("reports.iraqProfit.salesCount")}: {formatNumber(iraqProfit.qom_distributed.sales_count || 0)}</span>
+                                            </div>
+                                        </div>
+                                    )}
                                 </div>
-                            ))}
+                            )}
                         </CardContent>
                     </Card>
                 )}

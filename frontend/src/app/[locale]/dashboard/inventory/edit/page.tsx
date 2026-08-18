@@ -154,8 +154,8 @@ function EditBookContent() {
     }, [inventories]);
 
     const handleSave = async () => {
-        if (!book?.title || !book?.author) {
-            setError(t("toast.titleAuthorRequired"));
+        if (!book?.title) {
+            setError(t("toast.titleRequired"));
             return;
         }
         if (book.type === "consignment" && !supplier?.id) {

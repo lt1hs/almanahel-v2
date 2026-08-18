@@ -4,7 +4,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
     Plus, Search, Book, ChevronLeft, ChevronRight,
     X, Hash, UserCircle, Edit3, Eye, Layers, LayoutGrid, Building2, RefreshCw,
-    AlertTriangle, Package, Warehouse, Truck,
+    AlertTriangle, Package, Warehouse, Truck, PackagePlus,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
@@ -59,6 +59,11 @@ interface BranchOption {
     name: string;
     type: string;
     city?: string;
+    is_central_warehouse?: boolean | null;
+    is_intake_hub?: boolean | null;
+    is_iraq_store?: boolean | null;
+    supports_dinar?: boolean | null;
+    supports_toman?: boolean | null;
 }
 
 function bandsFromApi(book: any, byBranch: BranchStock[]): PriceBandValues {
@@ -86,6 +91,12 @@ function mapOverviewBook(book: any): BookData {
         iraq_only: book.iraq_only,
         low_stock_threshold: book.low_stock_threshold,
     };
+}
+
+function addStockPath(bookId: string, branchId: number | "overview") {
+    const q = new URLSearchParams({ id: bookId });
+    if (typeof branchId === "number") q.set("branch", String(branchId));
+    return `/dashboard/inventory/add-stock?${q.toString()}`;
 }
 
 function mapInventoryRow(item: any, branch?: { name?: string; type?: string; city?: string } | null): BookData {
@@ -308,9 +319,9 @@ export default function InventoryPage() {
             result = result.filter(
                 (book) =>
                     book.title.toLowerCase().includes(q) ||
-                    book.author.toLowerCase().includes(q) ||
-                    book.isbn.toLowerCase().includes(q) ||
-                    book.supplier.toLowerCase().includes(q)
+                    (book.author || "").toLowerCase().includes(q) ||
+                    (book.isbn || "").toLowerCase().includes(q) ||
+                    (book.supplier || "").toLowerCase().includes(q)
             );
         }
         if (typeFilter !== "all") result = result.filter((b) => b.type === typeFilter);
@@ -647,6 +658,16 @@ export default function InventoryPage() {
                                                     >
                                                         <Edit3 className="w-4 h-4" />
                                                     </button>
+                                                    {isAdmin && (
+                                                        <button
+                                                            type="button"
+                                                            className="p-2 rounded-lg text-ink/30 hover:text-sky-700 hover:bg-sky-50"
+                                                            title={t("inventory.addStock")}
+                                                            onClick={() => router.push(addStockPath(book.id, selectedBranchId))}
+                                                        >
+                                                            <PackagePlus className="w-4 h-4" />
+                                                        </button>
+                                                    )}
                                                     <button
                                                         type="button"
                                                         className="p-2 rounded-lg text-ink/30 hover:text-emerald-600 hover:bg-emerald-50"
@@ -876,6 +897,16 @@ export default function InventoryPage() {
                                 <Truck className="w-4 h-4 ms-1.5" />
                                 {t("inventory.transfer")}
                             </Button>
+                            {isAdmin && (
+                                <Button
+                                    variant="outline"
+                                    className="w-full h-11 rounded-xl text-[11px] font-black"
+                                    onClick={() => router.push(addStockPath(selectedBook.id, selectedBranchId))}
+                                >
+                                    <PackagePlus className="w-4 h-4 ms-1.5" />
+                                    {t("inventory.addStock")}
+                                </Button>
+                            )}
                         </div>
                     </div>
                 </>

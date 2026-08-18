@@ -1,8 +1,8 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useMemo, useState } from "react";
 import { motion, AnimatePresence, Variants } from "framer-motion";
-import { ChevronRight, ChevronLeft, Save, Plus, ArrowLeft, Book as BookIcon, User, Hash, DollarSign, Package, MapPin, CheckCircle2, ShoppingBag } from "lucide-react";
+import { ChevronRight, ChevronLeft, Save, ArrowRight, Book as BookIcon, User, Hash, DollarSign, Package, MapPin, CheckCircle2, ShoppingBag } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Card, CardContent } from "@/components/ui/Card";
 import { Stepper } from "@/components/ui/Stepper";
@@ -17,9 +17,10 @@ import { useTranslation } from "@/hooks/useTranslation";
 import { useNotify } from "@/hooks/useNotify";
 import { notify } from "@/lib/toast";
 import { apiRequest } from "@/lib/api";
-import { bookPayloadFromForm, defaultBookFormState, syncBookBranchInventories } from "@/lib/bookIntake";
-import { totalBranchStock } from "@/lib/bookFormUtils";
+import { addStockIntake, bookPayloadFromForm, defaultBookFormState, syncBookBranchInventories } from "@/lib/bookIntake";
+import { parsePriceDigits, stockKeyForBranch, type BranchStockKey } from "@/lib/bookFormUtils";
 import { useAuth } from "@/contexts/AuthContext";
+import { useInvalidateNotifications } from "@/hooks/useNotificationInbox";
 
 const containerVariants: Variants = {
     hidden: { opacity: 0 },
@@ -44,6 +45,7 @@ export default function NewInventoryPage() {
     const { t, formatNumber } = useTranslation();
     const notifyToast = useNotify();
     const { user } = useAuth();
+    const invalidateNotifications = useInvalidateNotifications();
     const [currentStep, setCurrentStep] = useState(0);
     const [intakeInfo, setIntakeInfo] = useState<{
         can_intake: boolean;
@@ -79,13 +81,51 @@ export default function NewInventoryPage() {
     }, []);
 
     const canSubmit = Boolean(intakeInfo?.can_intake || intakeInfo?.can_intake_iraq_only);
+    const isHubIntake = user?.role === "super_admin" || user?.role === "admin" || user?.role === "warehouse_staff";
+    const posBranch = useMemo(() => {
+        if (user?.branch_id) {
+            const fromList = branches.find((b) => Number(b.id) === Number(user.branch_id));
+            if (fromList) return fromList;
+        }
+        return user?.branch || null;
+    }, [branches, user?.branch, user?.branch_id]);
+    const posKey = stockKeyForBranch(posBranch);
+
+    const visibleStockKeys = useMemo((): BranchStockKey[] => {
+        if (isHubIntake) {
+            return formData.book.iraqOnly ? ["warehouse", "qom", "najaf"] : ["warehouse", "qom"];
+        }
+        return posKey ? [posKey] : ["qom"];
+    }, [formData.book.iraqOnly, isHubIntake, posKey]);
+
+    const stockFieldLabels = useMemo(() => {
+        if (isHubIntake || !posBranch?.name) return undefined;
+        const key = posKey || "qom";
+        return { [key]: posBranch.name } as Partial<Record<BranchStockKey, string>>;
+    }, [isHubIntake, posBranch?.name, posKey]);
+
+    const priceScope = !isHubIntake && posKey === "najaf"
+        ? "iraq"
+        : !isHubIntake && posKey === "mashhad"
+            ? "mashhad"
+            : !isHubIntake
+                ? "qom"
+                : "all";
+
+    const intakeQty = useMemo(
+        () => visibleStockKeys.reduce(
+            (sum, key) => sum + (parseInt(formData.book.branchStock?.[key] || "0", 10) || 0),
+            0
+        ),
+        [formData.book.branchStock, visibleStockKeys]
+    );
 
     const handleNext = () => {
         if (currentStep === 0 && !formData.supplier) {
             notifyToast.error("toast.selectSupplierFirst");
             return;
         }
-        if (currentStep === 1 && (!formData.book.title || totalBranchStock(formData.book.branchStock) <= 0)) {
+        if (currentStep === 1 && (!formData.book.title || intakeQty <= 0)) {
             notifyToast.error("toast.titleQtyRequired");
             return;
         }
@@ -109,12 +149,36 @@ export default function NewInventoryPage() {
                     body: JSON.stringify(bookPayloadFromForm(formData.book)),
                 });
 
-                await syncBookBranchInventories(
-                    formData.book,
-                    branches,
-                    formData.supplier?.id ?? null,
-                    created.id
-                );
+                if (!isHubIntake && user?.branch_id) {
+                    const selling = priceScope === "iraq"
+                        ? parseFloat(parsePriceDigits(formData.book.priceDinar)) || 0
+                        : priceScope === "mashhad"
+                            ? parseFloat(parsePriceDigits(formData.book.priceTomanMashhad || formData.book.priceTomanQom)) || 0
+                            : parseFloat(parsePriceDigits(formData.book.priceTomanQom)) || 0;
+                    const cost = priceScope === "iraq"
+                        ? parseFloat(parsePriceDigits(formData.book.costPriceDinar)) || 0
+                        : parseFloat(parsePriceDigits(formData.book.costPriceToman)) || 0;
+                    await addStockIntake({
+                        bookId: created.id,
+                        branchId: Number(user.branch_id),
+                        quantity: intakeQty,
+                        type: formData.book.type === "consignment" ? "consignment" : "owned",
+                        supplierId: formData.supplier?.id ?? null,
+                        currency: priceScope === "iraq" ? "dinar" : "toman",
+                        costPrice: cost,
+                        sellingPrice: selling || cost,
+                        notes: formData.book.notes || null,
+                        receivedAt: formData.book.settlementDate || null,
+                    });
+                } else {
+                    await syncBookBranchInventories(
+                        formData.book,
+                        branches,
+                        formData.supplier?.id ?? null,
+                        created.id
+                    );
+                }
+                invalidateNotifications();
             })(),
             {
                 loading: t("toast.ledgerSaving"),
@@ -130,7 +194,7 @@ export default function NewInventoryPage() {
             variants={containerVariants}
             initial="hidden"
             animate="show"
-            className="space-y-8 pb-20 relative min-h-screen"
+            className="space-y-4 pb-12 relative min-h-[70vh]"
         >
             {/* Ambient Background Elements */}
             <div className="fixed inset-0 pointer-events-none overflow-hidden -z-10">
@@ -154,31 +218,33 @@ export default function NewInventoryPage() {
                 />
             </div>
 
-            {/* Premium Header */}
-            <div className="flex flex-col md:flex-row md:items-end justify-between gap-6 border-b border-ink/5 pb-8 relative">
-                <motion.div variants={itemVariants} className="space-y-4">
-                    <div className="flex items-center gap-3">
-                        <div className="w-12 h-12 rounded-[10px] bg-white border border-white shadow-[0_8px_30px_rgb(0,0,0,0.04)] flex items-center justify-center shrink-0 ring-1 ring-ink/[0.02]">
-                            <Plus className="w-6 h-6 text-primary" />
-                        </div>
-                        <div className="h-8 w-[1px] bg-ink/5 mx-2" />
-                        <div>
-                            <h1 className="text-3xl font-black font-vazirmatn text-ink tracking-tight leading-none">
-                                {t("inventory.addToWarehouse")}
-                            </h1>
-
-                        </div>
-                    </div>
-                </motion.div>
-
-                <motion.div variants={itemVariants} className="flex items-center gap-3">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <motion.div variants={itemVariants} className="flex items-center gap-3 min-w-0">
                     <Button
                         variant="ghost"
                         size="sm"
-                        onClick={() => router.back()}
-                        className="h-11 rounded-[5px] text-[11px] font-bold border border-ink/5 px-6 hover:bg-white/80 hover:text-ink hover:border-white shadow-none transition-all active:scale-95 group flex items-center gap-2"
+                        className="h-10 w-10 p-0 rounded-xl border border-ink/5 bg-white/70 shrink-0"
+                        onClick={() => router.push("/dashboard/inventory")}
                     >
-                        <ArrowLeft className="w-4 h-4 text-ink/30 group-hover:text-ink/60 transition-colors ltr:rotate-0 rtl:rotate-180" />
+                        <ArrowRight className="w-4 h-4" />
+                    </Button>
+                    <div className="min-w-0">
+                        <h1 className="text-xl font-black font-vazirmatn text-ink truncate">
+                            {t("inventory.addToWarehouse")}
+                        </h1>
+                        <p className="text-[10px] text-ink/35 font-bold mt-1">
+                            {steps[currentStep]}
+                        </p>
+                    </div>
+                </motion.div>
+
+                <motion.div variants={itemVariants}>
+                    <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => router.push("/dashboard/inventory")}
+                        className="h-9 px-4 rounded-xl text-[11px] font-black shrink-0"
+                    >
                         {t("inventory.wizard.cancel")}
                     </Button>
                 </motion.div>
@@ -186,10 +252,12 @@ export default function NewInventoryPage() {
 
             {intakeInfo && (
                 <motion.div variants={itemVariants} className={cn(
-                    "rounded-2xl border px-5 py-3 text-[12px] font-bold font-vazirmatn",
+                    "rounded-xl border px-4 py-2 text-[11px] font-bold font-vazirmatn",
                     canSubmit ? "bg-primary/5 border-primary/15 text-primary" : "bg-rose-50 border-rose-100 text-rose-600"
                 )}>
-                    {canSubmit ? t("inventory.intakeNotice") : t("toast.intakeNotAllowed")}
+                    {canSubmit
+                        ? (isHubIntake ? t("inventory.intakeNotice") : t("inventory.posIntakeNotice"))
+                        : t("toast.intakeNotAllowed")}
                 </motion.div>
             )}
 
@@ -236,6 +304,9 @@ export default function NewInventoryPage() {
                                                     data={formData.book}
                                                     onChange={(book) => setFormData({ ...formData, book })}
                                                     stockFields="intake"
+                                                    visibleStockKeys={visibleStockKeys}
+                                                    stockFieldLabels={stockFieldLabels}
+                                                    priceScope={priceScope}
                                                 />
                                             </div>
                                         )}
@@ -270,7 +341,7 @@ export default function NewInventoryPage() {
                                                         </div>
                                                         <div className="flex justify-between items-end">
                                                             <div>
-                                                                <p className="font-vazirmatn font-black text-lg text-ink">{formatNumber(totalBranchStock(formData.book.branchStock))} <span className="text-xs text-ink/30 font-bold">{t("common.quantity")}</span></p>
+                                                                <p className="font-vazirmatn font-black text-lg text-ink">{formatNumber(intakeQty)} <span className="text-xs text-ink/30 font-bold">{t("common.quantity")}</span></p>
                                                                 <Badge className={cn(
                                                                     "mt-2 text-[9px] px-2 py-0.5 rounded-full border",
                                                                     formData.book.type === "consignment"
@@ -300,14 +371,18 @@ export default function NewInventoryPage() {
                                                             </div>
                                                         </div>
                                                         <div className="flex flex-col justify-center gap-4 md:border-l border-ink/5 md:pl-8 rtl:md:border-l-0 rtl:md:border-r rtl:md:pl-0 rtl:md:pr-8">
+                                                            {priceScope !== "iraq" && (
                                                             <div className="flex items-center justify-between">
                                                                 <span className="text-[10px] font-black text-ink/30 uppercase tracking-widest">{t("common.toman")}</span>
-                                                                <span className="text-xl font-black text-primary">{formatNumber(formData.book.priceTomanQom || 0)}</span>
+                                                                <span className="text-xl font-black text-primary">{formatNumber(Number(formData.book.priceTomanMashhad || formData.book.priceTomanQom) || 0)}</span>
                                                             </div>
+                                                            )}
+                                                            {priceScope !== "qom" && priceScope !== "mashhad" && (
                                                             <div className="flex items-center justify-between">
                                                                 <span className="text-[10px] font-black text-ink/30 uppercase tracking-widest">{t("common.dinar")}</span>
-                                                                <span className="text-xl font-black text-accent">{formatNumber(formData.book.priceDinar)}</span>
+                                                                <span className="text-xl font-black text-accent">{formatNumber(Number(formData.book.priceDinar) || 0)}</span>
                                                             </div>
+                                                            )}
                                                         </div>
                                                     </div>
                                                 </div>
@@ -415,11 +490,11 @@ export default function NewInventoryPage() {
                                             </div>
                                             <div className="flex justify-between items-end">
                                                 <p className="text-2xl font-black text-ink tracking-tighter">
-                                                    {formatNumber(totalBranchStock(formData.book.branchStock) || 0)} <span className="text-xs text-ink/20 font-bold uppercase ml-1">{t("common.quantity")}</span>
+                                                    {formatNumber(intakeQty || 0)} <span className="text-xs text-ink/20 font-bold uppercase ml-1">{t("common.quantity")}</span>
                                                 </p>
                                                 <div className="text-right">
                                                     <p className="text-[9px] font-black text-primary uppercase tracking-widest">{t("inventory.marketPrice")}</p>
-                                                    <p className="text-sm font-black text-ink">{formatNumber(formData.book.priceTomanQom || 0)}</p>
+                                                    <p className="text-sm font-black text-ink">{formatNumber(Number(formData.book.priceTomanMashhad || formData.book.priceTomanQom || formData.book.priceDinar) || 0)}</p>
                                                 </div>
                                             </div>
                                         </div>

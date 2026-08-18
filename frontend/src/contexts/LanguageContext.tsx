@@ -53,27 +53,18 @@ export function LanguageProvider({
 }) {
   // Current locale messages only (from NextIntlClientProvider) — avoids bundling both JSONs
   const messages = useMessages() as Translations;
-  const [language, setLanguageState] = useState<Language>(initialLocale);
+  const language = initialLocale;
   const [currency, setCurrencyState] = useState<Currency>(() =>
     readStoredCurrency(defaultCurrencyForLocale(initialLocale))
   );
-  const [isLoading, setIsLoading] = useState(true);
+  const isLoading = false;
 
   useEffect(() => {
-    setLanguageState(initialLocale);
     localStorage.setItem("al-manahel-language", initialLocale);
     document.documentElement.lang = initialLocale;
-    // Keep an explicit currency choice; only default when nothing stored yet
-    if (!localStorage.getItem("al-manahel-currency")) {
-      const next = defaultCurrencyForLocale(initialLocale);
-      setCurrencyState(next);
-      localStorage.setItem("al-manahel-currency", next);
-    }
-    setIsLoading(false);
   }, [initialLocale]);
 
   const setLanguage = useCallback((lang: Language) => {
-    setLanguageState(lang);
     localStorage.setItem("al-manahel-language", lang);
     document.documentElement.lang = lang;
   }, []);

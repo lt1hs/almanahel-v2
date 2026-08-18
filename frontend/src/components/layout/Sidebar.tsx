@@ -203,7 +203,7 @@ export function Sidebar() {
         ? {}
         : {
               animate: { scale: [1, 1.08, 1], opacity: [0.35, 0.55, 0.35] },
-              transition: { duration: 10, repeat: Infinity, ease: "easeInOut" },
+              transition: { duration: 10, repeat: Infinity, ease: "easeInOut" as const },
           };
 
     return (
@@ -222,7 +222,7 @@ export function Sidebar() {
             <motion.div
                 {...(prefersReduced ? {} : {
                     animate: { scale: [1.08, 1, 1.08], opacity: [0.25, 0.45, 0.25] },
-                    transition: { duration: 13, repeat: Infinity, ease: "easeInOut" },
+                    transition: { duration: 13, repeat: Infinity, ease: "easeInOut" as const },
                 })}
                 className="absolute bottom-[20%] -end-8 w-52 h-52 bg-indigo-400/5 rounded-full blur-[100px] pointer-events-none"
             />
@@ -252,7 +252,7 @@ export function Sidebar() {
                                 initial={{ opacity: 0, width: 0 }}
                                 animate={{ opacity: 1, width: "auto" }}
                                 exit={{ opacity: 0, width: 0 }}
-                                transition={{ duration: 0.2, ease: "easeOut" }}
+                                transition={{ duration: 0.2, ease: "easeOut" as const }}
                                 className="flex flex-col overflow-hidden"
                             >
                                 <span className="font-vazirmatn font-black text-[13.5px] tracking-tight text-ink leading-none whitespace-nowrap">

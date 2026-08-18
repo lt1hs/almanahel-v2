@@ -60,6 +60,7 @@ type TransferAlertType =
     | "transfer_pending"
     | "transfer_incoming"
     | "transfer_shipped"
+    | "transfer_sending"
     | "transfer_received";
 type AlertType = "low_stock" | "check_due" | "credit_due" | TransferAlertType;
 type AlertFilter = "all" | "low_stock" | "check_due" | "credit_due" | "transfer";
@@ -115,6 +116,10 @@ export default function DashboardPage() {
     const { data: bundle, isLoading, isFetching, refetch } = useQuery({
         queryKey: ["dashboard"],
         queryFn: fetchDashboardBundle,
+        staleTime: 0,
+        refetchInterval: 15_000,
+        refetchOnWindowFocus: true,
+        refetchOnMount: "always",
     });
 
     const data = bundle?.stats ?? null;
@@ -138,9 +143,7 @@ export default function DashboardPage() {
     }, [notifications, alertFilter]);
 
     const alertLabel = (type: AlertType) => {
-        if (type === "transfer_pending") return t("common.notifications.transferPending");
-        if (type === "transfer_incoming") return t("common.notifications.transferIncoming");
-        if (type === "transfer_shipped") return t("common.notifications.transferShipped");
+        if (type.startsWith("transfer_") && type !== "transfer_received") return t("common.notifications.transferSending");
         if (type === "transfer_received") return t("common.notifications.transferReceived");
         if (type === "low_stock") return t("common.notifications.lowStock");
         if (type === "check_due") return t("common.notifications.checkDue");
@@ -149,20 +152,8 @@ export default function DashboardPage() {
 
     const alertMessage = (n: Notification) => {
         const d = n.data || {};
-        if (n.type === "transfer_pending") {
-            return t("common.notifications.transferPendingMsg", {
-                book: String(d.book_title || t("distribution.bookFallback")),
-                to: String(d.to_branch || t("distribution.branchFallback")),
-            });
-        }
-        if (n.type === "transfer_incoming") {
-            return t("common.notifications.transferIncomingMsg", {
-                book: String(d.book_title || t("distribution.bookFallback")),
-                from: String(d.from_branch || t("distribution.branchFallback")),
-            });
-        }
-        if (n.type === "transfer_shipped") {
-            return t("common.notifications.transferShippedMsg", {
+        if (n.type.startsWith("transfer_") && n.type !== "transfer_received") {
+            return t("common.notifications.transferSendingMsg", {
                 book: String(d.book_title || t("distribution.bookFallback")),
                 from: String(d.from_branch || t("distribution.branchFallback")),
             });
@@ -441,26 +432,18 @@ export default function DashboardPage() {
                                         const isCheck = notif.type === "check_due";
                                         const Icon = isTransfer ? Truck : isLow ? Package : isCheck ? Banknote : CreditCard;
                                         const tone = isTransfer
-                                            ? notif.type === "transfer_shipped"
+                                            ? notif.type === "transfer_received"
                                                 ? "bg-emerald-50 border-emerald-100 text-emerald-600"
-                                                : notif.type === "transfer_pending"
-                                                    ? "bg-amber-50 border-amber-100 text-amber-600"
-                                                    : notif.type === "transfer_incoming"
-                                                        ? "bg-sky-50 border-sky-100 text-sky-600"
-                                                        : "bg-emerald-50 border-emerald-100 text-emerald-600"
+                                                : "bg-sky-50 border-sky-100 text-sky-600"
                                             : isLow
                                                 ? "bg-rose-50 border-rose-100 text-rose-500"
                                                 : isCheck
                                                     ? "bg-amber-50 border-amber-100 text-amber-600"
                                                     : "bg-sky-50 border-sky-100 text-sky-600";
                                         const badge = isTransfer
-                                            ? notif.type === "transfer_shipped"
+                                            ? notif.type === "transfer_received"
                                                 ? "bg-emerald-100 text-emerald-700"
-                                                : notif.type === "transfer_pending"
-                                                    ? "bg-amber-100 text-amber-700"
-                                                    : notif.type === "transfer_incoming"
-                                                        ? "bg-sky-100 text-sky-700"
-                                                        : "bg-emerald-100 text-emerald-700"
+                                                : "bg-sky-100 text-sky-700"
                                             : isLow
                                                 ? "bg-rose-100 text-rose-600"
                                                 : isCheck

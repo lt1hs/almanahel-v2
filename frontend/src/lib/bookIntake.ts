@@ -2,6 +2,8 @@ import { apiRequest } from "@/lib/api";
 import {
     BRANCH_STOCK_KEYS,
     BranchStockKey,
+    BranchLike,
+    BookPriceFields,
     parsePriceDigits,
     resolveBranchId,
     sellingDinarForBranch,
@@ -14,13 +16,13 @@ function parsePrice(value: string | undefined): number {
     return parseFloat(parsePriceDigits(value)) || 0;
 }
 
-function costToman(book: any, selling: number): number | null {
+function costToman(book: BookPriceFields, selling: number): number | null {
     const raw = parsePrice(book.costPriceToman);
     if (raw > 0) return raw;
     return selling > 0 ? selling : null;
 }
 
-function costDinar(book: any, selling: number): number | null {
+function costDinar(book: BookPriceFields, selling: number): number | null {
     const raw = parsePrice(book.costPriceDinar);
     if (raw > 0) return raw;
     return selling > 0 ? selling : null;
@@ -29,7 +31,7 @@ function costDinar(book: any, selling: number): number | null {
 async function upsertBranchPricing(
     bookId: number,
     branchId: number,
-    book: any,
+    book: BookPriceFields,
     key: BranchStockKey,
     supplierId: number | null,
     quantity?: number
@@ -59,8 +61,8 @@ async function upsertBranchPricing(
  * Sell prices for Qom / Mashhad / Najaf are saved even when quantity is 0.
  */
 export async function syncBookBranchInventories(
-    book: any,
-    branches: any[],
+    book: BookPriceFields,
+    branches: BranchLike[],
     supplierId: number | null,
     bookId: number,
     options?: {
@@ -168,10 +170,73 @@ export async function syncBookBranchInventories(
     }
 }
 
-export function bookPayloadFromForm(book: any) {
+/** Add stock to an existing title via lot intake (purchase or consignment). Never overwrites quantity. */
+export async function addStockIntake(params: {
+    bookId: number;
+    branchId: number;
+    quantity: number;
+    type: "owned" | "consignment";
+    supplierId: number | null;
+    currency: "toman" | "dinar";
+    costPrice: number;
+    sellingPrice: number;
+    notes?: string | null;
+    receivedAt?: string | null;
+}) {
+    const selling = params.sellingPrice;
+    const cost = params.costPrice > 0 ? params.costPrice : selling;
+    const date = params.receivedAt || new Date().toISOString().split("T")[0];
+    const priceToman = params.currency === "toman" ? selling : null;
+    const priceDinar = params.currency === "dinar" ? selling : null;
+
+    if (params.type === "consignment") {
+        if (!params.supplierId) {
+            throw new Error("supplier_required");
+        }
+        return apiRequest("/consignments", {
+            method: "POST",
+            body: JSON.stringify({
+                supplier_id: params.supplierId,
+                branch_id: params.branchId,
+                currency: params.currency,
+                received_at: date,
+                notes: params.notes || null,
+                items: [
+                    {
+                        book_id: params.bookId,
+                        quantity: params.quantity,
+                        cost_price: cost,
+                        selling_price: selling || cost,
+                        price_toman: priceToman,
+                        price_dinar: priceDinar,
+                    },
+                ],
+            }),
+        });
+    }
+
+    return apiRequest("/inventory/purchase", {
+        method: "POST",
+        body: JSON.stringify({
+            branch_id: params.branchId,
+            book_id: params.bookId,
+            quantity: params.quantity,
+            currency: params.currency,
+            cost_price: cost,
+            selling_price: selling || cost,
+            price_toman: priceToman,
+            price_dinar: priceDinar,
+            supplier_id: params.supplierId,
+            notes: params.notes || null,
+            log_date: date,
+        }),
+    });
+}
+
+export function bookPayloadFromForm(book: BookPriceFields) {
     return {
         title: book.title,
-        author: book.author,
+        author: typeof book.author === "string" && book.author.trim() ? book.author.trim() : "",
         isbn: book.isbn || null,
         publisher: book.publisher || null,
         size: book.size || null,
@@ -187,7 +252,10 @@ export function bookPayloadFromForm(book: any) {
         category: book.category || null,
         description: book.notes || null,
         iraq_only: Boolean(book.iraqOnly),
-        low_stock_threshold: book.low_stock_threshold ? Number(book.low_stock_threshold) : 5,
+        low_stock_threshold:
+            book.low_stock_threshold !== "" && book.low_stock_threshold != null
+                ? Number(book.low_stock_threshold)
+                : null,
     };
 }
 

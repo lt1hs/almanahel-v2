@@ -15,7 +15,17 @@ return Application::configure(basePath: dirname(__DIR__))
         $middleware->use([
             \Illuminate\Http\Middleware\HandleCors::class,
         ]);
+        $middleware->alias([
+            'role' => \App\Http\Middleware\EnsureRole::class,
+        ]);
     })
     ->withExceptions(function (Exceptions $exceptions) {
-        //
+        $exceptions->render(function (\App\Exceptions\DomainException $e, $request) {
+            if ($request->expectsJson() || $request->is('api/*')) {
+                return response()->json(array_merge(
+                    ['message' => $e->getMessage()],
+                    $e->context
+                ), $e->status);
+            }
+        });
     })->create();

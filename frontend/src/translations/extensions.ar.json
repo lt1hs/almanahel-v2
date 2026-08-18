@@ -12,6 +12,7 @@
     "partialDeleteError": "لم يُحذف بعض الكتب.",
     "bookNotFound": "الكتاب غير موجود",
     "titleAuthorRequired": "العنوان والمؤلف مطلوبان",
+    "titleRequired": "عنوان الكتاب مطلوب",
     "selectSupplierFirst": "يرجى اختيار مورد أولاً",
     "titleQtyRequired": "يرجى إدخال العنوان والكمية",
     "ledgerSaving": "جاري التسجيل في الدفتر...",
@@ -363,7 +364,9 @@
       "revenue": "الإيرادات",
       "expenses": "المصروفات",
       "netProfit": "صافي الربح",
-      "salesCount": "عدد المبيعات"
+      "salesCount": "عدد المبيعات",
+      "iraqLocal": "محلي العراق",
+      "qomDistributed": "موزَّع من قم"
     },
     "links": {
       "overdueChecks": "شيكات متأخرة",

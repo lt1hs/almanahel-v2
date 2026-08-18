@@ -52,6 +52,17 @@ class BranchController extends Controller
             'country' => 'required|string|max:100',
             'type'    => 'in:warehouse,store',
             'status'  => 'in:active,inactive',
+            'is_central_warehouse' => 'boolean',
+            'is_intake_hub' => 'boolean',
+            'is_iraq_store' => 'boolean',
+            'supports_dinar' => 'boolean',
+            'supports_toman' => 'boolean',
+            'can_receive_inventory' => 'boolean',
+            'can_set_pricing' => 'boolean',
+            'can_sell' => 'boolean',
+            'can_transfer' => 'boolean',
+            'can_report' => 'boolean',
+            'can_manage_alerts' => 'boolean',
         ]);
 
         $branch = Branch::create($validated);
@@ -84,6 +95,17 @@ class BranchController extends Controller
             'country' => 'sometimes|required|string|max:100',
             'type'    => 'in:warehouse,store',
             'status'  => 'in:active,inactive',
+            'is_central_warehouse' => 'boolean',
+            'is_intake_hub' => 'boolean',
+            'is_iraq_store' => 'boolean',
+            'supports_dinar' => 'boolean',
+            'supports_toman' => 'boolean',
+            'can_receive_inventory' => 'boolean',
+            'can_set_pricing' => 'boolean',
+            'can_sell' => 'boolean',
+            'can_transfer' => 'boolean',
+            'can_report' => 'boolean',
+            'can_manage_alerts' => 'boolean',
         ]);
 
         $branch->update($validated);
@@ -104,6 +126,32 @@ class BranchController extends Controller
 
     public function destroy(Branch $branch)
     {
+        $hasHistory = $branch->inventories()->exists()
+            || \App\Models\Invoice::where('branch_id', $branch->id)->exists()
+            || \App\Models\Expense::where('branch_id', $branch->id)->exists();
+
+        if ($hasHistory) {
+            $branch->update([
+                'status' => 'inactive',
+                'archived_at' => now(),
+            ]);
+
+            ActivityLogger::record(
+                'branches',
+                'updated',
+                "بایگانی شعبه «{$branch->name}» (حذف فیزیکی مسدود به دلیل سابقه مالی)",
+                $branch,
+                ['archived' => true],
+                (int) $branch->id,
+            );
+
+            return response()->json([
+                'message' => 'شعبه به دلیل سابقه مالی بایگانی شد و حذف فیزیکی انجام نشد',
+                'archived' => true,
+                'branch' => $branch->fresh(),
+            ]);
+        }
+
         $snapshot = [
             'branch_id' => $branch->id,
             'name' => $branch->name,

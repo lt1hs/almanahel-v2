@@ -15,6 +15,7 @@ import { apiRequest } from "@/lib/api";
 import { useAuth } from "@/contexts/AuthContext";
 import { FilterSelect } from "@/components/ui/FilterSelect";
 import { useRouter } from "@/i18n/routing";
+import { RequireRole } from "@/components/auth/RequireRole";
 
 const REASON_KEYS: Record<string, string> = {
     received_from_supplier: "warehouse.logTypes.received",
@@ -87,6 +88,14 @@ function ListSkeleton({ rows = 5 }: { rows?: number }) {
 }
 
 export default function WarehousePage() {
+    return (
+        <RequireRole roles={["super_admin", "admin", "warehouse_staff"]}>
+            <WarehousePageContent />
+        </RequireRole>
+    );
+}
+
+function WarehousePageContent() {
     const { t, formatNumber } = useTranslation();
     const notify = useNotify();
     const notifyRef = useRef(notify);

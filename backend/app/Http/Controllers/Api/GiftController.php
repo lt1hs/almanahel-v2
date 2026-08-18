@@ -2,12 +2,15 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Exceptions\DomainException;
 use App\Http\Controllers\Controller;
 use App\Models\Gift;
 use App\Models\Inventory;
-use App\Models\ConsignmentReceipt;
 use App\Support\ActivityLogger;
+use App\Support\Money;
 use App\Support\StockMovementLogger;
+use App\Services\Ledger\LedgerPoster;
+use App\Services\Stock\StockLotService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
@@ -96,7 +99,7 @@ class GiftController extends Controller
             'recipient_name'   => 'required|string|max:255',
             'recipient_phone'  => 'nullable|string|max:30',
             'reason'           => 'nullable|string',
-            'cost_value'       => 'required|numeric|min:0',
+            'cost_value'       => 'nullable|numeric|min:0',
             'currency'         => 'required|in:toman,dinar',
             'is_consignment'   => 'boolean',
             'supplier_id'      => 'nullable|exists:suppliers,id',
@@ -112,20 +115,47 @@ class GiftController extends Controller
         return DB::transaction(function () use ($request, $validated) {
             $inventory = Inventory::where('branch_id', $validated['branch_id'])
                 ->where('book_id', $validated['book_id'])
+                ->whereNull('superseded_by_inventory_id')
                 ->lockForUpdate()
                 ->first();
 
             if (!$inventory || $inventory->quantity < $validated['quantity']) {
-                return response()->json(['message' => 'موجودی کافی برای اهدای این کتاب وجود ندارد'], 422);
+                throw new DomainException('موجودی کافی برای اهدای این کتاب وجود ندارد');
             }
 
             $gift = Gift::create([
-                ...$validated,
-                'user_id'           => $request->user()->id,
+                'branch_id' => $validated['branch_id'],
+                'book_id' => $validated['book_id'],
+                'quantity' => $validated['quantity'],
+                'recipient_name' => $validated['recipient_name'],
+                'recipient_phone' => $validated['recipient_phone'] ?? null,
+                'reason' => $validated['reason'] ?? null,
+                'cost_value' => 0,
+                'currency' => $validated['currency'],
+                'is_consignment' => false,
+                'supplier_id' => null,
+                'gifted_at' => $validated['gifted_at'],
+                'user_id' => $request->user()->id,
                 'accounting_status' => 'pending',
             ]);
 
-            $inventory->decrement('quantity', $validated['quantity']);
+            $lotService = app(StockLotService::class);
+            $allocs = $lotService->allocateGift($gift);
+            $cost = '0.00';
+            $hasConsignment = false;
+            $supplierId = null;
+            foreach ($allocs as $alloc) {
+                $cost = Money::add($cost, Money::mul($alloc->unit_cost, $alloc->quantity));
+                if ($alloc->ownership_type === 'consignment') {
+                    $hasConsignment = true;
+                    $supplierId = $alloc->supplier_id;
+                }
+            }
+            $gift->update([
+                'cost_value' => $cost,
+                'is_consignment' => $hasConsignment,
+                'supplier_id' => $supplierId,
+            ]);
 
             StockMovementLogger::log(
                 (int) $validated['branch_id'],
@@ -146,13 +176,15 @@ class GiftController extends Controller
                     'book_id' => $validated['book_id'],
                     'quantity' => $validated['quantity'],
                     'recipient_name' => $validated['recipient_name'],
-                    'cost_value' => $validated['cost_value'],
-                    'currency' => $validated['currency'],
+                    'cost_value' => $gift->cost_value,
+                    'currency' => $gift->currency,
                 ],
                 (int) $validated['branch_id'],
             );
 
-            return response()->json($gift->load(['book', 'branch', 'supplier']), 201);
+            app(LedgerPoster::class)->postGift($gift->fresh());
+
+            return response()->json($gift->fresh()->load(['book', 'branch', 'supplier']), 201);
         });
     }
 
@@ -170,22 +202,13 @@ class GiftController extends Controller
             'accounting_status' => 'required|in:pending,settled',
         ]);
 
-        $gift->update($validated);
-
-        if ($validated['accounting_status'] === 'settled' && $gift->is_consignment && $gift->supplier_id) {
-            ConsignmentReceipt::create([
-                'supplier_id'    => $gift->supplier_id,
-                'branch_id'      => $gift->branch_id,
-                'user_id'        => $request->user()->id,
-                'receipt_number' => 'GIFT-' . strtoupper(substr(uniqid(), -8)),
-                'status'         => 'settled',
-                'currency'       => $gift->currency,
-                'total_value'    => $gift->cost_value,
-                'settled_amount' => $gift->cost_value,
-                'received_at'    => $gift->gifted_at,
-                'notes'          => "تسویه هدیه به {$gift->recipient_name}",
-            ]);
+        if ($gift->accounting_status === $validated['accounting_status']) {
+            return response()->json($gift->load(['book', 'branch', 'supplier']));
         }
+
+        $gift->update($validated);
+        // Consignment gift payable already recorded via receipt item quantity_sold at gift time.
+        // Do not create synthetic empty settled receipts.
 
         ActivityLogger::record(
             'gifts',

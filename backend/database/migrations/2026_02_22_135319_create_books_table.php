@@ -14,7 +14,7 @@ return new class extends Migration {
             $table->id();
             $table->string('isbn')->unique()->nullable();
             $table->string('title');
-            $table->string('author');
+            $table->string('author')->nullable();
             $table->string('publisher')->nullable();
             $table->string('category')->nullable();
             $table->boolean('iraq_only')->default(false);

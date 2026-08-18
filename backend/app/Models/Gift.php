@@ -17,4 +17,5 @@ class Gift extends Model
     public function user() { return $this->belongsTo(User::class); }
     public function book() { return $this->belongsTo(Book::class); }
     public function supplier() { return $this->belongsTo(Supplier::class); }
+    public function allocations() { return $this->hasMany(GiftLotAllocation::class); }
 }

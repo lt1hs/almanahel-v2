@@ -171,7 +171,7 @@ class ConsignmentController extends Controller
         ]);
 
         foreach ($validated['items'] as $item) {
-            ConsignmentReceiptItem::create([
+            $receiptItem = ConsignmentReceiptItem::create([
                 'consignment_receipt_id' => $receipt->id,
                 'book_id'                => $item['book_id'],
                 'quantity_received'      => $item['quantity'],
@@ -181,23 +181,31 @@ class ConsignmentController extends Controller
                 'selling_price'          => $item['selling_price'],
             ]);
 
-            // Update or create inventory
-            $inventory = Inventory::firstOrCreate(
-                ['branch_id' => $validated['branch_id'], 'book_id' => $item['book_id']],
-                ['quantity' => 0, 'type' => 'consignment', 'supplier_id' => $validated['supplier_id']]
+            $lotService = app(\App\Services\Stock\StockLotService::class);
+            $inventory = $lotService->ensureAggregate(
+                (int) $validated['branch_id'],
+                (int) $item['book_id']
             );
-
-            $inventory->increment('quantity', $item['quantity']);
-            $inventory->update([
-                'type'        => 'consignment',
-                'supplier_id' => $validated['supplier_id'],
+            $lotService->setSellPrices($inventory, [
                 'price_toman' => $item['price_toman']
                     ?? ($validated['currency'] === 'toman' ? $item['selling_price'] : $inventory->price_toman),
                 'price_dinar' => $item['price_dinar']
                     ?? ($validated['currency'] === 'dinar' ? $item['selling_price'] : $inventory->price_dinar),
-                'cost_price_toman' => $validated['currency'] === 'toman' ? $item['cost_price'] : $inventory->cost_price_toman,
-                'cost_price_dinar' => $validated['currency'] === 'dinar' ? $item['cost_price'] : $inventory->cost_price_dinar,
             ]);
+
+            $branch = \App\Models\Branch::find($validated['branch_id']);
+            $book = \App\Models\Book::find($item['book_id']);
+            $lotService->createIntakeLot([
+                'book_id' => $item['book_id'],
+                'branch_id' => $validated['branch_id'],
+                'consignment_receipt_item_id' => $receiptItem->id,
+                'supplier_id' => $validated['supplier_id'],
+                'ownership_type' => 'consignment',
+                'currency' => $validated['currency'],
+                'unit_cost' => $item['cost_price'],
+                'quantity' => $item['quantity'],
+                'origin' => $lotService->resolveOrigin($branch, (bool) $book?->iraq_only),
+            ], $receipt);
 
             StockMovementLogger::log(
                 (int) $validated['branch_id'],
@@ -352,6 +360,8 @@ class ConsignmentController extends Controller
             'currency'       => 'required|in:toman,dinar',
             'payment_method' => 'required|in:cash,bank_transfer,check',
             'notes'          => 'nullable|string',
+            'check_number'   => 'required_if:payment_method,check|nullable|string',
+            'bank_name'      => 'nullable|string',
         ]);
 
         return DB::transaction(function () use ($request, $validated) {
@@ -362,15 +372,20 @@ class ConsignmentController extends Controller
                 $validated['branch_id'] = (int) $user->branch_id;
             }
 
-            $receiptQuery = ConsignmentReceipt::with('items')
-                ->where('supplier_id', $validated['supplier_id'])
-                ->where('currency', $validated['currency'])
-                ->whereIn('status', ['unsettled', 'partially_settled']);
-            $this->scopeReceiptsToUser($receiptQuery, $user);
-            if (!empty($validated['branch_id'])) {
-                $receiptQuery->where('branch_id', $validated['branch_id']);
+            $period = app(\App\Services\Settlement\PeriodSettlement::class);
+            $preview = $period->preview(
+                (int) $validated['supplier_id'],
+                $validated['currency'],
+                $validated['period_start'],
+                $validated['period_end'],
+                $validated['branch_id'] ?? null
+            );
+
+            if (\App\Support\Money::cmp($validated['amount'], $preview['total_payable']) > 0) {
+                throw new \App\Exceptions\DomainException('مبلغ تسویه بیشتر از بدهی قابل پرداخت است', 422, [
+                    'max_payable' => $preview['total_payable'],
+                ]);
             }
-            $receipts = $receiptQuery->orderBy('received_at')->orderBy('id')->lockForUpdate()->get();
 
             $settlement = Settlement::create([
                 'supplier_id'       => $validated['supplier_id'],
@@ -384,24 +399,20 @@ class ConsignmentController extends Controller
                 'currency'          => $validated['currency'],
                 'payment_method'    => $validated['payment_method'],
                 'notes'             => $validated['notes'] ?? null,
+                'check_number'      => $validated['check_number'] ?? null,
+                'bank_name'         => $validated['bank_name'] ?? null,
+                'check_status'      => $validated['payment_method'] === 'check' ? 'pending' : null,
             ]);
 
-            $remaining = $validated['amount'];
-            foreach ($receipts as $receipt) {
-                $balance = $this->outstandingSoldBalance($receipt);
-                if ($remaining <= 0 || $balance <= 0) {
-                    continue;
-                }
-                $pay = min($balance, $remaining);
-                $receipt->increment('settled_amount', $pay);
-                $receipt->refresh();
-                $owed = $this->soldValue($receipt);
-                $newStatus = ($receipt->settled_amount >= $owed && $owed > 0)
-                    ? 'settled'
-                    : 'partially_settled';
-                $receipt->update(['status' => $newStatus]);
-                $remaining -= $pay;
-            }
+            $period->settle(
+                $settlement,
+                $validated['period_start'],
+                $validated['period_end'],
+                (string) $validated['amount'],
+                $preview['total_payable']
+            );
+
+            app(\App\Services\Ledger\LedgerPoster::class)->postSettlement($settlement);
 
             ActivityLogger::record(
                 'settlements',
@@ -418,7 +429,7 @@ class ConsignmentController extends Controller
                 !empty($validated['branch_id']) ? (int) $validated['branch_id'] : null,
             );
 
-            return response()->json($settlement->load(['supplier', 'branch']), 201);
+            return response()->json($settlement->load(['supplier', 'branch', 'allocations']), 201);
         });
     }
 
@@ -441,7 +452,7 @@ class ConsignmentController extends Controller
         return response()->json($query->latest()->paginate(20));
     }
 
-    /** Preview sold items for settlement — based on sales in the period, not receipt received_at. */
+    /** Preview payable using the same SupplierPayable math as settle. */
     public function settlementPreview(Request $request)
     {
         $validated = $request->validate([
@@ -457,83 +468,26 @@ class ConsignmentController extends Controller
             $this->assertBranchAllowed($user, (int) $validated['branch_id']);
         }
 
-        $branchIds = $this->visibleBranchIds($user);
         $currency = $validated['currency'] ?? 'toman';
-        $costCol = $currency === 'dinar'
-            ? 'inventories.cost_price_dinar'
-            : 'inventories.cost_price_toman';
-        $rate = ConsignmentFinance::commissionRate();
-
-        $query = DB::table('invoice_items')
-            ->join('invoices', 'invoice_items.invoice_id', '=', 'invoices.id')
-            ->join('books', 'invoice_items.book_id', '=', 'books.id')
-            ->join('inventories', function ($join) {
-                $join->on('inventories.book_id', '=', 'invoice_items.book_id')
-                    ->on('inventories.branch_id', '=', 'invoices.branch_id');
-            })
-            ->where('inventories.type', 'consignment')
-            ->where('inventories.supplier_id', $validated['supplier_id'])
-            ->where('invoices.currency', $currency)
-            ->where(function ($q) {
-                $q->whereNull('invoices.type')->orWhere('invoices.type', 'sale');
-            })
-            ->whereBetween(DB::raw('DATE(invoices.created_at)'), [
-                $validated['period_start'],
-                $validated['period_end'],
-            ]);
-
-        if (!empty($validated['branch_id'])) {
-            $query->where('invoices.branch_id', $validated['branch_id']);
-        } elseif ($branchIds !== null) {
-            if (!$branchIds) {
-                $query->whereRaw('1 = 0');
-            } else {
-                $query->whereIn('invoices.branch_id', $branchIds);
-            }
-        }
-
-        $rows = $query
-            ->groupBy('invoice_items.book_id', 'books.title')
-            ->select(
-                'invoice_items.book_id',
-                'books.title',
-                DB::raw('SUM(invoice_items.quantity) as qty_sold'),
-                DB::raw("AVG(COALESCE({$costCol}, 0)) as cost_price")
-            )
-            ->get();
-
-        $items = $rows->map(function ($row) use ($rate) {
-            $qty = (int) $row->qty_sold;
-            $cost = (float) $row->cost_price;
-            $total = round($qty * $cost, 2);
-            $commission = round($total * $rate, 2);
-            $publisherShare = round($total - $commission, 2);
-
-            return [
-                'book_id'         => (int) $row->book_id,
-                'title'           => $row->title,
-                'qty_sold'        => $qty,
-                'cost_price'      => $cost,
-                'total'           => $total,
-                'commission'      => $commission,
-                'publisher_share' => $publisherShare,
-            ];
-        });
-
-        $totalCost = (float) $items->sum('total');
-        $totalCommission = (float) $items->sum('commission');
-        $totalPayable = (float) $items->sum('publisher_share');
+        $preview = app(\App\Services\Settlement\PeriodSettlement::class)->preview(
+            (int) $validated['supplier_id'],
+            $currency,
+            $validated['period_start'],
+            $validated['period_end'],
+            $validated['branch_id'] ?? null
+        );
 
         return response()->json([
-            'items'            => $items->values(),
-            'commission_rate'  => $rate,
-            'total_cost'       => $totalCost,
-            'total_commission' => $totalCommission,
-            'total_payable'    => $totalPayable,
+            'items' => $preview['lines'],
+            'commission_rate' => $preview['commission_rate'],
+            'total_payable' => $preview['total_payable'],
+            'period_start' => $preview['period_start'],
+            'period_end' => $preview['period_end'],
+            'currency' => $preview['currency'],
         ]);
     }
 
-    /** Settle multiple suppliers at once */
+    /** Settle multiple suppliers at once (atomic by default). */
     public function settleBulk(Request $request)
     {
         $validated = $request->validate([
@@ -546,27 +500,43 @@ class ConsignmentController extends Controller
             'period_end'                     => 'required|date|after_or_equal:period_start',
             'payment_method'                 => 'required|in:cash,bank_transfer,check',
             'notes'                          => 'nullable|string',
+            'atomic'                         => 'nullable|boolean',
         ]);
 
-        $results = [];
-        foreach ($validated['settlements'] as $settlementData) {
-            $payload = [
-                'supplier_id'    => $settlementData['supplier_id'],
-                'period_type'    => $validated['period_type'],
-                'period_start'   => $validated['period_start'],
-                'period_end'     => $validated['period_end'],
-                'amount'         => $settlementData['amount'],
-                'currency'       => $settlementData['currency'],
-                'payment_method' => $validated['payment_method'],
-                'notes'          => $validated['notes'] ?? null,
-            ];
-            if (!$this->isAdmin($request->user()) && $request->user()?->branch_id) {
-                $payload['branch_id'] = (int) $request->user()->branch_id;
+        $atomic = $validated['atomic'] ?? true;
+
+        $run = function () use ($request, $validated) {
+            $results = [];
+            foreach ($validated['settlements'] as $settlementData) {
+                $payload = [
+                    'supplier_id'    => $settlementData['supplier_id'],
+                    'period_type'    => $validated['period_type'],
+                    'period_start'   => $validated['period_start'],
+                    'period_end'     => $validated['period_end'],
+                    'amount'         => $settlementData['amount'],
+                    'currency'       => $settlementData['currency'],
+                    'payment_method' => $validated['payment_method'],
+                    'notes'          => $validated['notes'] ?? null,
+                ];
+                if (!$this->isAdmin($request->user()) && $request->user()?->branch_id) {
+                    $payload['branch_id'] = (int) $request->user()->branch_id;
+                }
+                $subRequest = new Request($payload);
+                $subRequest->setUserResolver(fn () => $request->user());
+                $response = $this->settle($subRequest);
+                if ($response->getStatusCode() >= 400) {
+                    throw new \RuntimeException(json_decode($response->getContent(), true)['message'] ?? 'خطا در تسویه گروهی');
+                }
+                $results[] = json_decode($response->getContent(), true);
             }
-            $subRequest = new Request($payload);
-            $subRequest->setUserResolver(fn() => $request->user());
-            $response = $this->settle($subRequest);
-            $results[] = json_decode($response->getContent(), true);
+
+            return $results;
+        };
+
+        try {
+            $results = $atomic ? DB::transaction($run) : $run();
+        } catch (\Throwable $e) {
+            return response()->json(['message' => $e->getMessage()], 422);
         }
 
         ActivityLogger::record(
@@ -579,6 +549,7 @@ class ConsignmentController extends Controller
                 'period_start' => $validated['period_start'],
                 'period_end' => $validated['period_end'],
                 'payment_method' => $validated['payment_method'],
+                'atomic' => $atomic,
             ],
         );
 

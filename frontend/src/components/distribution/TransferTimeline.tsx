@@ -3,15 +3,19 @@
 import React, { useState, useMemo } from "react";
 import { motion } from "framer-motion";
 import {
-    Truck, Clock, CheckCircle2, X, ArrowLeftRight, Filter, Package, Loader2,
+    Truck, CheckCircle2, X, ArrowLeftRight, Filter, Package, Loader2,
 } from "lucide-react";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { cn } from "@/lib/utils";
 import { useTranslation } from "@/hooks/useTranslation";
 
-type FilterKey = "all" | "pending" | "shipped" | "received";
+type FilterKey = "all" | "sending" | "receiving";
 type TransferStatus = "pending" | "shipped" | "received" | "cancelled";
+
+function isSendingStatus(status: string): boolean {
+    return status === "pending" || status === "shipped";
+}
 
 interface TimelineUser {
     id?: string | number;
@@ -100,16 +104,17 @@ export function TransferTimeline({
     const [filter, setFilter] = useState<FilterKey>("all");
 
     const statusCfg = useMemo(() => ({
-        pending:   { label: t("distribution.status.pending"), color: "text-amber-700", bg: "bg-amber-50 border-amber-100", dot: "bg-amber-400", icon: Clock },
-        shipped:   { label: t("distribution.status.shipped"), color: "text-sky-700", bg: "bg-sky-50 border-sky-100", dot: "bg-sky-400", icon: Truck },
-        received:  { label: t("distribution.status.received"), color: "text-emerald-700", bg: "bg-emerald-50 border-emerald-100", dot: "bg-emerald-400", icon: CheckCircle2 },
+        pending:   { label: t("distribution.status.sending"), color: "text-sky-700", bg: "bg-sky-50 border-sky-100", dot: "bg-sky-400", icon: Truck },
+        shipped:   { label: t("distribution.status.sending"), color: "text-sky-700", bg: "bg-sky-50 border-sky-100", dot: "bg-sky-400", icon: Truck },
+        sending:   { label: t("distribution.status.sending"), color: "text-sky-700", bg: "bg-sky-50 border-sky-100", dot: "bg-sky-400", icon: Truck },
+        received:  { label: t("distribution.status.receiving"), color: "text-emerald-700", bg: "bg-emerald-50 border-emerald-100", dot: "bg-emerald-400", icon: CheckCircle2 },
+        receiving: { label: t("distribution.status.receiving"), color: "text-emerald-700", bg: "bg-emerald-50 border-emerald-100", dot: "bg-emerald-400", icon: CheckCircle2 },
         cancelled: { label: t("distribution.status.cancelled"), color: "text-rose-700", bg: "bg-rose-50 border-rose-100", dot: "bg-rose-400", icon: X },
     }), [t]);
 
     const stepLabel = (status: string) => {
-        if (status === "pending") return t("distribution.timeline.stepPending");
-        if (status === "shipped") return t("distribution.timeline.stepShipped");
-        if (status === "received") return t("distribution.timeline.stepReceived");
+        if (status === "pending" || status === "shipped") return t("distribution.timeline.stepSending");
+        if (status === "received") return t("distribution.timeline.stepReceiving");
         if (status === "cancelled") return t("distribution.timeline.stepCancelled");
         return status;
     };
@@ -119,14 +124,14 @@ export function TransferTimeline({
 
     const filtered = useMemo(() => {
         if (filter === "all") return transfers;
-        return transfers.filter((tr) => tr.status === filter);
+        if (filter === "sending") return transfers.filter((tr) => isSendingStatus(tr.status));
+        return transfers.filter((tr) => tr.status === "received");
     }, [transfers, filter]);
 
     const counts = useMemo(() => ({
         all: transfers.length,
-        pending: transfers.filter((tr) => tr.status === "pending").length,
-        shipped: transfers.filter((tr) => tr.status === "shipped").length,
-        received: transfers.filter((tr) => tr.status === "received").length,
+        sending: transfers.filter((tr) => isSendingStatus(tr.status)).length,
+        receiving: transfers.filter((tr) => tr.status === "received").length,
     }), [transfers]);
 
     const dateLocale = language === "ar" ? "ar-IQ" : "fa-IR";
@@ -158,7 +163,7 @@ export function TransferTimeline({
                     </p>
                 </div>
                 <div className="flex items-center gap-1 p-1 bg-ink/[0.03] rounded-xl overflow-x-auto">
-                    {(["all", "pending", "shipped", "received"] as FilterKey[]).map((key) => (
+                    {(["all", "sending", "receiving"] as FilterKey[]).map((key) => (
                         <button
                             key={key}
                             type="button"
@@ -210,15 +215,15 @@ export function TransferTimeline({
                     <div className="relative space-y-0">
                         <div className="absolute top-3 bottom-3 w-px bg-gradient-to-b from-primary/30 via-ink/10 to-transparent start-[11px]" />
                         {filtered.map((transfer, i) => {
-                            const cfg = statusCfg[transfer.status as keyof typeof statusCfg] || statusCfg.pending;
+                            const cfg = statusCfg[transfer.status as keyof typeof statusCfg] || statusCfg.shipped;
                             const qty = transferQty(transfer);
                             const title = transferTitle(transfer, t("distribution.bookFallback"));
                             const items = Array.isArray(transfer.items) ? transfer.items : [];
                             const steps = Array.isArray(transfer.status_log) ? transfer.status_log : [];
                             const busy = updatingId === transfer.id;
-                            const showShip = transfer.status === "pending" && canShip(user, transfer, branches);
-                            const showReceive = transfer.status === "shipped" && canReceive(user, transfer, branches);
-                            const showCancel = transfer.status === "pending" && canShip(user, transfer, branches);
+                            const sending = isSendingStatus(transfer.status);
+                            const showReceive = sending && canReceive(user, transfer, branches);
+                            const showCancel = sending && canShip(user, transfer, branches);
                             const destName = transfer.to_branch?.name || branchName(transfer.to_branch_id);
 
                             return (
@@ -311,8 +316,7 @@ export function TransferTimeline({
                                                         <span className={cn(
                                                             "w-1.5 h-1.5 rounded-full shrink-0",
                                                             step.status === "received" ? "bg-emerald-500" :
-                                                            step.status === "shipped" ? "bg-sky-500" :
-                                                            step.status === "cancelled" ? "bg-rose-500" : "bg-amber-400"
+                                                            step.status === "cancelled" ? "bg-rose-500" : "bg-sky-500"
                                                         )} />
                                                         <span className="font-black text-ink/70">{stepLabel(step.status)}</span>
                                                         {step.user_name && (
@@ -328,27 +332,14 @@ export function TransferTimeline({
                                             </div>
                                         )}
 
-                                        {transfer.status === "shipped" && !showReceive && (
+                                        {sending && !showReceive && (
                                             <p className="mt-3 text-[10px] font-bold text-sky-700 bg-sky-50 border border-sky-100 rounded-xl px-3 py-2">
                                                 {t("distribution.timeline.waitingDestApprove", { branch: destName })}
                                             </p>
                                         )}
 
-                                        {(showShip || showReceive || showCancel) && (
+                                        {(showReceive || showCancel) && (
                                             <div className="mt-3 flex flex-wrap items-center gap-2">
-                                                {showShip && (
-                                                    <Button
-                                                        type="button"
-                                                        variant="primary"
-                                                        size="sm"
-                                                        disabled={busy}
-                                                        className="rounded-xl text-[11px] font-black h-8 px-3"
-                                                        onClick={() => handleAction(transfer, "shipped")}
-                                                    >
-                                                        {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin ms-1" /> : <Truck className="w-3.5 h-3.5 ms-1" />}
-                                                        {t("distribution.timeline.ship")}
-                                                    </Button>
-                                                )}
                                                 {showReceive && (
                                                     <Button
                                                         type="button"

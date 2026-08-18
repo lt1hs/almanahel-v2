@@ -1,6 +1,7 @@
 "use client";
 
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import {
     AlertTriangle, Bell, Banknote, CheckCircle2, ChevronLeft,
     CreditCard, Package, RefreshCw, Search, Truck, X,
@@ -12,11 +13,13 @@ import { useTranslation } from "@/hooks/useTranslation";
 import { useRouter } from "@/i18n/routing";
 import { cn } from "@/lib/utils";
 import { apiRequest } from "@/lib/api";
+import { NOTIFICATION_QUERY_KEYS } from "@/hooks/useNotificationInbox";
 
 type TransferAlertType =
     | "transfer_pending"
     | "transfer_incoming"
     | "transfer_shipped"
+    | "transfer_sending"
     | "transfer_received";
 type AlertType = "low_stock" | "check_due" | "credit_due" | TransferAlertType;
 type AlertFilter = "all" | "low_stock" | "check_due" | "credit_due" | "transfer";
@@ -55,39 +58,29 @@ function alertKey(n: Notification, i: number): string {
 export default function NotificationsPage() {
     const { t, formatNumber, language } = useTranslation();
     const router = useRouter();
-    const [notifications, setNotifications] = useState<Notification[]>([]);
     const [filter, setFilter] = useState<AlertFilter>("all");
     const [search, setSearch] = useState("");
-    const [isLoading, setIsLoading] = useState(true);
-    const [isRefreshing, setIsRefreshing] = useState(false);
 
-    const fetchNotifications = useCallback(async (soft = false) => {
-        if (soft) setIsRefreshing(true);
-        else setIsLoading(true);
-        try {
+    const { data: notifications = [], isLoading, isFetching, refetch } = useQuery({
+        queryKey: NOTIFICATION_QUERY_KEYS.reports,
+        queryFn: async () => {
             const data = await apiRequest("/reports/notifications");
-            setNotifications([
+            return [
                 ...(data.transfers ?? []),
                 ...(data.low_stock ?? []),
                 ...(data.due_checks ?? []),
                 ...(data.due_credits ?? []),
-            ] as Notification[]);
-        } catch {
-            setNotifications([]);
-        } finally {
-            setIsLoading(false);
-            setIsRefreshing(false);
-        }
-    }, []);
-
-    useEffect(() => {
-        fetchNotifications();
-    }, [fetchNotifications]);
+            ] as Notification[];
+        },
+        staleTime: 0,
+        refetchInterval: 15_000,
+        refetchOnWindowFocus: true,
+        refetchOnMount: "always",
+    });
+    const isRefreshing = isFetching && !isLoading;
 
     const alertLabel = (type: AlertType) => {
-        if (type === "transfer_pending") return t("common.notifications.transferPending");
-        if (type === "transfer_incoming") return t("common.notifications.transferIncoming");
-        if (type === "transfer_shipped") return t("common.notifications.transferShipped");
+        if (type.startsWith("transfer_") && type !== "transfer_received") return t("common.notifications.transferSending");
         if (type === "transfer_received") return t("common.notifications.transferReceived");
         if (type === "low_stock") return t("common.notifications.lowStock");
         if (type === "check_due") return t("common.notifications.checkDue");
@@ -96,20 +89,8 @@ export default function NotificationsPage() {
 
     const alertMessage = (n: Notification) => {
         const d = n.data || {};
-        if (n.type === "transfer_pending") {
-            return t("common.notifications.transferPendingMsg", {
-                book: String(d.book_title || t("distribution.bookFallback")),
-                to: String(d.to_branch || t("distribution.branchFallback")),
-            });
-        }
-        if (n.type === "transfer_incoming") {
-            return t("common.notifications.transferIncomingMsg", {
-                book: String(d.book_title || t("distribution.bookFallback")),
-                from: String(d.from_branch || t("distribution.branchFallback")),
-            });
-        }
-        if (n.type === "transfer_shipped") {
-            return t("common.notifications.transferShippedMsg", {
+        if (n.type.startsWith("transfer_") && n.type !== "transfer_received") {
+            return t("common.notifications.transferSendingMsg", {
                 book: String(d.book_title || t("distribution.bookFallback")),
                 from: String(d.from_branch || t("distribution.branchFallback")),
             });
@@ -228,7 +209,7 @@ export default function NotificationsPage() {
                     type="button"
                     variant="outline"
                     size="sm"
-                    onClick={() => fetchNotifications(true)}
+                    onClick={() => refetch()}
                     disabled={isRefreshing || isLoading}
                     className="h-9 gap-2"
                 >
@@ -309,26 +290,18 @@ export default function NotificationsPage() {
                                             ? Banknote
                                             : CreditCard;
                                 const tone = isTransfer
-                                    ? notif.type === "transfer_shipped"
+                                    ? notif.type === "transfer_received"
                                         ? "bg-emerald-50 border-emerald-100 text-emerald-600"
-                                        : notif.type === "transfer_pending"
-                                            ? "bg-amber-50 border-amber-100 text-amber-600"
-                                            : notif.type === "transfer_incoming"
-                                                ? "bg-sky-50 border-sky-100 text-sky-600"
-                                                : "bg-emerald-50 border-emerald-100 text-emerald-600"
+                                        : "bg-sky-50 border-sky-100 text-sky-600"
                                     : isLow
                                         ? "bg-rose-50 border-rose-100 text-rose-500"
                                         : isCheck
                                             ? "bg-amber-50 border-amber-100 text-amber-600"
                                             : "bg-sky-50 border-sky-100 text-sky-600";
                                 const badge = isTransfer
-                                    ? notif.type === "transfer_shipped"
+                                    ? notif.type === "transfer_received"
                                         ? "bg-emerald-100 text-emerald-700"
-                                        : notif.type === "transfer_pending"
-                                            ? "bg-amber-100 text-amber-700"
-                                            : notif.type === "transfer_incoming"
-                                                ? "bg-sky-100 text-sky-700"
-                                                : "bg-emerald-100 text-emerald-700"
+                                        : "bg-sky-100 text-sky-700"
                                     : isLow
                                         ? "bg-rose-100 text-rose-600"
                                         : isCheck

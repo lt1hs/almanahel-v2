@@ -16,6 +16,8 @@ use App\Http\Controllers\Api\ReportController;
 use App\Http\Controllers\Api\InventoryController;
 use App\Http\Controllers\Api\UserController;
 use App\Http\Controllers\Api\ActivityLogController;
+use App\Http\Controllers\Api\CustomerController;
+use App\Http\Controllers\Api\NotificationController;
 use Illuminate\Support\Facades\Route;
 
 // Public Routes
@@ -26,6 +28,20 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/logout', [AuthController::class, 'logout']);
     Route::get('/user',    [AuthController::class, 'user']);
 
+    Route::get('/customers', [CustomerController::class, 'index']);
+    Route::post('/customers', [CustomerController::class, 'store']);
+    Route::get('/customers/{customer}', [CustomerController::class, 'show']);
+    Route::put('/customers/{customer}', [CustomerController::class, 'update']);
+    Route::delete('/customers/{customer}', [CustomerController::class, 'destroy']);
+    Route::post('/customers/{customer}/payments', [CustomerController::class, 'pay']);
+
+    Route::get('/notifications', [NotificationController::class, 'index']);
+    Route::get('/notifications/unread-count', [NotificationController::class, 'unreadCount']);
+    Route::post('/notifications/read-all', [NotificationController::class, 'markAllRead']);
+    Route::post('/notifications/dismiss-all', [NotificationController::class, 'dismissAll']);
+    Route::post('/notifications/{notification}/read', [NotificationController::class, 'markRead']);
+    Route::post('/notifications/{notification}/dismiss', [NotificationController::class, 'dismiss']);
+
     // ─── Books ─────────────────────────────────────────────────
     Route::get('/books',               [BookController::class, 'index']);
     Route::post('/books',              [BookController::class, 'store']);
@@ -34,23 +50,23 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/books/by-barcode/{code}', [BookController::class, 'byBarcode']);
     Route::get('/books/{book}',        [BookController::class, 'show']);
     Route::put('/books/{book}',        [BookController::class, 'update']);
-    Route::delete('/books/{book}',     [BookController::class, 'destroy']);
+    Route::delete('/books/{book}',     [BookController::class, 'destroy'])->middleware('role:admin');
     Route::get('/branches/{branchId}/books', [BookController::class, 'byBranch']);
 
     // ─── Branches ──────────────────────────────────────────────
     Route::get('/branches',              [BranchController::class, 'index']);
-    Route::post('/branches',             [BranchController::class, 'store']);
     Route::get('/branches/{branch}',     [BranchController::class, 'show']);
-    Route::put('/branches/{branch}',     [BranchController::class, 'update']);
-    Route::delete('/branches/{branch}',  [BranchController::class, 'destroy']);
-    Route::get('/branches/{branch}/profit', [BranchController::class, 'profit']);
+    Route::get('/branches/{branch}/profit', [BranchController::class, 'profit'])->middleware('role:reports');
+    Route::post('/branches',             [BranchController::class, 'store'])->middleware('role:admin');
+    Route::put('/branches/{branch}',     [BranchController::class, 'update'])->middleware('role:admin');
+    Route::delete('/branches/{branch}',  [BranchController::class, 'destroy'])->middleware('role:admin');
 
     // ─── Suppliers ─────────────────────────────────────────────
     Route::get('/suppliers',               [SupplierController::class, 'index']);
     Route::post('/suppliers',              [SupplierController::class, 'store']);
     Route::get('/suppliers/{supplier}',    [SupplierController::class, 'show']);
     Route::put('/suppliers/{supplier}',    [SupplierController::class, 'update']);
-    Route::delete('/suppliers/{supplier}', [SupplierController::class, 'destroy']);
+    Route::delete('/suppliers/{supplier}', [SupplierController::class, 'destroy'])->middleware('role:admin');
     Route::get('/suppliers/{supplier}/balance', [SupplierController::class, 'balance']);
 
     // ─── Invoices & Sales ──────────────────────────────────────
@@ -108,37 +124,38 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::put('/inventory/{inventory}',         [WarehouseController::class, 'updateInventory']);
 
     // ─── Expenses ──────────────────────────────────────────────
-    Route::get('/expenses',              [ExpenseController::class, 'index']);
-    Route::post('/expenses',             [ExpenseController::class, 'store']);
-    Route::put('/expenses/{expense}',    [ExpenseController::class, 'update']);
-    Route::delete('/expenses/{expense}', [ExpenseController::class, 'destroy']);
+    Route::get('/expenses',              [ExpenseController::class, 'index'])->middleware('role:accountant,branch_manager');
+    Route::post('/expenses',             [ExpenseController::class, 'store'])->middleware('role:accountant,branch_manager');
+    Route::put('/expenses/{expense}',    [ExpenseController::class, 'update'])->middleware('role:accountant,branch_manager');
+    Route::delete('/expenses/{expense}', [ExpenseController::class, 'destroy'])->middleware('role:accountant,branch_manager');
 
     // ─── Reports & Dashboard ───────────────────────────────────
     Route::get('/reports/dashboard',    [ReportController::class, 'dashboardStats']);
     Route::get('/reports/monthly-trends', [ReportController::class, 'monthlyTrends']);
-    Route::get('/reports/all-branches', [ReportController::class, 'allBranchBalance']);
+    Route::get('/reports/all-branches', [ReportController::class, 'allBranchBalance'])->middleware('role:reports');
     Route::get('/reports/top-books',    [ReportController::class, 'topBooks']);
     Route::get('/reports/notifications',[ReportController::class, 'notifications']);
-    Route::get('/reports/iraq-profit',  [ReportController::class, 'iraqProfit']);
-    Route::get('/reports/distribution-from-qom', [ReportController::class, 'distributionFromQom']);
+    Route::get('/reports/iraq-profit',  [ReportController::class, 'iraqProfit'])->middleware('role:reports');
+    Route::get('/reports/distribution-from-qom', [ReportController::class, 'distributionFromQom'])->middleware('role:reports');
     Route::get('/settings',             [ReportController::class, 'settings']);
-    Route::put('/settings',             [ReportController::class, 'updateSettings']);
+    Route::put('/settings',             [ReportController::class, 'updateSettings'])->middleware('role:admin');
 
     // ─── Book categories ───────────────────────────────────────
     Route::get('/book-categories',                    [BookCategoryController::class, 'index']);
-    Route::post('/book-categories',                   [BookCategoryController::class, 'store']);
-    Route::put('/book-categories/rename',             [BookCategoryController::class, 'rename']);
-    Route::delete('/book-categories/{category}',      [BookCategoryController::class, 'destroy'])->where('category', '.*');
+    Route::post('/book-categories',                   [BookCategoryController::class, 'store'])->middleware('role:admin');
+    Route::put('/book-categories/rename',             [BookCategoryController::class, 'rename'])->middleware('role:admin');
+    Route::delete('/book-categories/{category}',      [BookCategoryController::class, 'destroy'])->middleware('role:admin')->where('category', '.*');
 
-    // ─── Users (admin) ─────────────────────────────────────────
-    Route::get('/users',              [UserController::class, 'index']);
-    Route::post('/users',             [UserController::class, 'store']);
-    Route::put('/users/{user}',       [UserController::class, 'update']);
-    Route::delete('/users/{user}',    [UserController::class, 'destroy']);
+    // ─── Users & activity (admin) ──────────────────────────────
+    Route::middleware('role:admin')->group(function () {
+        Route::get('/users',              [UserController::class, 'index']);
+        Route::post('/users',             [UserController::class, 'store']);
+        Route::put('/users/{user}',       [UserController::class, 'update']);
+        Route::delete('/users/{user}',    [UserController::class, 'destroy']);
 
-    // ─── Activity logs (admin) ─────────────────────────────────
-    Route::get('/activity-logs',              [ActivityLogController::class, 'index']);
-    Route::get('/activity-logs/meta',         [ActivityLogController::class, 'meta']);
-    Route::get('/activity-logs/export',       [ActivityLogController::class, 'export']);
-    Route::get('/activity-logs/{activityLog}', [ActivityLogController::class, 'show']);
+        Route::get('/activity-logs',              [ActivityLogController::class, 'index']);
+        Route::get('/activity-logs/meta',         [ActivityLogController::class, 'meta']);
+        Route::get('/activity-logs/export',       [ActivityLogController::class, 'export']);
+        Route::get('/activity-logs/{activityLog}', [ActivityLogController::class, 'show']);
+    });
 });

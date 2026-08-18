@@ -12,6 +12,8 @@ import { useTranslation } from "@/hooks/useTranslation";
 import { useNotify } from "@/hooks/useNotify";
 import { cn } from "@/lib/utils";
 import { apiRequest } from "@/lib/api";
+import { RequireRole } from "@/components/auth/RequireRole";
+import { BulkSettlementPanel } from "@/components/finance/BulkSettlementPanel";
 
 const ProfitCharts = dynamic(
     () => import("@/components/finance/ProfitCharts").then((m) => m.ProfitCharts),
@@ -45,6 +47,14 @@ function formatPeriodDate(value: string | null | undefined): string {
 }
 
 export default function FinancePage() {
+    return (
+        <RequireRole roles={["super_admin", "admin", "branch_manager", "accountant"]}>
+            <FinancePageContent />
+        </RequireRole>
+    );
+}
+
+function FinancePageContent() {
     const { t, formatNumber, isArabic, isDinar, preferredCurrency } = useTranslation();
     const notify = useNotify();
     const currencySymbol = isDinar ? t("common.currency.dinarSymbol") : t("common.currency.tomanSymbol");
@@ -373,15 +383,22 @@ export default function FinancePage() {
             )}
 
             {activeTab === "settlement" && (
-                <SettlementWizard
-                    suppliers={suppliers}
-                    onCalculate={handleCalculateSettlement}
-                    onConfirm={handleConfirmSettlement}
-                    settlementData={settlementData}
-                    isLoading={isSettlementLoading}
-                    isConfirming={isConfirming}
-                    currencySymbol={currencySymbol}
-                />
+                <div className="space-y-6">
+                    <SettlementWizard
+                        suppliers={suppliers}
+                        onCalculate={handleCalculateSettlement}
+                        onConfirm={handleConfirmSettlement}
+                        settlementData={settlementData}
+                        isLoading={isSettlementLoading}
+                        isConfirming={isConfirming}
+                        currencySymbol={currencySymbol}
+                    />
+                    <BulkSettlementPanel
+                        suppliers={suppliers}
+                        currency={currency}
+                        currencySymbol={currencySymbol}
+                    />
+                </div>
             )}
 
             {activeTab === "history" && (

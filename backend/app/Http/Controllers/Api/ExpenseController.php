@@ -106,6 +106,8 @@ class ExpenseController extends Controller
             'user_id' => $request->user()->id,
         ]);
 
+        app(\App\Services\Ledger\LedgerPoster::class)->postExpense($expense);
+
         ActivityLogger::record(
             'expenses',
             'created',
@@ -142,6 +144,16 @@ class ExpenseController extends Controller
 
         $expense->update($validated);
 
+        $poster = app(\App\Services\Ledger\LedgerPoster::class);
+        $original = \App\Models\JournalEntry::where('source_type', Expense::class)
+            ->where('source_id', $expense->id)
+            ->where('event_type', 'expense')
+            ->first();
+        if ($original) {
+            $poster->reverse($original->load('lines.account'), $expense, 'expense_reversal');
+        }
+        $poster->postExpense($expense->fresh(), 'expense_replacement');
+
         ActivityLogger::record(
             'expenses',
             'updated',
@@ -170,7 +182,18 @@ class ExpenseController extends Controller
             'branch_id' => $expense->branch_id,
         ];
         $branchId = (int) $expense->branch_id;
-        $expense->delete();
+        $poster = app(\App\Services\Ledger\LedgerPoster::class);
+        $original = \App\Models\JournalEntry::where('source_type', Expense::class)
+            ->where('source_id', $expense->id)
+            ->where('event_type', 'expense')
+            ->first();
+        if ($original) {
+            $poster->reverse($original->load('lines.account'), $expense, 'expense_reversal');
+        }
+        $expense->update([
+            'archived_at' => now(),
+            'reversed_at' => now(),
+        ]);
 
         ActivityLogger::record(
             'expenses',

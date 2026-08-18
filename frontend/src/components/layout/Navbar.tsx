@@ -4,7 +4,7 @@ import React, { useState, useRef, useEffect, useCallback, useMemo } from "react"
 import { useRouter, usePathname } from "@/i18n/routing";
 import {
     Bell, User, Search, Globe, ChevronDown, CheckCircle2, AlertTriangle, Info,
-    LogOut, CreditCard, RefreshCw, Store, Settings, X, Languages,
+    LogOut, CreditCard, RefreshCw, Store, Settings, X, Languages, Trash2,
     LayoutDashboard, Library, Wallet, BarChart3, Truck, Warehouse, Users,
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
@@ -14,16 +14,35 @@ import { Badge } from "@/components/ui/Badge";
 import { AnimatePresence, motion } from "framer-motion";
 import { cn } from "@/lib/utils";
 import { apiRequest } from "@/lib/api";
+import { useNotificationInbox, useInvalidateNotifications } from "@/hooks/useNotificationInbox";
 
-interface AppNotification {
-    id: string;
+interface InboxNotification {
+    id: number;
     title: string;
     description: string;
-    type: "warning" | "info" | "success";
+    unread: boolean;
+    tone: "warning" | "info" | "success";
     icon: React.ElementType;
     color: string;
     bg: string;
     href?: string;
+}
+
+function inboxHref(type: string): string {
+    if (type.startsWith("transfer")) return "/dashboard/distribution";
+    if (type === "low_stock") return "/dashboard/inventory";
+    if (type === "check_due") return "/dashboard/checks";
+    if (type === "credit_due") return "/dashboard/sales";
+    return "/dashboard/notifications";
+}
+
+function inboxStyle(type: string): { tone: InboxNotification["tone"]; color: string; bg: string; icon: React.ElementType } {
+    if (type.startsWith("transfer") && type !== "transfer_received") return { tone: "warning", color: "text-sky-600", bg: "bg-sky-50", icon: Truck };
+    if (type === "transfer_received") return { tone: "success", color: "text-emerald-600", bg: "bg-emerald-50", icon: Truck };
+    if (type === "low_stock") return { tone: "warning", color: "text-amber-500", bg: "bg-amber-50", icon: AlertTriangle };
+    if (type === "check_due") return { tone: "info", color: "text-sky-600", bg: "bg-sky-50", icon: CreditCard };
+    if (type === "credit_due") return { tone: "info", color: "text-primary", bg: "bg-primary/5", icon: Info };
+    return { tone: "info", color: "text-primary", bg: "bg-primary/5", icon: Bell };
 }
 
 interface QuickLink {
@@ -88,8 +107,6 @@ export function Navbar() {
     const [showSearch, setShowSearch] = useState(false);
     const [showNotifs, setShowNotifs] = useState(false);
     const [showProfile, setShowProfile] = useState(false);
-    const [notifications, setNotifications] = useState<AppNotification[]>([]);
-    const [notifLoading, setNotifLoading] = useState(false);
 
     const searchRef = useRef<HTMLDivElement>(null);
     const notifRef = useRef<HTMLDivElement>(null);
@@ -98,92 +115,42 @@ export function Navbar() {
 
     const pageTitleKey = resolvePageTitle(pathname);
 
-    const fetchNotifications = useCallback(async () => {
-        setNotifLoading(true);
-        try {
-            const data = await apiRequest("/reports/notifications");
-            const transferTitle = (type: string) => {
-                if (type === "transfer_shipped") return t("navbar.notif.transferShipped");
-                if (type === "transfer_pending") return t("navbar.notif.transferPending");
-                if (type === "transfer_incoming") return t("navbar.notif.transferIncoming");
-                return t("navbar.notif.transferReceived");
-            };
-            const transferStyle = (type: string) => {
-                if (type === "transfer_shipped") return { type: "warning" as const, color: "text-emerald-600", bg: "bg-emerald-50" };
-                if (type === "transfer_pending") return { type: "warning" as const, color: "text-amber-600", bg: "bg-amber-50" };
-                if (type === "transfer_incoming") return { type: "info" as const, color: "text-sky-600", bg: "bg-sky-50" };
-                return { type: "success" as const, color: "text-emerald-600", bg: "bg-emerald-50" };
-            };
-            const transferOrder: Record<string, number> = {
-                transfer_shipped: 0,
-                transfer_pending: 1,
-                transfer_incoming: 2,
-                transfer_received: 3,
-            };
-            const transferItems = [...(data.transfers || [])]
-                .sort((a: { type?: string }, b: { type?: string }) =>
-                    (transferOrder[a.type || ""] ?? 9) - (transferOrder[b.type || ""] ?? 9)
-                )
-                .slice(0, 8)
-                .map((n: { type: string; message: string; data?: { transfer_id?: number } }, i: number) => {
-                    const style = transferStyle(n.type);
-                    return {
-                        id: `transfer-${n.data?.transfer_id ?? i}-${n.type}`,
-                        title: transferTitle(n.type),
-                        description: n.message,
-                        type: style.type,
-                        icon: Truck,
-                        color: style.color,
-                        bg: style.bg,
-                        href: "/dashboard/distribution",
-                    };
-                });
-            const mapped: AppNotification[] = [
-                ...transferItems,
-                ...(data.low_stock || []).slice(0, 5).map((n: { message: string }, i: number) => ({
-                    id: `stock-${i}`,
-                    title: t("common.notifications.lowStock"),
-                    description: n.message,
-                    type: "warning" as const,
-                    icon: AlertTriangle,
-                    color: "text-amber-500",
-                    bg: "bg-amber-50",
-                    href: "/dashboard/inventory",
-                })),
-                ...(data.due_checks || []).slice(0, 5).map((n: { message: string }, i: number) => ({
-                    id: `check-${i}`,
-                    title: t("navbar.notif.checkDue"),
-                    description: n.message,
-                    type: "info" as const,
-                    icon: CreditCard,
-                    color: "text-sky-600",
-                    bg: "bg-sky-50",
-                    href: "/dashboard/checks",
-                })),
-                ...(data.due_credits || []).slice(0, 5).map((n: { message: string }, i: number) => ({
-                    id: `credit-${i}`,
-                    title: t("navbar.notif.creditDue"),
-                    description: n.message,
-                    type: "info" as const,
-                    icon: Info,
-                    color: "text-primary",
-                    bg: "bg-primary/5",
-                    href: "/dashboard/sales",
-                })),
-            ];
-            setNotifications(mapped);
-        } catch {
-            setNotifications([]);
-        } finally {
-            setNotifLoading(false);
-        }
-    }, [t]);
+    const { data: inbox, isFetching: notifLoading, refetch: fetchNotifications } = useNotificationInbox(!!user);
+    const invalidateNotifications = useInvalidateNotifications();
 
-    useEffect(() => {
-        if (user) fetchNotifications();
-        const interval = setInterval(fetchNotifications, 120000);
-        return () => clearInterval(interval);
-    }, [user, fetchNotifications]);
+    const notifications: InboxNotification[] = useMemo(() => {
+        return (inbox?.rows ?? []).map((row) => {
+            const style = inboxStyle(row.type);
+            return {
+                id: row.id,
+                title: row.title,
+                description: row.body || "",
+                unread: !row.read_at,
+                tone: style.tone,
+                icon: style.icon,
+                color: style.color,
+                bg: style.bg,
+                href: inboxHref(row.type),
+            };
+        });
+    }, [inbox]);
+
+    const unreadCount = inbox?.unread ?? 0;
+
+    const markInboxRead = useCallback(async () => {
+        await apiRequest("/notifications/read-all", { method: "POST" });
+        invalidateNotifications();
+    }, [invalidateNotifications]);
+
+    const dismissOne = useCallback(async (id: number) => {
+        await apiRequest(`/notifications/${id}/dismiss`, { method: "POST" });
+        invalidateNotifications();
+    }, [invalidateNotifications]);
+
+    const dismissAll = useCallback(async () => {
+        await apiRequest("/notifications/dismiss-all", { method: "POST" });
+        invalidateNotifications();
+    }, [invalidateNotifications]);
 
     useEffect(() => {
         function handleClickOutside(event: MouseEvent) {
@@ -222,8 +189,6 @@ export function Navbar() {
 
     const roleInfo = (user && roleLabels[user.role])
         ?? { labelKey: "roles.guest", color: "text-ink/40" };
-
-    const unreadCount = notifications.length;
 
     const searchResults = useMemo(() => {
         const q = search.trim().toLowerCase();
@@ -382,10 +347,17 @@ export function Navbar() {
                     <button
                         type="button"
                         aria-label={t("common.notifications.title")}
-                        onClick={() => {
-                            setShowNotifs((v) => !v);
+                        onClick={async () => {
+                            const opening = !showNotifs;
+                            setShowNotifs(opening);
                             setShowProfile(false);
-                            if (!showNotifs) fetchNotifications();
+                            if (!opening) return;
+                            await fetchNotifications();
+                            try {
+                                await markInboxRead();
+                            } catch {
+                                /* keep unread if the API is unreachable */
+                            }
                         }}
                         className={cn(
                             "relative h-9 w-9 flex items-center justify-center text-ink/30 hover:text-primary transition-all rounded-lg hover:bg-white border border-transparent hover:border-ink/[0.06]",
@@ -412,10 +384,26 @@ export function Navbar() {
                                 <div className="p-3 border-b border-ink/[0.05] flex items-center justify-between bg-parchment/30">
                                     <h3 className="text-[11px] font-black text-ink font-vazirmatn">{t("common.notifications.title")}</h3>
                                     <div className="flex items-center gap-2">
-                                        <Badge className="text-[8px]">{unreadCount}</Badge>
+                                        {unreadCount > 0 && <Badge className="text-[8px]">{unreadCount}</Badge>}
                                         <button
                                             type="button"
-                                            onClick={fetchNotifications}
+                                            onClick={() => markInboxRead().catch(() => undefined)}
+                                            className="text-[8px] font-black text-ink/35 hover:text-primary font-vazirmatn"
+                                        >
+                                            {t("common.notifications.markAllRead")}
+                                        </button>
+                                        {notifications.length > 0 && (
+                                            <button
+                                                type="button"
+                                                onClick={() => dismissAll().catch(() => undefined)}
+                                                className="text-[8px] font-black text-rose-400 hover:text-rose-600 font-vazirmatn"
+                                            >
+                                                {t("common.notifications.dismissAll")}
+                                            </button>
+                                        )}
+                                        <button
+                                            type="button"
+                                            onClick={() => void fetchNotifications()}
                                             disabled={notifLoading}
                                             className="p-1 rounded-md hover:bg-white text-ink/30 hover:text-primary transition-colors disabled:opacity-40"
                                             aria-label={t("common.refresh")}
@@ -427,20 +415,51 @@ export function Navbar() {
 
                                 <div className="max-h-[320px] overflow-y-auto py-1">
                                     {notifications.length > 0 ? notifications.map((n) => (
-                                        <button
+                                        <div
                                             key={n.id}
-                                            type="button"
-                                            onClick={() => { if (n.href) router.push(n.href); setShowNotifs(false); }}
-                                            className="w-full px-3 py-2.5 hover:bg-primary/[0.03] transition-colors text-start flex gap-3 border-b border-ink/[0.03] last:border-0"
+                                            className={cn(
+                                                "w-full px-3 py-2.5 hover:bg-primary/[0.03] transition-colors flex gap-2 border-b border-ink/[0.03] last:border-0",
+                                                n.unread && "bg-primary/[0.03]"
+                                            )}
                                         >
-                                            <div className={cn("w-8 h-8 rounded-lg flex items-center justify-center shrink-0", n.bg)}>
-                                                <n.icon className={cn("w-4 h-4", n.color)} />
-                                            </div>
-                                            <div className="flex-1 min-w-0">
-                                                <span className="text-[10px] font-black text-ink block font-vazirmatn">{n.title}</span>
-                                                <p className="text-[9px] text-ink/45 leading-relaxed mt-0.5 line-clamp-2 font-vazirmatn">{n.description}</p>
-                                            </div>
-                                        </button>
+                                            <button
+                                                type="button"
+                                                onClick={async () => {
+                                                    if (n.unread) {
+                                                        try {
+                                                            await apiRequest(`/notifications/${n.id}/read`, { method: "POST" });
+                                                            invalidateNotifications();
+                                                        } catch {
+                                                            /* navigation still proceeds */
+                                                        }
+                                                    }
+                                                    if (n.href) router.push(n.href);
+                                                    setShowNotifs(false);
+                                                }}
+                                                className="flex-1 min-w-0 text-start flex gap-3"
+                                            >
+                                                <div className={cn("w-8 h-8 rounded-lg flex items-center justify-center shrink-0", n.bg)}>
+                                                    <n.icon className={cn("w-4 h-4", n.color)} />
+                                                </div>
+                                                <div className="flex-1 min-w-0">
+                                                    <span className={cn("text-[10px] block font-vazirmatn", n.unread ? "font-black text-ink" : "font-bold text-ink/55")}>{n.title}</span>
+                                                    <p className="text-[9px] text-ink/45 leading-relaxed mt-0.5 line-clamp-2 font-vazirmatn">{n.description}</p>
+                                                </div>
+                                                {n.unread && <span className="mt-1.5 w-1.5 h-1.5 rounded-full bg-rose-500 shrink-0" />}
+                                            </button>
+                                            <button
+                                                type="button"
+                                                aria-label={t("common.notifications.dismiss")}
+                                                title={t("common.notifications.dismiss")}
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    dismissOne(n.id).catch(() => undefined);
+                                                }}
+                                                className="shrink-0 h-7 w-7 mt-0.5 rounded-lg text-ink/25 hover:text-rose-600 hover:bg-rose-50 flex items-center justify-center"
+                                            >
+                                                <Trash2 className="w-3.5 h-3.5" />
+                                            </button>
+                                        </div>
                                     )) : (
                                         <div className="py-10 text-center text-[10px] text-ink/30 font-vazirmatn">
                                             <CheckCircle2 className="w-7 h-7 mx-auto mb-2 text-emerald-400/70" />

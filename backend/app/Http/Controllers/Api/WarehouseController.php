@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Exceptions\DomainException;
 use App\Http\Controllers\Controller;
 use App\Models\WarehouseLog;
 use App\Models\Inventory;
@@ -10,6 +11,9 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use App\Support\IntakePolicy;
 use App\Support\StockMovementLogger;
+use App\Services\Stock\StockLotService;
+use App\Services\Ledger\LedgerPoster;
+use App\Support\Money;
 
 class WarehouseController extends Controller
 {
@@ -66,7 +70,7 @@ class WarehouseController extends Controller
             $inventory = Inventory::where('id', $inventory->id)->lockForUpdate()->first();
 
             if ($validated['direction'] === 'out' && $inventory->quantity < $validated['quantity']) {
-                return response()->json(['message' => 'موجودی کافی برای خروج از انبار وجود ندارد'], 422);
+                throw new DomainException('موجودی کافی برای خروج از انبار وجود ندارد');
             }
 
             $log = WarehouseLog::create([
@@ -74,11 +78,16 @@ class WarehouseController extends Controller
                 'user_id' => $request->user()->id,
             ]);
 
-            if ($validated['direction'] === 'in') {
-                $inventory->increment('quantity', $validated['quantity']);
-            } else {
-                $inventory->decrement('quantity', $validated['quantity']);
-            }
+            $delta = $validated['direction'] === 'in'
+                ? (int) $validated['quantity']
+                : -(int) $validated['quantity'];
+            app(StockLotService::class)->adjust(
+                (int) $validated['branch_id'],
+                (int) $validated['book_id'],
+                $delta,
+                $validated['reason'],
+                $log
+            );
 
             ActivityLogger::record(
                 'warehouse',
@@ -121,7 +130,7 @@ class WarehouseController extends Controller
                     ->first();
 
                 if (!$inventory) {
-                    return response()->json(['message' => 'موجودی یافت نشد'], 422);
+                    throw new DomainException('موجودی یافت نشد');
                 }
 
                 $oldQty = (int) $warehouseLog->quantity;
@@ -130,14 +139,26 @@ class WarehouseController extends Controller
 
                 if ($warehouseLog->direction === 'out') {
                     if ($diff > 0 && $inventory->quantity < $diff) {
-                        return response()->json(['message' => 'موجودی کافی برای افزایش خروج وجود ندارد'], 422);
+                        throw new DomainException('موجودی کافی برای افزایش خروج وجود ندارد');
                     }
-                    $inventory->decrement('quantity', $diff);
+                    app(StockLotService::class)->adjust(
+                        (int) $warehouseLog->branch_id,
+                        (int) $warehouseLog->book_id,
+                        -$diff,
+                        'warehouse_log_edit',
+                        $warehouseLog
+                    );
                 } else {
                     if ($diff < 0 && $inventory->quantity < abs($diff)) {
-                        return response()->json(['message' => 'موجودی کافی برای کاهش ورود وجود ندارد'], 422);
+                        throw new DomainException('موجودی کافی برای کاهش ورود وجود ندارد');
                     }
-                    $inventory->increment('quantity', $diff);
+                    app(StockLotService::class)->adjust(
+                        (int) $warehouseLog->branch_id,
+                        (int) $warehouseLog->book_id,
+                        $diff,
+                        'warehouse_log_edit',
+                        $warehouseLog
+                    );
                 }
             }
 
@@ -321,21 +342,31 @@ class WarehouseController extends Controller
         }
 
         return DB::transaction(function () use ($request, $validated) {
-            $inventory = Inventory::firstOrCreate(
-                ['branch_id' => $validated['branch_id'], 'book_id' => $validated['book_id']],
-                ['quantity' => 0, 'type' => 'owned']
+            $inventory = app(StockLotService::class)->ensureAggregate(
+                (int) $validated['branch_id'],
+                (int) $validated['book_id'],
+                ['type' => 'owned']
             );
 
-            $inventory->increment('quantity', $validated['quantity']);
-            $inventory->update([
-                'type' => 'owned',
-                'supplier_id'      => $validated['supplier_id'] ?? $inventory->supplier_id,
-                'price_toman'      => $validated['price_toman']
+            $inventory = app(StockLotService::class)->setSellPrices($inventory, [
+                'price_toman' => $validated['price_toman']
                     ?? ($validated['currency'] === 'toman' ? $validated['selling_price'] : $inventory->price_toman),
-                'price_dinar'      => $validated['price_dinar']
+                'price_dinar' => $validated['price_dinar']
                     ?? ($validated['currency'] === 'dinar' ? $validated['selling_price'] : $inventory->price_dinar),
-                'cost_price_toman' => $validated['currency'] === 'toman' ? $validated['cost_price'] : $inventory->cost_price_toman,
-                'cost_price_dinar' => $validated['currency'] === 'dinar' ? $validated['cost_price'] : $inventory->cost_price_dinar,
+            ]);
+
+            $branch = \App\Models\Branch::find($validated['branch_id']);
+            $book = \App\Models\Book::find($validated['book_id']);
+            $lotService = app(StockLotService::class);
+            $lotService->createIntakeLot([
+                'book_id' => $validated['book_id'],
+                'branch_id' => $validated['branch_id'],
+                'supplier_id' => $validated['supplier_id'] ?? null,
+                'ownership_type' => 'owned',
+                'currency' => $validated['currency'],
+                'unit_cost' => $validated['cost_price'],
+                'quantity' => $validated['quantity'],
+                'origin' => $lotService->resolveOrigin($branch, (bool) $book?->iraq_only),
             ]);
 
             $log = WarehouseLog::create([
@@ -349,6 +380,15 @@ class WarehouseController extends Controller
                 'log_date'     => $validated['log_date'] ?? now()->toDateString(),
                 'user_id'      => $request->user()->id,
             ]);
+
+            app(LedgerPoster::class)->postPurchase(
+                $log,
+                Money::mul($validated['cost_price'], $validated['quantity']),
+                $validated['currency'],
+                (int) $validated['branch_id']
+            );
+
+            $inventory = $inventory->fresh();
 
             ActivityLogger::record(
                 'inventory',
@@ -386,55 +426,22 @@ class WarehouseController extends Controller
             'supplier_id'      => 'nullable|exists:suppliers,id',
             'price_toman'      => 'nullable|numeric|min:0',
             'price_dinar'      => 'nullable|numeric|min:0',
-            'cost_price_toman' => 'nullable|numeric|min:0',
-            'cost_price_dinar' => 'nullable|numeric|min:0',
-            'quantity'         => 'nullable|integer|min:0',
         ]);
 
-        $type = $validated['type'] ?? 'owned';
-        $supplierId = array_key_exists('supplier_id', $validated)
-            ? $validated['supplier_id']
-            : null;
-
-        if ($type === 'consignment' && empty($supplierId)) {
-            return response()->json(['message' => 'تأمین‌کننده برای کتاب امانی الزامی است'], 422);
-        }
-
-        $inventory = Inventory::firstOrCreate(
-            [
-                'branch_id' => $validated['branch_id'],
-                'book_id'   => $validated['book_id'],
-            ],
-            [
-                'quantity' => 0,
-                'type'     => $type,
-            ]
+        $inventory = app(StockLotService::class)->ensureAggregate(
+            (int) $validated['branch_id'],
+            (int) $validated['book_id']
         );
 
-        $updates = [
-            'type' => $type,
-        ];
+        $inventory = app(StockLotService::class)->setSellPrices($inventory, $validated);
 
-        if (array_key_exists('supplier_id', $validated)) {
-            $updates['supplier_id'] = $supplierId;
-        }
-        if (array_key_exists('price_toman', $validated)) {
-            $updates['price_toman'] = $validated['price_toman'];
-        }
-        if (array_key_exists('price_dinar', $validated)) {
-            $updates['price_dinar'] = $validated['price_dinar'];
-        }
-        if (array_key_exists('cost_price_toman', $validated)) {
-            $updates['cost_price_toman'] = $validated['cost_price_toman'];
-        }
-        if (array_key_exists('cost_price_dinar', $validated)) {
-            $updates['cost_price_dinar'] = $validated['cost_price_dinar'];
-        }
-        if (array_key_exists('quantity', $validated)) {
-            $updates['quantity'] = $validated['quantity'];
-        }
-
-        $inventory->update($updates);
+        \App\Models\BookBranchPrice::updateOrCreate(
+            ['book_id' => $inventory->book_id, 'branch_id' => $inventory->branch_id],
+            [
+                'price_toman' => $inventory->price_toman,
+                'price_dinar' => $inventory->price_dinar,
+            ]
+        );
 
         ActivityLogger::record(
             'inventory',
@@ -456,25 +463,26 @@ class WarehouseController extends Controller
     public function updateInventory(Request $request, Inventory $inventory)
     {
         $validated = $request->validate([
-            'quantity'         => 'sometimes|integer|min:0',
-            'type'             => 'sometimes|in:consignment,owned',
-            'supplier_id'      => 'nullable|exists:suppliers,id',
+            'quantity'         => 'sometimes|integer',
+            'adjustment_reason'=> 'required_with:quantity|string|max:255',
             'price_toman'      => 'nullable|numeric|min:0',
             'price_dinar'      => 'nullable|numeric|min:0',
-            'cost_price_toman' => 'nullable|numeric|min:0',
-            'cost_price_dinar' => 'nullable|numeric|min:0',
         ]);
 
-        $type = $validated['type'] ?? $inventory->type;
-        $supplierId = array_key_exists('supplier_id', $validated)
-            ? $validated['supplier_id']
-            : $inventory->supplier_id;
-
-        if ($type === 'consignment' && empty($supplierId)) {
-            return response()->json(['message' => 'تأمین‌کننده برای کتاب امانی الزامی است'], 422);
+        if (array_key_exists('quantity', $validated)) {
+            $delta = (int) $validated['quantity'] - (int) $inventory->quantity;
+            if ($delta !== 0) {
+                app(StockLotService::class)->adjust(
+                    (int) $inventory->branch_id,
+                    (int) $inventory->book_id,
+                    $delta,
+                    $validated['adjustment_reason'],
+                    $inventory
+                );
+            }
         }
 
-        $inventory->update($validated);
+        $inventory = app(StockLotService::class)->setSellPrices($inventory->fresh(), $validated);
 
         ActivityLogger::record(
             'inventory',

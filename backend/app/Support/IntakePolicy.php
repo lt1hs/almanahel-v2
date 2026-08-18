@@ -8,9 +8,13 @@ use Illuminate\Http\JsonResponse;
 
 class IntakePolicy
 {
-    /** Qom store or central warehouse — default intake hubs per business rules */
     public static function isIntakeHub(Branch $branch): bool
     {
+        if ($branch->is_intake_hub || $branch->is_central_warehouse) {
+            return true;
+        }
+
+        // Legacy fallback until capabilities backfilled
         if ($branch->type === 'warehouse') {
             return true;
         }
@@ -20,22 +24,40 @@ class IntakePolicy
 
     public static function isIraqStore(Branch $branch): bool
     {
+        if ($branch->is_iraq_store) {
+            return true;
+        }
+
         return $branch->type === 'store' && $branch->country === 'عراق';
     }
 
     public static function qomBranch(): ?Branch
     {
-        return Branch::where('type', 'store')->where('city', 'قم')->first();
+        return Branch::where('is_intake_hub', true)->where('type', 'store')->first()
+            ?? Branch::where('type', 'store')->where('city', 'قم')->first();
     }
 
     public static function warehouseBranch(): ?Branch
     {
-        return Branch::where('type', 'warehouse')->first();
+        return Branch::where('is_central_warehouse', true)->first()
+            ?? Branch::where('type', 'warehouse')->first();
     }
 
     public static function iraqBranch(): ?Branch
     {
-        return Branch::where('type', 'store')->where('country', 'عراق')->first();
+        return Branch::where('is_iraq_store', true)->first()
+            ?? Branch::where('type', 'store')->where('country', 'عراق')->first();
+    }
+
+    /** @return \Illuminate\Support\Collection<int, Branch> */
+    public static function iraqBranches()
+    {
+        $flagged = Branch::where('is_iraq_store', true)->get();
+        if ($flagged->isNotEmpty()) {
+            return $flagged;
+        }
+
+        return Branch::where('type', 'store')->where('country', 'عراق')->get();
     }
 
     public static function userCanIntake(User $user, bool $iraqOnly = false): bool
@@ -44,9 +66,10 @@ class IntakePolicy
             return true;
         }
 
+        $branch = $user->branch_id ? Branch::find($user->branch_id) : null;
+
         if ($iraqOnly) {
-            $iraq = self::iraqBranch();
-            return $iraq && (int) $user->branch_id === (int) $iraq->id;
+            return $branch && self::isIraqStore($branch);
         }
 
         if ($user->role === 'warehouse_staff') {
@@ -54,7 +77,9 @@ class IntakePolicy
             return $warehouse && (int) $user->branch_id === (int) $warehouse->id;
         }
 
-        $branch = $user->branch_id ? Branch::find($user->branch_id) : null;
+        if ($user->role === 'branch_manager' && $branch) {
+            return true;
+        }
 
         return $branch && self::isIntakeHub($branch);
     }
@@ -69,9 +94,8 @@ class IntakePolicy
             return self::warehouseBranch()?->id ?? self::qomBranch()?->id;
         }
 
-        $branch = $user->branch_id ? Branch::find($user->branch_id) : null;
-        if ($branch && self::isIntakeHub($branch)) {
-            return $branch->id;
+        if ($user->branch_id) {
+            return (int) $user->branch_id;
         }
 
         return self::qomBranch()?->id ?? self::warehouseBranch()?->id;
@@ -82,34 +106,31 @@ class IntakePolicy
     {
         $branch = Branch::find($branchId);
         if (!$branch) {
-            return response()->json(['message' => 'شعبه یافت نشد'], 404);
+            return response()->json(['message' => 'شعبه یافت نشد'], 422);
         }
 
-        if ($iraqOnly) {
-            if (!self::isIraqStore($branch)) {
-                return response()->json([
-                    'message' => 'کتب مخصوص عراق فقط در شعبه عراق قابل ثبت ورود هستند',
-                ], 422);
+        if ($iraqOnly && !self::isIraqStore($branch)) {
+            return response()->json(['message' => 'کتب عراق فقط در شعب عراق قابل ورود هستند'], 422);
+        }
+
+        if (!$iraqOnly && self::isIraqStore($branch) && !in_array($user->role, ['super_admin', 'admin'], true)) {
+            // allow admins; others use Iraq flow
+        }
+
+        if (!self::userCanIntake($user, $iraqOnly) && !in_array($user->role, ['super_admin', 'admin'], true)) {
+            return response()->json(['message' => 'اجازه ورود کالا به این شعبه را ندارید'], 403);
+        }
+
+        if (!in_array($user->role, ['super_admin', 'admin'], true)) {
+            if ($user->role === 'warehouse_staff') {
+                $wh = self::warehouseBranch();
+                $allowed = ($wh && (int) $branchId === (int) $wh->id) || self::isIntakeHub($branch);
+                if (!$allowed) {
+                    return response()->json(['message' => 'اجازه ورود به این شعبه را ندارید'], 403);
+                }
+            } elseif ($user->branch_id && (int) $user->branch_id !== (int) $branchId) {
+                return response()->json(['message' => 'اجازه ورود به این شعبه را ندارید'], 403);
             }
-            if (!self::userCanIntake($user, true)) {
-                return response()->json([
-                    'message' => 'شما مجوز ثبت ورود کتاب مخصوص عراق را ندارید',
-                ], 403);
-            }
-
-            return null;
-        }
-
-        if (!self::isIntakeHub($branch)) {
-            return response()->json([
-                'message' => 'ورود کتاب فقط در شعبه قم یا انبار مرکزی مجاز است',
-            ], 422);
-        }
-
-        if (!self::userCanIntake($user, false)) {
-            return response()->json([
-                'message' => 'شما مجوز ثبت ورود کتاب در این مرکز را ندارید',
-            ], 403);
         }
 
         return null;

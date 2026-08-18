@@ -128,14 +128,29 @@ class SupplierController extends Controller
         return response()->json(['message' => 'تامین‌کننده با موفقیت حذف شد']);
     }
 
-    /** Get unsettled balance per supplier */
+    /** Get unsettled balance per supplier (sold-based publisher share). */
     public function balance(Supplier $supplier)
     {
-        $unsettled = \App\Models\ConsignmentReceipt::where('supplier_id', $supplier->id)
-            ->whereIn('status', ['unsettled', 'partially_settled'])
-            ->selectRaw('currency, SUM(total_value - settled_amount) as balance')
-            ->groupBy('currency')
+        $payable = app(\App\Services\Settlement\SupplierPayable::class);
+        $receipts = \App\Models\ConsignmentReceipt::with('items')
+            ->where('supplier_id', $supplier->id)
+            ->whereIn('status', ['unsettled', 'partially_settled', 'settled'])
             ->get();
+
+        $byCurrency = [];
+        foreach ($receipts as $receipt) {
+            $bal = $payable->outstanding($receipt);
+            if ($bal <= 0) {
+                continue;
+            }
+            $cur = $receipt->currency;
+            $byCurrency[$cur] = ($byCurrency[$cur] ?? 0) + $bal;
+        }
+
+        $unsettled = collect($byCurrency)->map(fn ($balance, $currency) => [
+            'currency' => $currency,
+            'balance' => round($balance, 2),
+        ])->values();
 
         return response()->json([
             'supplier' => $supplier,

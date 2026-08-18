@@ -17,7 +17,6 @@ import {
     parseDecimalInput,
     parsePriceDigits,
     resolveBookCoverUrl,
-    totalBranchStock,
 } from "@/lib/bookFormUtils";
 
 const ScannerModal = dynamic(
@@ -30,12 +29,25 @@ interface BookFormProps {
     onChange: (data: any) => void;
     /** Intake: warehouse + Qom (+ Najaf when iraq-only). Full: all branches (edit). */
     stockFields?: "intake" | "full";
+    /** Override which qty fields are shown (POS sees only its own branch). */
+    visibleStockKeys?: BranchStockKey[];
+    /** Override qty field labels (e.g. actual POS name). */
+    stockFieldLabels?: Partial<Record<BranchStockKey, string>>;
+    /** Which sell/cost prices to show. */
+    priceScope?: "all" | "qom" | "mashhad" | "iraq";
 }
 
 const fieldClass = "h-12 bg-white/40 border-white/60 focus:bg-white rounded-[10px] text-sm";
 const priceClass = "h-12 bg-white/60 border-white focus:bg-white rounded-[10px] tabular-nums";
 
-export function BookForm({ data, onChange, stockFields = "full" }: BookFormProps) {
+export function BookForm({
+    data,
+    onChange,
+    stockFields = "full",
+    visibleStockKeys,
+    stockFieldLabels,
+    priceScope = "all",
+}: BookFormProps) {
     const { t, formatNumber } = useTranslation();
     const notify = useNotify();
     const [isScannerOpen, setIsScannerOpen] = React.useState(false);
@@ -80,21 +92,19 @@ export function BookForm({ data, onChange, stockFields = "full" }: BookFormProps
     );
 
     const visibleBranchKeys = useMemo((): BranchStockKey[] => {
+        if (visibleStockKeys?.length) return visibleStockKeys;
         if (stockFields === "full") return [...BRANCH_STOCK_KEYS];
         const keys: BranchStockKey[] = ["warehouse", "qom"];
         if (data.iraqOnly) keys.push("najaf");
         return keys;
-    }, [stockFields, data.iraqOnly]);
+    }, [stockFields, data.iraqOnly, visibleStockKeys]);
 
     const totalStock = useMemo(() => {
-        if (stockFields === "intake") {
-            return visibleBranchKeys.reduce(
-                (sum, key) => sum + (parseInt(branchStock[key], 10) || 0),
-                0
-            );
-        }
-        return totalBranchStock(branchStock);
-    }, [branchStock, stockFields, visibleBranchKeys]);
+        return visibleBranchKeys.reduce(
+            (sum, key) => sum + (parseInt(branchStock[key], 10) || 0),
+            0
+        );
+    }, [branchStock, visibleBranchKeys]);
 
     const handleChange = (field: string, value: any) => {
         onChange({ ...data, [field]: value });
@@ -145,7 +155,14 @@ export function BookForm({ data, onChange, stockFields = "full" }: BookFormProps
         onChange({ ...data, coverImage: "", coverImagePreview: "" });
     };
 
-    const branchLabel = (key: BranchStockKey) => t(`inventory.form.branchStock.${key}`);
+    const branchLabel = (key: BranchStockKey) =>
+        stockFieldLabels?.[key] || t(`inventory.form.branchStock.${key}`);
+    const isPosStock = Boolean(visibleStockKeys?.length === 1);
+    const showCostToman = priceScope === "all" || priceScope === "qom" || priceScope === "mashhad";
+    const showCostDinar = priceScope === "all" || priceScope === "iraq";
+    const showPriceQom = priceScope === "all" || priceScope === "qom";
+    const showPriceMashhad = priceScope === "all" || priceScope === "mashhad";
+    const showPriceDinar = priceScope === "all" || priceScope === "iraq";
 
     return (
         <div className="space-y-8">
@@ -183,7 +200,10 @@ export function BookForm({ data, onChange, stockFields = "full" }: BookFormProps
                     />
                 </div>
                 <div className="space-y-2">
-                    <label className="text-[10px] font-black text-ink/40 uppercase tracking-widest px-1">{t("inventory.author")}</label>
+                    <label className="text-[10px] font-black text-ink/40 uppercase tracking-widest px-1">
+                        {t("inventory.author")}
+                        <span className="text-ink/25 font-bold ms-1">{t("inventory.form.optional")}</span>
+                    </label>
                     <Input
                         placeholder={t("inventory.form.authorPlaceholder")}
                         value={data.author || ""}
@@ -368,6 +388,7 @@ export function BookForm({ data, onChange, stockFields = "full" }: BookFormProps
                     </div>
 
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-2">
+                        {showCostToman && (
                         <div className="space-y-3 p-5 bg-ink/[0.02] border border-ink/5 rounded-[10px]">
                             <label className="text-[10px] font-black text-ink/50 uppercase tracking-widest px-1 block">{t("inventory.form.costPriceToman")}</label>
                             <Input
@@ -379,6 +400,8 @@ export function BookForm({ data, onChange, stockFields = "full" }: BookFormProps
                                 className={cn(priceClass, "text-lg font-black text-ink")}
                             />
                         </div>
+                        )}
+                        {showCostDinar && (
                         <div className="space-y-3 p-5 bg-ink/[0.02] border border-ink/5 rounded-[10px]">
                             <label className="text-[10px] font-black text-ink/50 uppercase tracking-widest px-1 block">{t("inventory.form.costPriceDinar")}</label>
                             <Input
@@ -390,6 +413,8 @@ export function BookForm({ data, onChange, stockFields = "full" }: BookFormProps
                                 className={cn(priceClass, "text-lg font-black text-ink")}
                             />
                         </div>
+                        )}
+                        {showPriceQom && (
                         <div className="space-y-3 p-5 bg-primary/[0.02] border border-primary/5 rounded-[10px]">
                             <label className="text-[10px] font-black text-primary/60 uppercase tracking-widest px-1 block">{t("inventory.form.priceTomanQom")}</label>
                             <Input
@@ -401,6 +426,8 @@ export function BookForm({ data, onChange, stockFields = "full" }: BookFormProps
                                 className={cn(priceClass, "text-xl font-black text-primary")}
                             />
                         </div>
+                        )}
+                        {showPriceMashhad && (
                         <div className="space-y-3 p-5 bg-primary/[0.02] border border-primary/5 rounded-[10px]">
                             <label className="text-[10px] font-black text-primary/60 uppercase tracking-widest px-1 block">{t("inventory.form.priceTomanMashhad")}</label>
                             <Input
@@ -412,7 +439,12 @@ export function BookForm({ data, onChange, stockFields = "full" }: BookFormProps
                                 className={cn(priceClass, "text-xl font-black text-primary")}
                             />
                         </div>
-                        <div className="space-y-3 p-5 bg-accent/[0.02] border border-accent/5 rounded-[10px] md:col-span-2">
+                        )}
+                        {showPriceDinar && (
+                        <div className={cn(
+                            "space-y-3 p-5 bg-accent/[0.02] border border-accent/5 rounded-[10px]",
+                            priceScope === "all" && "md:col-span-2"
+                        )}>
                             <label className="text-[10px] font-black text-accent/60 uppercase tracking-widest px-1 block">{t("inventory.form.priceDinar")}</label>
                             <Input
                                 type="text"
@@ -423,6 +455,7 @@ export function BookForm({ data, onChange, stockFields = "full" }: BookFormProps
                                 className={cn(priceClass, "text-xl font-black text-accent")}
                             />
                         </div>
+                        )}
                     </div>
                 </div>
             </div>
@@ -434,14 +467,18 @@ export function BookForm({ data, onChange, stockFields = "full" }: BookFormProps
                     </div>
                     <div>
                         <h3 className="text-sm font-black font-vazirmatn text-ink">
-                            {stockFields === "intake"
-                                ? t("inventory.form.intakeStockTitle")
-                                : t("inventory.form.branchStockTitle")}
+                            {isPosStock
+                                ? t("inventory.form.posStockTitle")
+                                : stockFields === "intake"
+                                    ? t("inventory.form.intakeStockTitle")
+                                    : t("inventory.form.branchStockTitle")}
                         </h3>
                         <p className="text-[10px] text-ink/30 font-bold uppercase tracking-wider mt-0.5">
-                            {stockFields === "intake"
-                                ? t("inventory.form.intakeStockDesc")
-                                : t("inventory.form.branchStockDesc")}
+                            {isPosStock
+                                ? t("inventory.form.posStockDesc")
+                                : stockFields === "intake"
+                                    ? t("inventory.form.intakeStockDesc")
+                                    : t("inventory.form.branchStockDesc")}
                         </p>
                     </div>
                 </div>
@@ -460,6 +497,7 @@ export function BookForm({ data, onChange, stockFields = "full" }: BookFormProps
                             />
                         </div>
                     ))}
+                    {!isPosStock && (
                     <div className="space-y-2">
                         <label className="text-[10px] font-black text-ink/40 uppercase tracking-widest px-1">{t("inventory.form.totalStock")}</label>
                         <Input
@@ -468,6 +506,7 @@ export function BookForm({ data, onChange, stockFields = "full" }: BookFormProps
                             className={cn(fieldClass, "text-lg font-black text-primary bg-primary/5 border-primary/10")}
                         />
                     </div>
+                    )}
                     <div className="space-y-2 md:col-span-2">
                         <label className="text-[10px] font-black text-ink/40 uppercase tracking-widest px-1 flex items-center gap-1.5">
                             <FileText className="w-3 h-3" />
@@ -480,6 +519,22 @@ export function BookForm({ data, onChange, stockFields = "full" }: BookFormProps
                             onChange={(e) => handleChange("notes", e.target.value)}
                             className="w-full rounded-[10px] border border-white/60 bg-white/40 px-3 py-2.5 text-sm font-vazirmatn outline-none focus:bg-white focus:ring-2 focus:ring-primary/15 resize-y min-h-[88px]"
                         />
+                    </div>
+                    <div className="space-y-2 md:col-span-2">
+                        <label className="text-[10px] font-black text-ink/40 uppercase tracking-widest px-1">
+                            {t("inventory.form.lowStockThreshold")}
+                        </label>
+                        <Input
+                            type="text"
+                            inputMode="numeric"
+                            placeholder="5"
+                            value={data.low_stock_threshold ?? ""}
+                            onChange={(e) => handleChange("low_stock_threshold", parsePriceDigits(e.target.value).slice(0, 3))}
+                            className={cn(fieldClass, "tabular-nums max-w-[12rem]")}
+                        />
+                        <p className="text-[10px] text-ink/35 font-vazirmatn px-1">
+                            {t("inventory.form.lowStockThresholdHint")}
+                        </p>
                     </div>
                 </div>
             </div>

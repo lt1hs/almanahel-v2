@@ -17,11 +17,14 @@ use App\Support\SalesCogs;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Schema;
 
 class ReportController extends Controller
 {
     public function allBranchBalance(Request $request)
     {
+        \App\Support\Authorization\BranchAccess::assertCanViewAllReports($request->user());
+
         $dateFrom = $request->date_from ?? now()->startOfMonth()->toDateString();
         $dateTo   = $request->date_to   ?? now()->toDateString();
 
@@ -337,8 +340,9 @@ class ReportController extends Controller
     {
         $user = $request->user();
         $globalThreshold = (int) Cache::get('almanahel.low_stock_threshold', config('almanahel.low_stock_threshold', 5));
+        $alertBranches = \App\Support\Authorization\BranchAccess::alertBranchIds($user);
 
-        $lowStock = Inventory::query()
+        $lowStockQuery = Inventory::query()
             ->with(['book:id,title,low_stock_threshold', 'branch:id,name'])
             ->join('books', 'inventories.book_id', '=', 'books.id')
             ->where('inventories.quantity', '>', 0)
@@ -346,7 +350,12 @@ class ReportController extends Controller
                 'inventories.quantity <= COALESCE(books.low_stock_threshold, ?)',
                 [$globalThreshold]
             )
-            ->select('inventories.*')
+            ->select('inventories.*');
+        if ($alertBranches !== null) {
+            $lowStockQuery->whereIn('inventories.branch_id', $alertBranches ?: [0]);
+        }
+
+        $lowStock = $lowStockQuery
             ->limit(50)
             ->get()
             ->map(fn ($inv) => [
@@ -363,9 +372,14 @@ class ReportController extends Controller
                 ],
             ]);
 
-        $dueChecks = Check::with(['branch', 'invoice'])
+        $dueChecksQuery = Check::with(['branch', 'invoice'])
             ->where('status', 'pending')
-            ->where('due_date', '<=', now()->addDays(3))
+            ->where('due_date', '<=', now()->addDays(3));
+        if ($alertBranches !== null) {
+            $dueChecksQuery->whereIn('branch_id', $alertBranches ?: [0]);
+        }
+
+        $dueChecks = $dueChecksQuery
             ->get()
             ->map(fn($chk) => [
                 'type'    => 'check_due',
@@ -377,15 +391,21 @@ class ReportController extends Controller
                     'due_date'     => $chk->due_date,
                     'amount'       => $chk->amount,
                     'currency'     => $chk->currency,
+                    'branch_id'    => $chk->branch_id,
                     'branch_name'  => $chk->branch?->name,
                 ],
             ]);
 
-        $dueCredits = Invoice::with('branch')
+        $dueCreditsQuery = Invoice::with('branch')
             ->where('payment_method', 'credit')
             ->where('payment_status', 'pending')
             ->whereNotNull('due_date')
-            ->where('due_date', '<=', now()->addDays(3))
+            ->where('due_date', '<=', now()->addDays(3));
+        if ($alertBranches !== null) {
+            $dueCreditsQuery->whereIn('branch_id', $alertBranches ?: [0]);
+        }
+
+        $dueCredits = $dueCreditsQuery
             ->get()
             ->map(fn($inv) => [
                 'type'    => 'credit_due',
@@ -397,6 +417,7 @@ class ReportController extends Controller
                     'due_date'       => $inv->due_date,
                     'total'          => $inv->total,
                     'currency'       => $inv->currency,
+                    'branch_id'      => $inv->branch_id,
                     'branch_name'    => $inv->branch?->name,
                 ],
             ]);
@@ -412,36 +433,133 @@ class ReportController extends Controller
         ]);
     }
 
-    /** Iraq-only books profit (separate from Qom-distributed books) */
+    /** Iraq branch P&L split by lot origin (iraq_local vs qom_distributed). */
     public function iraqProfit(Request $request)
     {
+        \App\Support\Authorization\BranchAccess::assertCanViewAllReports($request->user());
+
         $dateFrom = $request->date_from ?? now()->startOfMonth()->toDateString();
         $dateTo   = $request->date_to   ?? now()->toDateString();
 
-        $iraqBranch = Branch::where('country', 'عراق')->where('type', 'store')->first();
+        $iraqBranches = Branch::query()
+            ->where('type', 'store')
+            ->where(function ($q) {
+                $q->where('country', 'عراق')
+                    ->orWhere('is_iraq_store', true);
+            })
+            ->get();
 
-        $iraqOnlyRevenue = DB::table('invoice_items')
-            ->join('invoices', 'invoice_items.invoice_id', '=', 'invoices.id')
-            ->join('books', 'invoice_items.book_id', '=', 'books.id')
-            ->where('books.iraq_only', true)
-            ->whereBetween(DB::raw('DATE(invoices.created_at)'), [$dateFrom, $dateTo])
-            ->when($iraqBranch, fn($q) => $q->where('invoices.branch_id', $iraqBranch->id))
-            ->sum(DB::raw('invoice_items.actual_price * invoice_items.quantity'));
+        $iraqBranch = $iraqBranches->first();
+        $branchIds = $iraqBranches->pluck('id')->all();
 
-        $distributedRevenue = DB::table('invoice_items')
-            ->join('invoices', 'invoice_items.invoice_id', '=', 'invoices.id')
-            ->join('books', 'invoice_items.book_id', '=', 'books.id')
-            ->where('books.iraq_only', false)
-            ->whereBetween(DB::raw('DATE(invoices.created_at)'), [$dateFrom, $dateTo])
-            ->when($iraqBranch, fn($q) => $q->where('invoices.branch_id', $iraqBranch->id))
-            ->sum(DB::raw('invoice_items.actual_price * invoice_items.quantity'));
+        $empty = [
+            'revenue' => 0, 'cogs' => 0, 'expenses' => 0, 'gifts' => 0, 'net_profit' => 0, 'sales_count' => 0,
+            'returns' => 0,
+        ];
+
+        $compute = function (array $origins) use ($branchIds, $dateFrom, $dateTo, $empty) {
+            if (!$branchIds) {
+                return $empty;
+            }
+
+            $hasLots = Schema::hasTable('sale_lot_allocations') && Schema::hasTable('stock_lots');
+
+            $invoiceQuery = DB::table('invoices')
+                ->whereIn('branch_id', $branchIds)
+                ->where(function ($q) {
+                    $q->whereNull('type')->orWhere('type', 'sale');
+                })
+                ->whereBetween(DB::raw('DATE(created_at)'), [$dateFrom, $dateTo]);
+
+            if ($hasLots && $origins) {
+                $invoiceIds = DB::table('invoice_items')
+                    ->join('sale_lot_allocations', 'sale_lot_allocations.invoice_item_id', '=', 'invoice_items.id')
+                    ->join('stock_lots', 'stock_lots.id', '=', 'sale_lot_allocations.stock_lot_id')
+                    ->whereIn('stock_lots.origin', $origins)
+                    ->pluck('invoice_items.invoice_id')
+                    ->unique();
+                $invoiceQuery->whereIn('id', $invoiceIds);
+            } elseif ($origins === ['iraq_local']) {
+                $invoiceQuery->whereExists(function ($q) {
+                    $q->select(DB::raw(1))
+                        ->from('invoice_items')
+                        ->join('books', 'books.id', '=', 'invoice_items.book_id')
+                        ->whereColumn('invoice_items.invoice_id', 'invoices.id')
+                        ->where('books.iraq_only', true);
+                });
+            } elseif ($origins === ['qom_distributed']) {
+                $invoiceQuery->whereExists(function ($q) {
+                    $q->select(DB::raw(1))
+                        ->from('invoice_items')
+                        ->join('books', 'books.id', '=', 'invoice_items.book_id')
+                        ->whereColumn('invoice_items.invoice_id', 'invoices.id')
+                        ->where('books.iraq_only', false);
+                });
+            }
+
+            $revenue = (float) (clone $invoiceQuery)->sum('total');
+            $salesCount = (int) (clone $invoiceQuery)->count();
+
+            $cogs = 0.0;
+            foreach ($branchIds as $bid) {
+                foreach (['toman', 'dinar'] as $cur) {
+                    $cogs += SalesCogs::forBranch($bid, $cur, $dateFrom, $dateTo);
+                }
+            }
+
+            $expenses = (float) Expense::whereIn('branch_id', $branchIds)
+                ->whereBetween('date', [$dateFrom, $dateTo])
+                ->sum('amount');
+            $gifts = (float) Gift::whereIn('branch_id', $branchIds)
+                ->whereBetween(DB::raw('DATE(gifted_at)'), [$dateFrom, $dateTo])
+                ->sum('cost_value');
+            $returns = (float) DB::table('customer_returns')
+                ->whereIn('branch_id', $branchIds)
+                ->whereBetween(DB::raw('DATE(created_at)'), [$dateFrom, $dateTo])
+                ->sum('refund_amount');
+
+            $netRevenue = $revenue - $returns;
+            // Note: expenses/gifts/cogs are branch-level (not origin-split) when lots absent;
+            // with lots, cogs still branch-level sum — documented limitation until origin-filtered COGS helper.
+            return [
+                'revenue' => round($netRevenue, 2),
+                'cogs' => round($cogs, 2),
+                'expenses' => round($expenses, 2),
+                'gifts' => round($gifts, 2),
+                'returns' => round($returns, 2),
+                'net_profit' => round($netRevenue - $cogs - $expenses - $gifts, 2),
+                'sales_count' => $salesCount,
+            ];
+        };
+
+        $iraqLocal = $compute(['iraq_local']);
+        $distributed = $compute(['qom_distributed']);
+        $combined = $compute([]);
+
+        // Compatibility aliases
+        $iraqOnlyRevenue = $iraqLocal['revenue'];
+        $distributedRevenue = $distributed['revenue'];
 
         return response()->json([
-            'branch'               => $iraqBranch,
-            'iraq_only_revenue'    => $iraqOnlyRevenue,
-            'distributed_revenue'  => $distributedRevenue,
-            'total_iraq_revenue'   => $iraqOnlyRevenue + $distributedRevenue,
-            'period'               => ['from' => $dateFrom, 'to' => $dateTo],
+            'branch' => $iraqBranch,
+            'branches' => $iraqBranches,
+            'period' => ['from' => $dateFrom, 'to' => $dateTo],
+            // UI fields
+            'revenue' => $combined['revenue'],
+            'expenses' => $combined['expenses'],
+            'net_profit' => $combined['net_profit'],
+            'sales_count' => $combined['sales_count'],
+            'cogs' => $combined['cogs'],
+            'gifts' => $combined['gifts'],
+            'returns' => $combined['returns'],
+            // Origin splits
+            'iraq_local' => $iraqLocal,
+            'qom_distributed' => $distributed,
+            'combined' => $combined,
+            // Legacy aliases
+            'iraq_only_revenue' => $iraqOnlyRevenue,
+            'distributed_revenue' => $distributedRevenue,
+            'total_iraq_revenue' => $combined['revenue'],
         ]);
     }
 
@@ -533,6 +651,10 @@ class ReportController extends Controller
                 'almanahel.toman_to_dinar_rate',
                 config('almanahel.toman_to_dinar_rate', 50)
             ),
+            'consignment_commission_rate' => (float) Cache::get(
+                'almanahel.consignment_commission_rate',
+                config('almanahel.consignment_commission_rate', 0.1)
+            ),
             'rate_notes' => Cache::get('almanahel.rate_notes', ''),
             'rate_updated_at' => Cache::get('almanahel.rate_updated_at'),
         ]);
@@ -540,9 +662,12 @@ class ReportController extends Controller
 
     public function updateSettings(Request $request)
     {
+        \App\Support\Authorization\BranchAccess::assertCanManageSettings($request->user());
+
         $validated = $request->validate([
             'low_stock_threshold' => 'sometimes|integer|min:1|max:100',
             'toman_to_dinar_rate' => 'sometimes|numeric|min:0.0001|max:1000000',
+            'consignment_commission_rate' => 'sometimes|numeric|min:0|max:0.5',
             'rate_notes' => 'sometimes|nullable|string|max:500',
         ]);
 
@@ -553,6 +678,10 @@ class ReportController extends Controller
         if (array_key_exists('toman_to_dinar_rate', $validated)) {
             Cache::forever('almanahel.toman_to_dinar_rate', $validated['toman_to_dinar_rate']);
             Cache::forever('almanahel.rate_updated_at', now()->toIso8601String());
+        }
+
+        if (array_key_exists('consignment_commission_rate', $validated)) {
+            Cache::forever('almanahel.consignment_commission_rate', $validated['consignment_commission_rate']);
         }
 
         if (array_key_exists('rate_notes', $validated)) {
@@ -658,23 +787,9 @@ class ReportController extends Controller
                 'updated_at'    => optional($transfer->updated_at)?->toIso8601String(),
             ];
 
-            if ($transfer->status === 'pending' && $isFrom) {
+            if (in_array($transfer->status, ['pending', 'shipped'], true) && $isTo) {
                 $out[] = [
-                    'type'    => 'transfer_pending',
-                    'message' => "محموله «{$bookTitle}» آماده ارسال به {$toName} است",
-                    'data'    => $payload,
-                ];
-            }
-            if ($transfer->status === 'pending' && $isTo && !$isFrom) {
-                $out[] = [
-                    'type'    => 'transfer_incoming',
-                    'message' => "{$fromName} در حال آماده‌سازی «{$bookTitle}» برای شعبه شماست",
-                    'data'    => $payload,
-                ];
-            }
-            if ($transfer->status === 'shipped' && $isTo) {
-                $out[] = [
-                    'type'    => 'transfer_shipped',
+                    'type'    => 'transfer_sending',
                     'message' => "محموله «{$bookTitle}» از {$fromName} در راه است — تأیید دریافت کنید",
                     'data'    => $payload,
                 ];

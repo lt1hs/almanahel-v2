@@ -41,6 +41,7 @@ type TypeFilter = "all" | "owned" | "consignment";
 
 interface SalesBook {
     id: string;
+    inventory_id?: number;
     title: string;
     author: string;
     isbn: string;

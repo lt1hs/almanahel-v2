@@ -13,6 +13,7 @@ import { useNotify } from "@/hooks/useNotify";
 import { useRouter } from "@/i18n/routing";
 import { cn } from "@/lib/utils";
 import { apiRequest } from "@/lib/api";
+import { RequireRole } from "@/components/auth/RequireRole";
 
 interface BranchRow {
     id: number;
@@ -73,6 +74,14 @@ function dedupeBranches(list: BranchRow[]): BranchRow[] {
 }
 
 export default function AdminPage() {
+    return (
+        <RequireRole roles={["super_admin", "admin"]}>
+            <AdminPageContent />
+        </RequireRole>
+    );
+}
+
+function AdminPageContent() {
     const { t, formatNumber, isArabic } = useTranslation();
     const notify = useNotify();
     const notifyRef = useRef(notify);
@@ -501,7 +510,7 @@ export default function AdminPage() {
                             <h3 className="text-[15px] font-black font-vazirmatn">
                                 {editingId ? t("admin.editBranch") : t("admin.addBranch")}
                             </h3>
-                            <button type="button" onClick={closeForm} disabled={isSavingBranch}>
+                            <button type="button" onClick={() => closeForm()} disabled={isSavingBranch}>
                                 <X className="w-4 h-4 text-ink/40" />
                             </button>
                         </div>
@@ -546,7 +555,7 @@ export default function AdminPage() {
                             </select>
                         )}
                         <div className="flex gap-2 pt-1">
-                            <Button variant="ghost" className="flex-1 h-10 rounded-xl" disabled={isSavingBranch} onClick={closeForm}>
+                            <Button variant="ghost" className="flex-1 h-10 rounded-xl" disabled={isSavingBranch} onClick={() => closeForm()}>
                                 {t("common.cancel")}
                             </Button>
                             <Button variant="primary" className="flex-1 h-10 rounded-xl font-black" disabled={isSavingBranch} onClick={handleSaveBranch}>

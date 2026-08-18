@@ -2,14 +2,19 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Exceptions\DomainException;
 use App\Http\Controllers\Controller;
 use App\Models\Invoice;
 use App\Models\InvoiceItem;
 use App\Models\Inventory;
 use App\Models\Check;
 use App\Support\ActivityLogger;
-use App\Support\ConsignmentSync;
 use App\Support\StockMovementLogger;
+use App\Services\Stock\StockLotService;
+use App\Services\Ledger\LedgerPoster;
+use App\Support\Authorization\BranchAccess;
+use App\Models\SaleLotAllocation;
+use App\Support\Money;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -53,7 +58,7 @@ class InvoiceController extends Controller
     public function store(Request $request)
     {
         $validated = $request->validate([
-            'branch_id'        => 'required|exists:branches,id',
+            'branch_id'        => 'nullable|exists:branches,id',
             'payment_method'   => 'required|in:cash,card,check,credit',
             'currency'         => 'required|in:toman,dinar',
             'customer_name'    => 'required_if:payment_method,credit|nullable|string|max:255',
@@ -64,41 +69,143 @@ class InvoiceController extends Controller
             'items'            => 'required|array|min:1',
             'items.*.book_id'      => 'required|exists:books,id',
             'items.*.quantity'     => 'required|integer|min:1',
-            'items.*.unit_price'   => 'required|numeric|min:0',
-            'items.*.actual_price' => 'required|numeric|min:0',
+            'items.*.unit_price'   => 'nullable|numeric|min:0',
+            'items.*.actual_price' => 'nullable|numeric|min:0',
             'items.*.discount'     => 'nullable|numeric|min:0',
+            'customer_id'      => 'nullable|exists:customers,id',
+            'items.*.override_reason' => 'nullable|string|max:255',
             'check_number'     => 'required_if:payment_method,check|nullable|string',
             'bank_name'        => 'nullable|string',
             'payer_name'       => 'required_if:payment_method,check|nullable|string',
             'payer_phone'      => 'nullable|string',
         ]);
 
-        return DB::transaction(function () use ($request, $validated) {
-            foreach ($validated['items'] as $item) {
-                $inventory = Inventory::where('branch_id', $validated['branch_id'])
+        $user = $request->user();
+        $branchId = BranchAccess::resolveActorBranchId(
+            $user,
+            isset($validated['branch_id']) ? (int) $validated['branch_id'] : null
+        );
+
+        // Aggregate duplicate book lines before stock checks
+        $aggregated = [];
+        foreach ($validated['items'] as $item) {
+            $bookId = (int) $item['book_id'];
+            if (!isset($aggregated[$bookId])) {
+                $aggregated[$bookId] = [
+                    'book_id' => $bookId,
+                    'quantity' => 0,
+                    'discount' => 0,
+                    'actual_price' => $item['actual_price'] ?? null,
+                    'unit_price' => $item['unit_price'] ?? null,
+                    'override_reason' => $item['override_reason'] ?? null,
+                ];
+            }
+            $aggregated[$bookId]['quantity'] += (int) $item['quantity'];
+            $aggregated[$bookId]['discount'] += (float) ($item['discount'] ?? 0) * (int) $item['quantity'];
+            if (isset($item['actual_price'])) {
+                $aggregated[$bookId]['actual_price'] = $item['actual_price'];
+            }
+            if (!empty($item['override_reason'])) {
+                $aggregated[$bookId]['override_reason'] = $item['override_reason'];
+            }
+        }
+        // Convert summed discount back to per-unit average for storage
+        foreach ($aggregated as &$agg) {
+            $agg['discount'] = $agg['quantity'] > 0
+                ? round($agg['discount'] / $agg['quantity'], 2)
+                : 0;
+        }
+        unset($agg);
+        $lineItems = array_values($aggregated);
+
+        return DB::transaction(function () use ($request, $validated, $user, $branchId, $lineItems) {
+            $prepared = [];
+            foreach ($lineItems as $item) {
+                $inventory = Inventory::where('branch_id', $branchId)
                     ->where('book_id', $item['book_id'])
                     ->lockForUpdate()
                     ->first();
 
                 if (!$inventory || $inventory->quantity < $item['quantity']) {
-                    return response()->json([
-                        'message' => 'موجودی کافی برای یکی از کتاب‌ها وجود ندارد',
+                    throw new DomainException('موجودی کافی برای یکی از کتاب‌ها وجود ندارد', 422, [
                         'book_id' => $item['book_id'],
-                    ], 422);
+                    ]);
                 }
+
+                $listPrice = $validated['currency'] === 'dinar'
+                    ? Money::of($inventory->price_dinar ?? 0)
+                    : Money::of($inventory->price_toman ?? 0);
+
+                $actualPrice = isset($item['actual_price']) ? Money::of($item['actual_price']) : $listPrice;
+                $discount = Money::of($item['discount'] ?? 0);
+
+                if (Money::isNegative($actualPrice) || Money::isNegative($discount)) {
+                    throw new DomainException('مبالغ منفی مجاز نیست');
+                }
+                if (Money::cmp($discount, $actualPrice) > 0) {
+                    throw new DomainException('تخفیف نمی‌تواند بیشتر از قیمت فروش باشد', 422, [
+                        'book_id' => $item['book_id'],
+                    ]);
+                }
+
+                $overrideBy = null;
+                $overrideReason = $item['override_reason'] ?? null;
+                if (Money::cmp($actualPrice, $listPrice) < 0) {
+                    if (Money::isZero($discount)) {
+                        $discount = Money::sub($listPrice, $actualPrice);
+                    }
+                    $overrideBy = $user->id;
+                    if (!$overrideReason) {
+                        $overrideReason = 'markdown';
+                    }
+                }
+                if (Money::isZero($actualPrice) && ($validated['type'] ?? 'sale') !== 'gift') {
+                    if (!BranchAccess::canOverridePrice($user) || !$overrideReason) {
+                        throw new DomainException('فروش با قیمت صفر فقط با مجوز و دلیل مجاز است', 422, [
+                            'book_id' => $item['book_id'],
+                        ]);
+                    }
+                    $overrideBy = $user->id;
+                }
+                if (Money::cmp($actualPrice, $listPrice) > 0) {
+                    if (!BranchAccess::canOverridePrice($user)) {
+                        throw new DomainException('فروش بالاتر از قیمت ثبت‌شده مجاز نیست', 403, [
+                            'book_id' => $item['book_id'],
+                        ]);
+                    }
+                    if (!$overrideReason) {
+                        throw new DomainException('دلیل افزایش قیمت الزامی است', 422, [
+                            'book_id' => $item['book_id'],
+                        ]);
+                    }
+                    $overrideBy = $user->id;
+                }
+
+                $prepared[] = [
+                    'book_id' => $item['book_id'],
+                    'quantity' => $item['quantity'],
+                    'list_price' => $listPrice,
+                    'unit_price' => $listPrice,
+                    'actual_price' => $actualPrice,
+                    'discount' => $discount,
+                    'override_by' => $overrideBy,
+                    'override_reason' => $overrideBy ? $overrideReason : null,
+                    'inventory' => $inventory,
+                ];
             }
 
-            $grossSubtotal = 0;
-            $discountTotal = 0;
-            foreach ($validated['items'] as $item) {
-                $grossSubtotal += $item['actual_price'] * $item['quantity'];
-                $discountTotal += ($item['discount'] ?? 0) * $item['quantity'];
+            $grossSubtotal = '0.00';
+            $discountTotal = '0.00';
+            foreach ($prepared as $item) {
+                $grossSubtotal = Money::add($grossSubtotal, Money::mul($item['actual_price'], $item['quantity']));
+                $discountTotal = Money::add($discountTotal, Money::mul($item['discount'], $item['quantity']));
             }
-            $netTotal = max(0, $grossSubtotal - $discountTotal);
+            $netTotal = Money::max('0', Money::sub($grossSubtotal, $discountTotal));
 
             $invoice = Invoice::create([
-                'branch_id'       => $validated['branch_id'],
-                'user_id'         => $request->user()->id,
+                'branch_id'       => $branchId,
+                'customer_id'     => $validated['customer_id'] ?? null,
+                'user_id'         => $user->id,
                 'invoice_number'  => 'INV-' . strtoupper(Str::random(8)),
                 'payment_method'  => $validated['payment_method'],
                 'payment_status'  => in_array($validated['payment_method'], ['check', 'credit']) ? 'pending' : 'paid',
@@ -113,41 +220,38 @@ class InvoiceController extends Controller
                 'type'            => $validated['type'] ?? 'sale',
             ]);
 
-            foreach ($validated['items'] as $item) {
-                InvoiceItem::create([
-                    'invoice_id'   => $invoice->id,
-                    'book_id'      => $item['book_id'],
-                    'quantity'     => $item['quantity'],
-                    'unit_price'   => $item['unit_price'],
-                    'actual_price' => $item['actual_price'],
-                    'discount'     => $item['discount'] ?? 0,
+            $lotService = app(StockLotService::class);
+
+            foreach ($prepared as $item) {
+                $invoiceItem = InvoiceItem::create([
+                    'invoice_id'      => $invoice->id,
+                    'book_id'         => $item['book_id'],
+                    'quantity'        => $item['quantity'],
+                    'list_price'      => $item['list_price'],
+                    'unit_price'      => $item['unit_price'],
+                    'actual_price'    => $item['actual_price'],
+                    'discount'        => $item['discount'],
+                    'override_by'     => $item['override_by'],
+                    'override_reason' => $item['override_reason'],
                 ]);
 
-                $inventory = Inventory::where('branch_id', $validated['branch_id'])
-                    ->where('book_id', $item['book_id'])
-                    ->lockForUpdate()
-                    ->first();
+                $lotService->allocateSale($invoiceItem, $branchId, (int) $item['quantity'], $validated['currency']);
 
-                if ($inventory) {
-                    $inventory->decrement('quantity', $item['quantity']);
-                    ConsignmentSync::incrementSold($inventory, $item['book_id'], $item['quantity']);
-
-                    StockMovementLogger::log(
-                        (int) $validated['branch_id'],
-                        (int) $item['book_id'],
-                        'out',
-                        (int) $item['quantity'],
-                        'other',
-                        $request->user()->name,
-                        "فروش — فاکتور {$invoice->invoice_number}",
-                    );
-                }
+                StockMovementLogger::log(
+                    $branchId,
+                    (int) $item['book_id'],
+                    'out',
+                    (int) $item['quantity'],
+                    'other',
+                    $user->name,
+                    "فروش — فاکتور {$invoice->invoice_number}",
+                );
             }
 
             if ($validated['payment_method'] === 'check') {
                 Check::create([
                     'invoice_id'   => $invoice->id,
-                    'branch_id'    => $validated['branch_id'],
+                    'branch_id'    => $branchId,
                     'check_number' => $validated['check_number'],
                     'bank_name'    => $validated['bank_name'] ?? null,
                     'payer_name'   => $validated['payer_name'] ?? $validated['customer_name'] ?? 'نامشخص',
@@ -168,9 +272,23 @@ class InvoiceController extends Controller
                     'payment_method' => $validated['payment_method'],
                     'total' => $netTotal,
                     'currency' => $validated['currency'],
-                    'items_count' => count($validated['items']),
+                    'items_count' => count($prepared),
                 ],
-                (int) $validated['branch_id'],
+                $branchId,
+            );
+
+            $cogs = '0.00';
+            foreach (SaleLotAllocation::whereIn('invoice_item_id', $invoice->items()->pluck('id'))->get() as $a) {
+                $cogs = Money::add($cogs, Money::mul($a->unit_cost, (int) $a->quantity - (int) $a->quantity_returned));
+            }
+
+            app(LedgerPoster::class)->postSale(
+                $invoice,
+                $netTotal,
+                $cogs,
+                $validated['currency'],
+                $branchId,
+                $validated['payment_method']
             );
 
             return response()->json($invoice->load(['items.book', 'branch', 'user']), 201);
@@ -252,9 +370,11 @@ class InvoiceController extends Controller
 
         if ($validated['status'] === 'cleared' && $check->invoice) {
             $check->invoice->update(['payment_status' => 'paid']);
+            app(LedgerPoster::class)->postCheckCleared($check);
         }
         if ($validated['status'] === 'bounced' && $check->invoice) {
             $check->invoice->update(['payment_status' => 'overdue']);
+            app(LedgerPoster::class)->postCheckBounced($check);
         }
         if ($validated['status'] === 'pending' && $check->invoice) {
             $check->invoice->update(['payment_status' => 'pending']);
