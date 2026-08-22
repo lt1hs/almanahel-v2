@@ -12,8 +12,18 @@ import { useTranslation } from "@/hooks/useTranslation";
 import { useNotify } from "@/hooks/useNotify";
 import { cn } from "@/lib/utils";
 import { apiRequest } from "@/lib/api";
+import { useAuth } from "@/contexts/AuthContext";
+import { supplierAccountsUrl } from "@/lib/supplierAccountSelection";
+import {
+    buildSettlementHistoryScopeKey,
+    buildSettlementHistoryUrl,
+    buildUnsettledDebtUrl,
+    sumDebtRowsForCurrency,
+    type OperationalFinanceRole,
+} from "@/lib/financeRequests";
 import { RequireRole } from "@/components/auth/RequireRole";
 import { BulkSettlementPanel } from "@/components/finance/BulkSettlementPanel";
+import { LedgerReportsPanel } from "@/components/finance/LedgerReportsPanel";
 
 const ProfitCharts = dynamic(
     () => import("@/components/finance/ProfitCharts").then((m) => m.ProfitCharts),
@@ -37,7 +47,8 @@ interface FinanceStats {
     total_balance: number;
     balance_is_dinar?: boolean;
     gross_profit: number;
-    supplier_debt: number;
+    supplier_debt: number | null;
+    supplier_debt_unavailable: boolean;
     top_books: any[];
 }
 
@@ -57,13 +68,20 @@ export default function FinancePage() {
 function FinancePageContent() {
     const { t, formatNumber, isArabic, isDinar, preferredCurrency } = useTranslation();
     const notify = useNotify();
+    const { user } = useAuth();
+    const isAdmin = user?.role === "admin" || user?.role === "super_admin";
+    const isAccountant = user?.role === "accountant";
+    const userBranchId = user?.branch_id ?? user?.branch?.id ?? null;
+    const requiresBranchPicker = isAdmin;
     const currencySymbol = isDinar ? t("common.currency.dinarSymbol") : t("common.currency.tomanSymbol");
     const currency = preferredCurrency;
 
     const [activeTab, setActiveTab] = useState<FinanceTab>("overview");
     const [stats, setStats] = useState<FinanceStats | null>(null);
     const [suppliers, setSuppliers] = useState<any[]>([]);
-    const [suppliersLoaded, setSuppliersLoaded] = useState(false);
+    const [settlementBranchId, setSettlementBranchId] = useState("");
+    const [settlementBranches, setSettlementBranches] = useState<{ id: number; name: string }[]>([]);
+    const [settlementSessionKey, setSettlementSessionKey] = useState(0);
     const [isLoading, setIsLoading] = useState(true);
     const [isRefreshing, setIsRefreshing] = useState(false);
     const [isSettlementLoading, setIsSettlementLoading] = useState(false);
@@ -71,7 +89,29 @@ function FinancePageContent() {
     const [settlementData, setSettlementData] = useState<any[]>([]);
     const [settlements, setSettlements] = useState<any[]>([]);
     const [historyLoading, setHistoryLoading] = useState(false);
-    const [historyLoaded, setHistoryLoaded] = useState(false);
+    const [historyAggregate, setHistoryAggregate] = useState(false);
+
+    const effectiveSettlementBranchId = React.useMemo(
+        () => (requiresBranchPicker ? settlementBranchId : userBranchId ? String(userBranchId) : ""),
+        [requiresBranchPicker, settlementBranchId, userBranchId]
+    );
+    const historyScopeKey = React.useMemo(
+        () => buildSettlementHistoryScopeKey({
+            aggregate: historyAggregate,
+            branchId: effectiveSettlementBranchId,
+        }),
+        [historyAggregate, effectiveSettlementBranchId]
+    );
+    const historyUrl = React.useMemo(
+        () => (historyScopeKey
+            ? buildSettlementHistoryUrl({
+                aggregate: historyAggregate,
+                branchId: effectiveSettlementBranchId,
+            })
+            : null),
+        [historyScopeKey, historyAggregate, effectiveSettlementBranchId]
+    );
+    const canUseSettlement = Boolean(effectiveSettlementBranchId) && !(isAccountant && !userBranchId);
 
     const notifyRef = React.useRef(notify);
     notifyRef.current = notify;
@@ -80,48 +120,49 @@ function FinancePageContent() {
         if (soft) setIsRefreshing(true);
         else setIsLoading(true);
         try {
-            const [balanceData, topBooks, dashboard] = await Promise.all([
+            const [balanceData, topBooks, pnl, treasury] = await Promise.all([
                 apiRequest("/reports/all-branches"),
-                apiRequest("/reports/top-books"),
-                apiRequest("/reports/dashboard"),
+                apiRequest(`/reports/top-books?currency=${currency}`),
+                apiRequest(`/finance/pnl?currency=${currency}&date_from=${new Date().getFullYear()}-${String(new Date().getMonth()+1).padStart(2,'0')}-01&date_to=${new Date().toISOString().slice(0,10)}`),
+                apiRequest(`/finance/treasury?date_from=1970-01-01&date_to=${new Date().toISOString().slice(0,10)}`),
             ]);
 
-            let debtData: Record<string, { currency: string; balance: number }[]> = {};
-            try {
-                debtData = await apiRequest("/consignments/unsettled-by-supplier");
-            } catch (debtError) {
-                console.error("Failed to fetch supplier debt:", debtError);
-            }
+            const cashRows = Array.isArray(treasury?.accounts) ? treasury.accounts : [];
+            const cashBalance = cashRows
+                .filter((row: { type?: string; currency?: string }) => row.type === "cash_drawer" && row.currency === currency)
+                .reduce((acc: number, row: { closing_balance?: string }) => acc + Number(row.closing_balance ?? 0), 0);
+            const totalBalance = cashBalance;
+            const useDinarBalance = currency === "dinar";
+            const grossProfit = Number(pnl?.net_profit ?? 0);
 
-            const branches = Array.isArray(balanceData) ? balanceData : [];
+            let supplierDebt: number | null = null;
+            let supplierDebtUnavailable = false;
 
-            const dinarInv = Number(dashboard.inventory_value_dinar ?? 0);
-            const tomanInv = Number(dashboard.inventory_value_toman ?? 0);
-            const useDinarBalance = isDinar
-                ? dinarInv > 0 || tomanInv <= 0
-                : dinarInv > 0 && tomanInv <= 0;
-            const totalBalance = useDinarBalance ? dinarInv : tomanInv;
-
-            const grossProfit = branches.reduce(
-                (acc: number, curr: { net_profit_toman?: number | string; net_profit_dinar?: number | string }) =>
-                    acc + Number(isDinar ? curr.net_profit_dinar ?? 0 : curr.net_profit_toman ?? 0),
-                0
-            );
-
-            let totalDebt = 0;
-            Object.values(debtData).forEach((supplierCurrencies) => {
-                if (!Array.isArray(supplierCurrencies)) return;
-                supplierCurrencies.forEach((item) => {
-                    if (isDinar && item.currency === "dinar") totalDebt += Number(item.balance ?? 0);
-                    if (!isDinar && item.currency === "toman") totalDebt += Number(item.balance ?? 0);
-                });
+            const debtRole = (user?.role ?? "accountant") as OperationalFinanceRole;
+            const debtUrl = buildUnsettledDebtUrl({
+                role: debtRole,
+                branchId: userBranchId,
             });
+
+            if (!debtUrl) {
+                supplierDebtUnavailable = true;
+            } else {
+                try {
+                    const debtData = await apiRequest(debtUrl);
+                    const rows = Array.isArray(debtData?.rows) ? debtData.rows : [];
+                    supplierDebt = sumDebtRowsForCurrency(rows, isDinar ? "dinar" : "toman");
+                } catch (debtError) {
+                    console.error("Failed to fetch supplier debt:", debtError);
+                    supplierDebtUnavailable = true;
+                }
+            }
 
             setStats({
                 total_balance: totalBalance,
                 balance_is_dinar: useDinarBalance,
                 gross_profit: grossProfit,
-                supplier_debt: totalDebt,
+                supplier_debt: supplierDebtUnavailable ? null : supplierDebt,
+                supplier_debt_unavailable: supplierDebtUnavailable,
                 top_books: Array.isArray(topBooks) ? topBooks : [],
             });
         } catch (error) {
@@ -131,50 +172,176 @@ function FinancePageContent() {
             setIsLoading(false);
             setIsRefreshing(false);
         }
-    }, [isDinar]);
+    }, [currency, isDinar, user?.role, userBranchId]);
 
-    const fetchSuppliers = useCallback(async (force = false) => {
-        if (suppliersLoaded && !force) return;
-        try {
-            const suppliersData = await apiRequest("/suppliers");
-            setSuppliers(Array.isArray(suppliersData) ? suppliersData : []);
-            setSuppliersLoaded(true);
-        } catch (error) {
-            console.error("Failed to fetch suppliers:", error);
-            notifyRef.current.error("finance.loadError");
+    const clearSettlementSession = useCallback(() => {
+        setSuppliers([]);
+        setSettlementData([]);
+        setSettlements([]);
+        setSettlementSessionKey((key) => key + 1);
+    }, []);
+
+    const refreshHistory = useCallback(async () => {
+        if (!historyUrl) {
+            return;
         }
-    }, [suppliersLoaded]);
-
-    const fetchHistory = useCallback(async (force = false) => {
-        if (historyLoaded && !force) return;
         setHistoryLoading(true);
         try {
-            const data = await apiRequest("/consignments/settlements");
+            const data = await apiRequest(historyUrl);
             const list = data?.data ?? data ?? [];
             setSettlements(Array.isArray(list) ? list : []);
-            setHistoryLoaded(true);
         } catch (error) {
             console.error("Failed to fetch settlements:", error);
             notifyRef.current.error("finance.historyLoadError");
+            setSettlements([]);
         } finally {
             setHistoryLoading(false);
         }
-    }, [historyLoaded]);
+    }, [historyUrl]);
 
     useEffect(() => {
         fetchOverview();
     }, [fetchOverview]);
 
     useEffect(() => {
-        if (activeTab === "settlement") fetchSuppliers();
-        if (activeTab === "history") fetchHistory();
-    }, [activeTab, fetchSuppliers, fetchHistory]);
+        if (!requiresBranchPicker || (activeTab !== "settlement" && activeTab !== "history")) return;
+        apiRequest("/branches?lite=1")
+            .then((data) => {
+                const rows = (Array.isArray(data) ? data : []).filter(
+                    (b: { type?: string }) => b.type === "store" || b.type === "warehouse"
+                );
+                setSettlementBranches(rows);
+            })
+            .catch(console.error);
+    }, [activeTab, requiresBranchPicker]);
 
-    const handleCalculateSettlement = async (supplierId: number, fromDate: string, toDate: string) => {
+    useEffect(() => {
+        if (activeTab !== "settlement") return;
+        if (!effectiveSettlementBranchId) {
+            setSuppliers([]);
+            return;
+        }
+        let cancelled = false;
+        apiRequest(supplierAccountsUrl(Number(effectiveSettlementBranchId), true))
+            .then((suppliersData) => {
+                if (cancelled) return;
+                const rows = Array.isArray(suppliersData) ? suppliersData : [];
+                setSuppliers(rows.map((row: any) => ({
+                    id: row.id,
+                    name: row.display_name || row.name || `#${row.id}`,
+                })));
+            })
+            .catch((error) => {
+                if (cancelled) return;
+                console.error("Failed to fetch supplier accounts:", error);
+                setSuppliers([]);
+                notifyRef.current.error("finance.loadError");
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [activeTab, effectiveSettlementBranchId]);
+
+    useEffect(() => {
+        if (activeTab !== "history" || !historyScopeKey || !historyUrl) {
+            return;
+        }
+
+        setSettlements([]);
+        setHistoryLoading(true);
+        let cancelled = false;
+
+        apiRequest(historyUrl)
+            .then((data) => {
+                if (cancelled) return;
+                const list = data?.data ?? data ?? [];
+                setSettlements(Array.isArray(list) ? list : []);
+            })
+            .catch((error) => {
+                if (cancelled) return;
+                console.error("Failed to fetch settlements:", error);
+                notifyRef.current.error("finance.historyLoadError");
+                setSettlements([]);
+            })
+            .finally(() => {
+                if (!cancelled) setHistoryLoading(false);
+            });
+
+        return () => {
+            cancelled = true;
+        };
+    }, [activeTab, historyScopeKey, historyUrl]);
+
+    const handleSettlementBranchChange = (branchId: string) => {
+        setHistoryAggregate(false);
+        setSettlementBranchId(branchId);
+        clearSettlementSession();
+    };
+
+    const handleHistoryAggregateChange = (enabled: boolean) => {
+        setHistoryAggregate(enabled);
+        if (enabled) {
+            setSettlementBranchId("");
+        }
+        clearSettlementSession();
+    };
+
+    const historyScopePicker = requiresBranchPicker && activeTab === "history" ? (
+        <div className="max-w-md space-y-3">
+            <div className="space-y-1.5">
+                <label className="text-[10px] font-black uppercase tracking-widest text-ink/40 flex items-center gap-1.5">
+                    <Building2 className="w-3 h-3" />
+                    {t("distribution.branchFallback")}
+                </label>
+                <select
+                    value={historyAggregate ? "" : settlementBranchId}
+                    disabled={historyAggregate}
+                    onChange={(e) => handleSettlementBranchChange(e.target.value)}
+                    className="h-10 w-full rounded-xl border border-ink/10 bg-white/70 px-3 text-[12px] font-vazirmatn outline-none disabled:opacity-50"
+                >
+                    <option value="">{t("expenses.form.selectBranch")}</option>
+                    {settlementBranches.map((b) => (
+                        <option key={b.id} value={b.id}>{b.name}</option>
+                    ))}
+                </select>
+            </div>
+            <label className="flex items-center gap-2 text-[11px] font-bold text-ink/55">
+                <input
+                    type="checkbox"
+                    checked={historyAggregate}
+                    onChange={(e) => handleHistoryAggregateChange(e.target.checked)}
+                    className="rounded border-ink/20 text-primary focus:ring-primary/30"
+                />
+                {t("finance.settlementHistoryAggregate")}
+            </label>
+        </div>
+    ) : null;
+
+    const branchPicker = requiresBranchPicker && activeTab === "settlement" ? (
+        <div className="max-w-xs space-y-1.5">
+            <label className="text-[10px] font-black uppercase tracking-widest text-ink/40 flex items-center gap-1.5">
+                <Building2 className="w-3 h-3" />
+                {t("distribution.branchFallback")}
+            </label>
+            <select
+                value={settlementBranchId}
+                onChange={(e) => handleSettlementBranchChange(e.target.value)}
+                className="h-10 w-full rounded-xl border border-ink/10 bg-white/70 px-3 text-[12px] font-vazirmatn outline-none"
+            >
+                <option value="">{t("expenses.form.selectBranch")}</option>
+                {settlementBranches.map((b) => (
+                    <option key={b.id} value={b.id}>{b.name}</option>
+                ))}
+            </select>
+        </div>
+    ) : null;
+
+    const handleCalculateSettlement = async (supplierAccountId: number, fromDate: string, toDate: string) => {
         setIsSettlementLoading(true);
         try {
+            const branchQs = effectiveSettlementBranchId ? `&branch_id=${effectiveSettlementBranchId}` : "";
             const data = await apiRequest(
-                `/consignments/settlement-preview?supplier_id=${supplierId}&period_start=${fromDate}&period_end=${toDate}&currency=${currency}`
+                `/consignments/settlement-preview?supplier_account_id=${supplierAccountId}&period_start=${fromDate}&period_end=${toDate}&currency=${currency}${branchQs}`
             );
             const items = (data.items || []).map((item: any) => {
                 const total = Number(item.total || 0);
@@ -203,26 +370,26 @@ function FinancePageContent() {
         }
     };
 
-    const handleConfirmSettlement = async (supplierId: number, fromDate: string, toDate: string, amount: number) => {
+    const handleConfirmSettlement = async (supplierAccountId: number, fromDate: string, toDate: string, amount: number) => {
         setIsConfirming(true);
         try {
             await apiRequest("/consignments/settle", {
                 method: "POST",
                 body: JSON.stringify({
-                    supplier_id: supplierId,
+                    supplier_account_id: supplierAccountId,
                     period_type: "custom",
                     period_start: fromDate,
                     period_end: toDate,
                     amount,
                     currency,
                     payment_method: "bank_transfer",
+                    ...(effectiveSettlementBranchId ? { branch_id: Number(effectiveSettlementBranchId) } : {}),
                 }),
             });
             notify.success("toast.settlementSuccess");
             setSettlementData([]);
             fetchOverview(true);
-            setHistoryLoaded(false);
-            if (activeTab === "history") fetchHistory(true);
+            if (activeTab === "history") refreshHistory();
         } catch (error) {
             console.error("Settlement failed:", error);
             const msg = error instanceof Error ? error.message : "";
@@ -262,8 +429,11 @@ function FinancePageContent() {
         },
         {
             label: t("finance.supplierDebt"),
-            hint: t("finance.overdueDebt"),
-            value: stats?.supplier_debt || 0,
+            hint: stats?.supplier_debt_unavailable
+                ? t("finance.supplierDebtUnavailable")
+                : t("finance.overdueDebt"),
+            value: stats?.supplier_debt_unavailable ? null : (stats?.supplier_debt ?? 0),
+            unavailable: stats?.supplier_debt_unavailable ?? false,
             symbol: currencySymbol,
             icon: Receipt,
             color: "text-rose-500",
@@ -295,8 +465,18 @@ function FinancePageContent() {
                         disabled={isLoading || isRefreshing}
                         onClick={() => {
                             if (activeTab === "overview") fetchOverview(true);
-                            else if (activeTab === "history") fetchHistory(true);
-                            else fetchSuppliers(true);
+                            else if (activeTab === "history") refreshHistory();
+                            else if (effectiveSettlementBranchId) {
+                                apiRequest(supplierAccountsUrl(Number(effectiveSettlementBranchId), true))
+                                    .then((suppliersData) => {
+                                        const rows = Array.isArray(suppliersData) ? suppliersData : [];
+                                        setSuppliers(rows.map((row: any) => ({
+                                            id: row.id,
+                                            name: row.display_name || row.name || `#${row.id}`,
+                                        })));
+                                    })
+                                    .catch(console.error);
+                            }
                         }}
                         className="h-9 w-9 flex items-center justify-center rounded-xl border border-white bg-white/70 hover:bg-white shadow-sm disabled:opacity-40"
                     >
@@ -316,8 +496,14 @@ function FinancePageContent() {
                                         <kpi.icon className={cn("w-4 h-4", kpi.color)} />
                                     </div>
                                     <p className={cn("text-xl font-black font-vazirmatn tabular-nums leading-none", kpi.color)}>
-                                        {isLoading && !stats ? "…" : formatNumber(kpi.value)}
-                                        <span className="text-[10px] text-ink/30 ms-1 font-bold">{kpi.symbol}</span>
+                                        {isLoading && !stats
+                                            ? "…"
+                                            : (kpi as { unavailable?: boolean }).unavailable
+                                                ? "—"
+                                                : formatNumber(kpi.value ?? 0)}
+                                        {!((kpi as { unavailable?: boolean }).unavailable) && (
+                                            <span className="text-[10px] text-ink/30 ms-1 font-bold">{kpi.symbol}</span>
+                                        )}
                                     </p>
                                     <p className="text-[9px] text-ink/30 mt-1.5">{kpi.hint}</p>
                                 </CardContent>
@@ -326,6 +512,8 @@ function FinancePageContent() {
                     </div>
 
                     <ProfitCharts currency={currency} />
+
+                    {activeTab === "overview" && <LedgerReportsPanel />}
 
                     <Card className="border border-white/70 bg-white/60 rounded-2xl overflow-hidden">
                         <CardHeader className="px-4 py-3 border-b border-ink/5 flex flex-row items-center justify-between">
@@ -384,26 +572,48 @@ function FinancePageContent() {
 
             {activeTab === "settlement" && (
                 <div className="space-y-6">
-                    <SettlementWizard
-                        suppliers={suppliers}
-                        onCalculate={handleCalculateSettlement}
-                        onConfirm={handleConfirmSettlement}
-                        settlementData={settlementData}
-                        isLoading={isSettlementLoading}
-                        isConfirming={isConfirming}
-                        currencySymbol={currencySymbol}
-                    />
-                    <BulkSettlementPanel
-                        suppliers={suppliers}
-                        currency={currency}
-                        currencySymbol={currencySymbol}
-                    />
+                    {branchPicker}
+                    {!canUseSettlement ? (
+                        <Card className="border border-white/70 bg-white/70 rounded-2xl">
+                            <CardContent className="p-8 text-center text-[12px] font-black text-ink/35">
+                                {t("expenses.form.selectBranch")}
+                            </CardContent>
+                        </Card>
+                    ) : (
+                        <>
+                            <SettlementWizard
+                                suppliers={suppliers}
+                                onCalculate={handleCalculateSettlement}
+                                onConfirm={handleConfirmSettlement}
+                                settlementData={settlementData}
+                                isLoading={isSettlementLoading}
+                                isConfirming={isConfirming}
+                                currencySymbol={currencySymbol}
+                                branchId={Number(effectiveSettlementBranchId)}
+                                disabled={!canUseSettlement}
+                                sessionKey={settlementSessionKey}
+                            />
+                            <BulkSettlementPanel
+                                branchId={Number(effectiveSettlementBranchId)}
+                                currency={currency}
+                                currencySymbol={currencySymbol}
+                                reloadKey={settlementSessionKey}
+                            />
+                        </>
+                    )}
                 </div>
             )}
 
             {activeTab === "history" && (
-                <div className="space-y-2">
-                    {historyLoading && !settlements.length ? (
+                <div className="space-y-4">
+                    {historyScopePicker}
+                    {!historyAggregate && !effectiveSettlementBranchId ? (
+                        <Card className="border border-white/70 bg-white/70 rounded-2xl">
+                            <CardContent className="p-8 text-center text-[12px] font-black text-ink/35">
+                                {t("expenses.form.selectBranch")}
+                            </CardContent>
+                        </Card>
+                    ) : historyLoading && !settlements.length ? (
                         Array.from({ length: 4 }).map((_, i) => (
                             <div key={i} className="h-16 bg-parchment/20 rounded-xl animate-pulse" />
                         ))

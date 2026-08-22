@@ -26,4 +26,9 @@ class Book extends Model
     {
         return $this->hasMany(Inventory::class);
     }
+
+    public function catalogItems()
+    {
+        return $this->hasMany(BranchCatalogItem::class);
+    }
 }

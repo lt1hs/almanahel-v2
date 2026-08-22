@@ -18,6 +18,13 @@ class Expense extends Model
         'reversed_at',
     ];
 
+    protected $casts = [
+        'date' => 'date',
+        'archived_at' => 'datetime',
+        'reversed_at' => 'datetime',
+        'amount' => 'decimal:2',
+    ];
+
     public function branch()
     {
         return $this->belongsTo(Branch::class);

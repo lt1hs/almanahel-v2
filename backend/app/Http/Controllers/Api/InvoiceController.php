@@ -4,14 +4,17 @@ namespace App\Http\Controllers\Api;
 
 use App\Exceptions\DomainException;
 use App\Http\Controllers\Controller;
+use App\Models\Check;
+use App\Models\Customer;
 use App\Models\Invoice;
 use App\Models\InvoiceItem;
 use App\Models\Inventory;
-use App\Models\Check;
 use App\Support\ActivityLogger;
 use App\Support\StockMovementLogger;
 use App\Services\Stock\StockLotService;
-use App\Services\Ledger\LedgerPoster;
+use App\Services\Ledger\FinancePostingGateway;
+use App\Services\Ledger\IncomingCheckTransition;
+use App\Services\Receivables\InvoiceBalance;
 use App\Support\Authorization\BranchAccess;
 use App\Models\SaleLotAllocation;
 use App\Support\Money;
@@ -26,8 +29,9 @@ class InvoiceController extends Controller
         $user = $request->user();
         $query = Invoice::with(['items.book', 'branch', 'user']);
 
-        if ($user->role === 'branch_manager' && $user->branch_id) {
-            $query->where('branch_id', $user->branch_id);
+        $ids = BranchAccess::visibleBranchIds($user);
+        if ($ids !== null) {
+            $query->whereIn('branch_id', $ids ?: [0]);
         } elseif ($request->has('branch_id')) {
             $query->where('branch_id', $request->branch_id);
         }
@@ -61,7 +65,7 @@ class InvoiceController extends Controller
             'branch_id'        => 'nullable|exists:branches,id',
             'payment_method'   => 'required|in:cash,card,check,credit',
             'currency'         => 'required|in:toman,dinar',
-            'customer_name'    => 'required_if:payment_method,credit|nullable|string|max:255',
+            'customer_name'    => 'nullable|string|max:255',
             'customer_phone'   => 'nullable|string|max:30',
             'notes'            => 'nullable|string',
             'due_date'         => 'required_if:payment_method,check,credit|nullable|date',
@@ -72,65 +76,55 @@ class InvoiceController extends Controller
             'items.*.unit_price'   => 'nullable|numeric|min:0',
             'items.*.actual_price' => 'nullable|numeric|min:0',
             'items.*.discount'     => 'nullable|numeric|min:0',
-            'customer_id'      => 'nullable|exists:customers,id',
+            'customer_id'      => 'required_if:payment_method,credit|nullable|exists:customers,id',
             'items.*.override_reason' => 'nullable|string|max:255',
             'check_number'     => 'required_if:payment_method,check|nullable|string',
             'bank_name'        => 'nullable|string',
             'payer_name'       => 'required_if:payment_method,check|nullable|string',
+            'financial_account_id' => 'nullable|exists:financial_accounts,id',
             'payer_phone'      => 'nullable|string',
         ]);
 
         $user = $request->user();
+        BranchAccess::assertCanMutateFinance($user);
         $branchId = BranchAccess::resolveActorBranchId(
             $user,
             isset($validated['branch_id']) ? (int) $validated['branch_id'] : null
         );
 
-        // Aggregate duplicate book lines before stock checks
-        $aggregated = [];
+        $stockNeeded = [];
         foreach ($validated['items'] as $item) {
             $bookId = (int) $item['book_id'];
-            if (!isset($aggregated[$bookId])) {
-                $aggregated[$bookId] = [
-                    'book_id' => $bookId,
-                    'quantity' => 0,
-                    'discount' => 0,
-                    'actual_price' => $item['actual_price'] ?? null,
-                    'unit_price' => $item['unit_price'] ?? null,
-                    'override_reason' => $item['override_reason'] ?? null,
-                ];
-            }
-            $aggregated[$bookId]['quantity'] += (int) $item['quantity'];
-            $aggregated[$bookId]['discount'] += (float) ($item['discount'] ?? 0) * (int) $item['quantity'];
-            if (isset($item['actual_price'])) {
-                $aggregated[$bookId]['actual_price'] = $item['actual_price'];
-            }
-            if (!empty($item['override_reason'])) {
-                $aggregated[$bookId]['override_reason'] = $item['override_reason'];
-            }
+            $stockNeeded[$bookId] = ($stockNeeded[$bookId] ?? 0) + (int) $item['quantity'];
         }
-        // Convert summed discount back to per-unit average for storage
-        foreach ($aggregated as &$agg) {
-            $agg['discount'] = $agg['quantity'] > 0
-                ? round($agg['discount'] / $agg['quantity'], 2)
-                : 0;
-        }
-        unset($agg);
-        $lineItems = array_values($aggregated);
 
-        return DB::transaction(function () use ($request, $validated, $user, $branchId, $lineItems) {
-            $prepared = [];
-            foreach ($lineItems as $item) {
+        return DB::transaction(function () use ($request, $validated, $user, $branchId, $stockNeeded) {
+            $linkedCustomer = $this->resolveSaleCustomer(
+                isset($validated['customer_id']) ? (int) $validated['customer_id'] : null,
+                $branchId,
+                $validated['payment_method'] === 'credit'
+            );
+            $customerName = $validated['customer_name'] ?? $linkedCustomer?->name;
+            $customerPhone = $validated['customer_phone'] ?? $linkedCustomer?->phone;
+            $inventories = [];
+            foreach ($stockNeeded as $bookId => $qty) {
                 $inventory = Inventory::where('branch_id', $branchId)
-                    ->where('book_id', $item['book_id'])
+                    ->where('book_id', $bookId)
                     ->lockForUpdate()
                     ->first();
 
-                if (!$inventory || $inventory->quantity < $item['quantity']) {
+                if (!$inventory || $inventory->quantity < $qty) {
                     throw new DomainException('موجودی کافی برای یکی از کتاب‌ها وجود ندارد', 422, [
-                        'book_id' => $item['book_id'],
+                        'book_id' => $bookId,
                     ]);
                 }
+                $inventories[$bookId] = $inventory;
+            }
+
+            $prepared = [];
+            foreach ($validated['items'] as $item) {
+                $bookId = (int) $item['book_id'];
+                $inventory = $inventories[$bookId];
 
                 $listPrice = $validated['currency'] === 'dinar'
                     ? Money::of($inventory->price_dinar ?? 0)
@@ -204,7 +198,7 @@ class InvoiceController extends Controller
 
             $invoice = Invoice::create([
                 'branch_id'       => $branchId,
-                'customer_id'     => $validated['customer_id'] ?? null,
+                'customer_id'     => $linkedCustomer?->id,
                 'user_id'         => $user->id,
                 'invoice_number'  => 'INV-' . strtoupper(Str::random(8)),
                 'payment_method'  => $validated['payment_method'],
@@ -213,11 +207,12 @@ class InvoiceController extends Controller
                 'subtotal'        => $grossSubtotal,
                 'discount_amount' => $discountTotal,
                 'total'           => $netTotal,
-                'customer_name'   => $validated['customer_name'] ?? null,
-                'customer_phone'  => $validated['customer_phone'] ?? null,
+                'customer_name'   => $customerName,
+                'customer_phone'  => $customerPhone,
                 'notes'           => $validated['notes'] ?? null,
                 'due_date'        => $validated['due_date'] ?? null,
                 'type'            => $validated['type'] ?? 'sale',
+                'sold_at'         => now(),
             ]);
 
             $lotService = app(StockLotService::class);
@@ -254,8 +249,8 @@ class InvoiceController extends Controller
                     'branch_id'    => $branchId,
                     'check_number' => $validated['check_number'],
                     'bank_name'    => $validated['bank_name'] ?? null,
-                    'payer_name'   => $validated['payer_name'] ?? $validated['customer_name'] ?? 'نامشخص',
-                    'payer_phone'  => $validated['payer_phone'] ?? $validated['customer_phone'] ?? null,
+                    'payer_name'   => $validated['payer_name'] ?? $customerName ?? 'نامشخص',
+                    'payer_phone'  => $validated['payer_phone'] ?? $customerPhone ?? null,
                     'amount'       => $netTotal,
                     'currency'     => $validated['currency'],
                     'due_date'     => $validated['due_date'],
@@ -282,25 +277,25 @@ class InvoiceController extends Controller
                 $cogs = Money::add($cogs, Money::mul($a->unit_cost, (int) $a->quantity - (int) $a->quantity_returned));
             }
 
-            app(LedgerPoster::class)->postSale(
+            app(FinancePostingGateway::class)->sale(
                 $invoice,
                 $netTotal,
                 $cogs,
                 $validated['currency'],
                 $branchId,
-                $validated['payment_method']
+                $validated['payment_method'],
+                $validated['financial_account_id'] ?? null
             );
 
-            return response()->json($invoice->load(['items.book', 'branch', 'user']), 201);
+            app(InvoiceBalance::class)->refresh($invoice);
+
+            return response()->json($invoice->fresh()->load(['items.book', 'branch', 'user']), 201);
         });
     }
 
     public function show(Invoice $invoice)
     {
-        $user = request()->user();
-        if ($user->role === 'branch_manager' && $user->branch_id && (int) $invoice->branch_id !== (int) $user->branch_id) {
-            return response()->json(['message' => 'دسترسی غیرمجاز'], 403);
-        }
+        BranchAccess::assertBranchAllowed(request()->user(), (int) $invoice->branch_id);
 
         return response()->json(
             $invoice->load(['items.book:id,title,author,isbn', 'branch:id,name', 'user:id,name', 'check'])
@@ -321,9 +316,11 @@ class InvoiceController extends Controller
                 'branch:id,name',
             ]);
 
-        if ($user->role === 'branch_manager' && $user->branch_id) {
-            $query->where('branch_id', $user->branch_id);
+        $ids = BranchAccess::visibleBranchIds($user);
+        if ($ids !== null) {
+            $query->whereIn('branch_id', $ids ?: [0]);
         } elseif ($request->filled('branch_id')) {
+            BranchAccess::assertBranchAllowed($user, (int) $request->branch_id);
             $query->where('branch_id', $request->branch_id);
         }
 
@@ -358,42 +355,32 @@ class InvoiceController extends Controller
 
     public function updateCheck(Request $request, Check $check)
     {
-        $user = $request->user();
-        if ($user->role === 'branch_manager' && $user->branch_id && (int) $check->branch_id !== (int) $user->branch_id) {
-            return response()->json(['message' => 'دسترسی غیرمجاز'], 403);
-        }
-
         $validated = $request->validate([
             'status' => 'required|in:pending,cleared,bounced',
+            'financial_account_id' => 'nullable|exists:financial_accounts,id',
         ]);
-        $check->update($validated);
 
-        if ($validated['status'] === 'cleared' && $check->invoice) {
-            $check->invoice->update(['payment_status' => 'paid']);
-            app(LedgerPoster::class)->postCheckCleared($check);
-        }
-        if ($validated['status'] === 'bounced' && $check->invoice) {
-            $check->invoice->update(['payment_status' => 'overdue']);
-            app(LedgerPoster::class)->postCheckBounced($check);
-        }
-        if ($validated['status'] === 'pending' && $check->invoice) {
-            $check->invoice->update(['payment_status' => 'pending']);
-        }
+        $updated = app(IncomingCheckTransition::class)->apply(
+            $check,
+            (string) $validated['status'],
+            $request->user(),
+            $validated['financial_account_id'] ?? null
+        );
 
         ActivityLogger::record(
             'sales',
             'status_changed',
-            "وضعیت چک {$check->check_number} → {$validated['status']}",
-            $check,
+            "وضعیت چک {$updated->check_number} → {$updated->status}",
+            $updated,
             [
-                'check_number' => $check->check_number,
-                'status' => $validated['status'],
-                'invoice_id' => $check->invoice_id,
+                'check_number' => $updated->check_number,
+                'status' => $updated->status,
+                'invoice_id' => $updated->invoice_id,
             ],
-            (int) $check->branch_id,
+            (int) $updated->branch_id,
         );
 
-        return response()->json($check->load(['invoice', 'branch']));
+        return response()->json($updated);
     }
 
     public function credits(Request $request)
@@ -403,7 +390,7 @@ class InvoiceController extends Controller
         // Sync overdue: pending credits past due date
         Invoice::query()
             ->where('payment_method', 'credit')
-            ->where('payment_status', 'pending')
+            ->whereIn('payment_status', ['pending', 'partially_paid'])
             ->whereNotNull('due_date')
             ->whereDate('due_date', '<', now()->toDateString())
             ->update(['payment_status' => 'overdue']);
@@ -411,9 +398,11 @@ class InvoiceController extends Controller
         $query = Invoice::with(['branch', 'user', 'items.book'])
             ->where('payment_method', 'credit');
 
-        if ($user->role === 'branch_manager' && $user->branch_id) {
-            $query->where('branch_id', $user->branch_id);
+        $ids = BranchAccess::visibleBranchIds($user);
+        if ($ids !== null) {
+            $query->whereIn('branch_id', $ids ?: [0]);
         } elseif ($request->filled('branch_id')) {
+            BranchAccess::assertBranchAllowed($user, (int) $request->branch_id);
             $query->where('branch_id', $request->branch_id);
         }
 
@@ -432,12 +421,13 @@ class InvoiceController extends Controller
 
         $dueSoonQuery = Invoice::with(['branch'])
             ->where('payment_method', 'credit')
-            ->whereIn('payment_status', ['pending', 'overdue'])
+            ->whereIn('payment_status', ['pending', 'overdue', 'partially_paid'])
             ->whereNotNull('due_date')
             ->whereBetween('due_date', [now()->toDateString(), now()->addDays(7)->toDateString()]);
 
-        if ($user->role === 'branch_manager' && $user->branch_id) {
-            $dueSoonQuery->where('branch_id', $user->branch_id);
+        $ids = BranchAccess::visibleBranchIds($user);
+        if ($ids !== null) {
+            $dueSoonQuery->whereIn('branch_id', $ids ?: [0]);
         }
 
         return response()->json([
@@ -452,14 +442,13 @@ class InvoiceController extends Controller
             return response()->json(['message' => 'این فاکتور نسیه نیست'], 422);
         }
 
-        $user = $request->user();
-        if ($user->role === 'branch_manager' && $user->branch_id && (int) $invoice->branch_id !== (int) $user->branch_id) {
-            return response()->json(['message' => 'دسترسی غیرمجاز'], 403);
-        }
+        BranchAccess::assertCanMutateInBranch($request->user(), (int) $invoice->branch_id);
 
         $validated = $request->validate([
-            'payment_status' => 'required|in:pending,paid,overdue',
+            'payment_status' => 'required|in:pending,paid,overdue,partially_paid',
         ]);
+
+        app(FinancePostingGateway::class)->assertLegacyCreditStatusAllowed($validated['payment_status']);
 
         $invoice->update(['payment_status' => $validated['payment_status']]);
 
@@ -476,5 +465,29 @@ class InvoiceController extends Controller
         );
 
         return response()->json($invoice->load(['branch', 'user', 'items.book']));
+    }
+
+    private function resolveSaleCustomer(?int $customerId, int $branchId, bool $required): ?Customer
+    {
+        if (!$customerId) {
+            if ($required) {
+                throw new DomainException('فروش نسیه نیازمند مشتری ثبت‌شده است', 422);
+            }
+
+            return null;
+        }
+
+        $customer = Customer::query()->lockForUpdate()->find($customerId);
+        if (!$customer) {
+            throw new DomainException('مشتری یافت نشد', 422);
+        }
+        if ($customer->archived_at) {
+            throw new DomainException('مشتری غیرفعال است', 422);
+        }
+        if ($customer->branch_id !== null && (int) $customer->branch_id !== $branchId) {
+            throw new DomainException('این مشتری در شعبه فاکتور قابل استفاده نیست', 422);
+        }
+
+        return $customer;
     }
 }

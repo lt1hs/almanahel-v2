@@ -82,11 +82,15 @@ export default function ReturnsPage() {
     const [reason, setReason] = useState("");
     const [selectedItems, setSelectedItems] = useState<Record<number, boolean>>({});
     const [returnQtys, setReturnQtys] = useState<Record<number, number>>({});
+    const [creditCustomerId, setCreditCustomerId] = useState<number | null>(null);
+    const [creditCustomerLabel, setCreditCustomerLabel] = useState("");
+    const [customerQuery, setCustomerQuery] = useState("");
+    const [customerHits, setCustomerHits] = useState<Array<{ id: number; name: string; phone?: string | null }>>([]);
 
     // Consignment return state
-    const [suppliers, setSuppliers] = useState<any[]>([]);
+    const [supplierAccounts, setSupplierAccounts] = useState<Array<{ accountId: number; canonicalSupplierId: number; name: string }>>([]);
     const [branches, setBranches] = useState<any[]>([]);
-    const [supplierId, setSupplierId] = useState("");
+    const [supplierAccountId, setSupplierAccountId] = useState("");
     const [branchId, setBranchId] = useState("");
     const [consignmentItems, setConsignmentItems] = useState<ConsignmentItem[]>([]);
     const [consignmentReason, setConsignmentReason] = useState("");
@@ -98,7 +102,11 @@ export default function ReturnsPage() {
         setReason("");
         setSelectedItems({});
         setReturnQtys({});
-        setSupplierId("");
+        setCreditCustomerId(null);
+        setCreditCustomerLabel("");
+        setCustomerQuery("");
+        setCustomerHits([]);
+        setSupplierAccountId("");
         setBranchId(!canPickBranch && userBranchId ? String(userBranchId) : "");
         setConsignmentItems([]);
         setConsignmentReason("");
@@ -123,31 +131,78 @@ export default function ReturnsPage() {
     }, [fetchReturns]);
 
     useEffect(() => {
-        if (showForm && activeTab === "consignment") {
-            Promise.all([apiRequest("/suppliers"), apiRequest("/branches")])
-                .then(([s, b]) => {
-                    setSuppliers(Array.isArray(s) ? s : []);
-                    const raw = (Array.isArray(b) ? b : []).filter(
-                        (x: any) => x.type === "store" || x.type === "warehouse"
-                    );
-                    const visible = canPickBranch
-                        ? dedupeBranchesByName(raw)
-                        : raw.filter((x: any) => Number(x.id) === Number(userBranchId));
-                    setBranches(visible);
-                    if (!canPickBranch && userBranchId) {
-                        setBranchId(String(userBranchId));
-                    }
-                })
-                .catch(console.error);
+        if (refundMethod !== "credit" || foundInvoice?.customer_id || creditCustomerId) {
+            return;
         }
+        const q = customerQuery.trim();
+        if (q.length < 2) {
+            setCustomerHits([]);
+            return;
+        }
+        const handle = window.setTimeout(async () => {
+            try {
+                const params = new URLSearchParams({ search: q });
+                if (foundInvoice?.branch_id) params.set("branch_id", String(foundInvoice.branch_id));
+                const data = await apiRequest(`/customers?${params.toString()}`);
+                setCustomerHits(Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : []);
+            } catch {
+                setCustomerHits([]);
+            }
+        }, 300);
+        return () => window.clearTimeout(handle);
+    }, [customerQuery, refundMethod, foundInvoice, creditCustomerId]);
+
+    useEffect(() => {
+        if (!showForm || activeTab !== "consignment") return;
+        apiRequest("/branches")
+            .then((b) => {
+                const raw = (Array.isArray(b) ? b : []).filter(
+                    (x: any) => x.type === "store" || x.type === "warehouse"
+                );
+                const visible = canPickBranch
+                    ? dedupeBranchesByName(raw)
+                    : raw.filter((x: any) => Number(x.id) === Number(userBranchId));
+                setBranches(visible);
+                if (!canPickBranch && userBranchId) {
+                    setBranchId(String(userBranchId));
+                }
+            })
+            .catch(console.error);
     }, [showForm, activeTab, canPickBranch, userBranchId]);
 
-    const loadConsignmentInventory = async (supId: string, brId: string) => {
-        if (!supId || !brId) return;
+    useEffect(() => {
+        if (!showForm || activeTab !== "consignment" || !branchId) {
+            setSupplierAccounts([]);
+            return;
+        }
+        apiRequest(`/supplier-accounts?branch_id=${branchId}`)
+            .then((rows) => {
+                setSupplierAccounts(
+                    (Array.isArray(rows) ? rows : []).map((row: any) => ({
+                        accountId: Number(row.id),
+                        canonicalSupplierId: Number(row.supplier_id),
+                        name: row.display_name || row.name || `#${row.id}`,
+                    }))
+                );
+            })
+            .catch(() => setSupplierAccounts([]));
+    }, [showForm, activeTab, branchId]);
+
+    const handleBranchChange = (nextBranchId: string) => {
+        setBranchId(nextBranchId);
+        setSupplierAccountId("");
+        setConsignmentItems([]);
+    };
+
+    const loadConsignmentInventory = async (accountId: string, brId: string) => {
+        if (!accountId || !brId) return;
+        const account = supplierAccounts.find((s) => String(s.accountId) === String(accountId));
+        const canonicalSupplierId = account?.canonicalSupplierId;
+        if (!canonicalSupplierId) return;
         try {
             const data = await apiRequest(`/warehouse/${brId}/inventory`);
             const items = (Array.isArray(data) ? data : [])
-                .filter((inv: any) => inv.type === "consignment" && String(inv.supplier_id) === supId && inv.quantity > 0)
+                .filter((inv: any) => inv.type === "consignment" && String(inv.supplier_id) === String(canonicalSupplierId) && inv.quantity > 0)
                 .map((inv: any) => ({
                     book_id: inv.book_id,
                     title: inv.book?.title || t("distribution.bookFallback"),
@@ -162,10 +217,10 @@ export default function ReturnsPage() {
     };
 
     useEffect(() => {
-        if (supplierId && branchId) {
-            loadConsignmentInventory(supplierId, branchId);
+        if (supplierAccountId && branchId) {
+            loadConsignmentInventory(supplierAccountId, branchId);
         }
-    }, [supplierId, branchId]);
+    }, [supplierAccountId, branchId, supplierAccounts]);
 
     const handleSearchInvoice = async () => {
         if (!invoiceSearch) return;
@@ -182,6 +237,10 @@ export default function ReturnsPage() {
                 });
                 setSelectedItems(selected);
                 setReturnQtys(qtys);
+                setCreditCustomerId(inv.customer_id ? Number(inv.customer_id) : null);
+                setCreditCustomerLabel(inv.customer_name || "");
+                setCustomerQuery("");
+                setCustomerHits([]);
             } else {
                 setError(t("toast.invoiceNotFound"));
             }
@@ -211,6 +270,9 @@ export default function ReturnsPage() {
                         };
                     });
                 if (items.length === 0) throw new Error(t("toast.minOneItem"));
+                if (refundMethod === "credit" && !foundInvoice.customer_id && !creditCustomerId) {
+                    throw new Error(t("returns.form.creditCustomerRequired"));
+                }
 
                 await apiRequest("/returns/customer", {
                     method: "POST",
@@ -219,6 +281,7 @@ export default function ReturnsPage() {
                         items,
                         refund_method: refundMethod,
                         reason: reason || null,
+                        customer_id: creditCustomerId || foundInvoice.customer_id || undefined,
                     }),
                 });
             } else {
@@ -226,13 +289,13 @@ export default function ReturnsPage() {
                 const lockedBranch = !canPickBranch && userBranchId
                     ? String(userBranchId)
                     : branchId;
-                if (!supplierId || !lockedBranch) throw new Error(t("toast.supplierBranchRequired"));
+                if (!supplierAccountId || !lockedBranch) throw new Error(t("toast.supplierBranchRequired"));
                 if (items.length === 0) throw new Error(t("toast.minOneBook"));
 
                 await apiRequest("/returns/consignment", {
                     method: "POST",
                     body: JSON.stringify({
-                        supplier_id: Number(supplierId),
+                        supplier_account_id: Number(supplierAccountId),
                         branch_id: Number(lockedBranch),
                         reason: consignmentReason || null,
                         items: items.map((i) => ({
@@ -626,6 +689,49 @@ export default function ReturnsPage() {
                                                     <option value="credit">{t("returns.form.refundCredit")}</option>
                                                 </select>
                                             </div>
+                                            {refundMethod === "credit" && (
+                                                <div className="space-y-1.5">
+                                                    <label className="text-[10px] font-black text-ink/40 uppercase tracking-widest">
+                                                        {t("returns.form.creditCustomer")}
+                                                    </label>
+                                                    {foundInvoice.customer_id || creditCustomerId ? (
+                                                        <p className="text-[12px] font-vazirmatn text-ink">
+                                                            {creditCustomerLabel || foundInvoice.customer_name || t("returns.form.creditCustomerLinked")}
+                                                        </p>
+                                                    ) : (
+                                                        <>
+                                                            <input
+                                                                type="search"
+                                                                value={customerQuery}
+                                                                onChange={(e) => setCustomerQuery(e.target.value)}
+                                                                placeholder={t("returns.form.searchCustomer")}
+                                                                className="w-full h-10 rounded-xl border border-ink/10 bg-parchment/20 px-3 text-[12px] font-vazirmatn outline-none"
+                                                            />
+                                                            {customerHits.length > 0 && (
+                                                                <div className="rounded-xl border border-ink/10 bg-white divide-y divide-ink/5 max-h-28 overflow-y-auto">
+                                                                    {customerHits.map((hit) => (
+                                                                        <button
+                                                                            key={hit.id}
+                                                                            type="button"
+                                                                            className="w-full text-end px-3 py-2 text-[12px] font-vazirmatn hover:bg-primary/5"
+                                                                            onClick={() => {
+                                                                                setCreditCustomerId(hit.id);
+                                                                                setCreditCustomerLabel(hit.name);
+                                                                                setCustomerHits([]);
+                                                                                setCustomerQuery("");
+                                                                            }}
+                                                                        >
+                                                                            {hit.name}{hit.phone ? ` · ${hit.phone}` : ""}
+                                                                        </button>
+                                                                    ))}
+                                                                </div>
+                                                            )}
+                                                            <p className="text-[10px] text-ink/40">{t("returns.form.creditCustomerRequired")}</p>
+                                                        </>
+                                                    )}
+                                                    <p className="text-[10px] text-ink/35">{t("returns.form.creditLiabilityNote")}</p>
+                                                </div>
+                                            )}
                                             <div className="space-y-1.5">
                                                 <label className="text-[10px] font-black text-ink/40 uppercase tracking-widest">{t("returns.form.reason")}</label>
                                                 <textarea rows={2} value={reason} onChange={(e) => setReason(e.target.value)}
@@ -637,10 +743,16 @@ export default function ReturnsPage() {
                                             <div className="grid grid-cols-2 gap-3">
                                                 <div className="space-y-1.5">
                                                     <label className="text-[10px] font-black text-ink/40 uppercase tracking-widest">{t("finance.settlement.supplier")}</label>
-                                                    <select value={supplierId} onChange={(e) => setSupplierId(e.target.value)}
-                                                        className="w-full h-10 rounded-xl border border-ink/10 px-3 text-[12px] font-vazirmatn outline-none">
+                                                    <select
+                                                        value={supplierAccountId}
+                                                        onChange={(e) => setSupplierAccountId(e.target.value)}
+                                                        disabled={!branchId}
+                                                        className="w-full h-10 rounded-xl border border-ink/10 px-3 text-[12px] font-vazirmatn outline-none disabled:opacity-60 disabled:bg-parchment/30"
+                                                    >
                                                         <option value="">{t("finance.settlement.selectSupplier")}</option>
-                                                        {suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                                                        {supplierAccounts.map((s) => (
+                                                            <option key={s.accountId} value={s.accountId}>{s.name}</option>
+                                                        ))}
                                                     </select>
                                                 </div>
                                                 <div className="space-y-1.5">
@@ -648,7 +760,7 @@ export default function ReturnsPage() {
                                                     <select
                                                         value={branchId}
                                                         disabled={!canPickBranch}
-                                                        onChange={(e) => setBranchId(e.target.value)}
+                                                        onChange={(e) => handleBranchChange(e.target.value)}
                                                         className="w-full h-10 rounded-xl border border-ink/10 px-3 text-[12px] font-vazirmatn outline-none disabled:opacity-60 disabled:bg-parchment/30"
                                                     >
                                                         {canPickBranch && (
@@ -680,7 +792,7 @@ export default function ReturnsPage() {
                                                         </div>
                                                     ))}
                                                 </div>
-                                            ) : supplierId && branchId ? (
+                                            ) : supplierAccountId && branchId ? (
                                                 <p className="text-[11px] text-ink/35 text-center py-4">{t("returns.form.noConsignmentBooks")}</p>
                                             ) : null}
                                             <div className="space-y-1.5">

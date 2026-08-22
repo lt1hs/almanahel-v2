@@ -19,13 +19,16 @@ interface SettlementItem {
 
 interface SettlementWizardProps {
     suppliers: { id: number; name: string }[];
-    onCalculate: (supplierId: number, fromDate: string, toDate: string) => Promise<void>;
-    onConfirm?: (supplierId: number, fromDate: string, toDate: string, amount: number) => Promise<void>;
+    onCalculate: (supplierAccountId: number, fromDate: string, toDate: string) => Promise<void>;
+    onConfirm?: (supplierAccountId: number, fromDate: string, toDate: string, amount: number) => Promise<void>;
     settlementData: SettlementItem[];
     isLoading?: boolean;
     isConfirming?: boolean;
-    initialSupplierId?: number | null;
+    initialSupplierAccountId?: number | null;
     currencySymbol?: string;
+    branchId?: number | null;
+    disabled?: boolean;
+    sessionKey?: number;
 }
 
 export function SettlementWizard({
@@ -35,8 +38,11 @@ export function SettlementWizard({
     settlementData,
     isLoading,
     isConfirming,
-    initialSupplierId,
+    initialSupplierAccountId,
     currencySymbol,
+    branchId,
+    disabled = false,
+    sessionKey = 0,
 }: SettlementWizardProps) {
     const { t, formatNumber } = useTranslation();
     const notify = useNotify();
@@ -47,15 +53,18 @@ export function SettlementWizard({
     const [toDate, setToDate] = useState("");
 
     useEffect(() => {
-        if (!suppliers.length) return;
-        const fromUrl = initialSupplierId
-            ? suppliers.find((s) => s.id === initialSupplierId)
+        if (!suppliers.length || disabled || !branchId) {
+            setSelectedSupplier(null);
+            return;
+        }
+        const fromUrl = initialSupplierAccountId
+            ? suppliers.find((s) => s.id === initialSupplierAccountId)
             : null;
         setSelectedSupplier((prev: any) => {
             if (prev && suppliers.some((s) => s.id === prev.id)) return prev;
             return fromUrl || suppliers[0] || null;
         });
-    }, [suppliers, initialSupplierId]);
+    }, [suppliers, initialSupplierAccountId, disabled, branchId, sessionKey]);
 
     const totalPayable = settlementData.reduce(
         (acc, item) => acc + (item.publisherShare ?? item.total - item.commission), 0
@@ -139,7 +148,7 @@ export function SettlementWizard({
                 <div className="md:col-span-3 pt-1">
                     <button
                         type="button"
-                        disabled={!selectedSupplier || !fromDate || !toDate || isLoading}
+                        disabled={disabled || !branchId || !selectedSupplier || !fromDate || !toDate || isLoading}
                         onClick={() => onCalculate(selectedSupplier.id, fromDate, toDate)}
                         className="w-full md:w-auto flex items-center justify-center gap-2 h-10 px-6 rounded-xl bg-primary hover:bg-primary/90 disabled:opacity-50 text-white text-[12px] font-black font-vazirmatn shadow-md shadow-primary/20 transition-all active:scale-[0.98]">
                         <Calculator className={cn("w-4 h-4", isLoading && "animate-spin")} />
@@ -263,7 +272,7 @@ export function SettlementWizard({
                 <div className="flex gap-2.5 w-full sm:w-auto relative z-10">
                     <button
                         type="button"
-                        disabled={settlementData.length === 0 || !selectedSupplier}
+                        disabled={disabled || !branchId || settlementData.length === 0 || !selectedSupplier}
                         onClick={handlePrint}
                         className="flex-1 sm:flex-none flex items-center justify-center gap-2 h-11 px-5 rounded-xl border border-white/15 text-white/70 hover:bg-white/10 hover:text-white disabled:opacity-40 text-[11.5px] font-black font-vazirmatn transition-all"
                     >
@@ -272,7 +281,7 @@ export function SettlementWizard({
                     </button>
                     <button
                         type="button"
-                        disabled={settlementData.length === 0 || !selectedSupplier || !fromDate || !toDate || isConfirming}
+                        disabled={disabled || !branchId || settlementData.length === 0 || !selectedSupplier || !fromDate || !toDate || isConfirming}
                         onClick={() => onConfirm?.(selectedSupplier.id, fromDate, toDate, totalPayable)}
                         className="flex-1 sm:flex-none flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-accent hover:bg-accent/90 disabled:opacity-40 text-white shadow-lg shadow-accent/25 text-[11.5px] font-black font-vazirmatn transition-all active:scale-[0.98]"
                     >

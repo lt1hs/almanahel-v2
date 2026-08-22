@@ -17,6 +17,13 @@ const nextConfig: NextConfig = {
   // Next.js 16 then resolves CSS @import from the parent directory
   // (https://github.com/vercel/next.js/issues/90307).
   outputFileTracingRoot: frontendRoot,
+  webpack: (config) => {
+    config.resolve.alias = {
+      ...config.resolve.alias,
+      exceljs: "exceljs/dist/exceljs.min.js",
+    };
+    return config;
+  },
 };
 
 export default withNextIntl(nextConfig);

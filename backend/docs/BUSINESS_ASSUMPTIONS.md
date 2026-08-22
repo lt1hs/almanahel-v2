@@ -1,6 +1,8 @@
 # Business assumptions (configurable where ambiguous)
 
-1. **Consignment store commission** default `0.1` (10% store / 90% publisher of sold cost). Env: `ALMANAHEL_CONSIGNMENT_COMMISSION_RATE`. Exposed in settings.
+Go-forward accounting rules: [ACCOUNTING_RULES.md](ACCOUNTING_RULES.md). Until Phase 1 posting is wired, **running code** still uses the commission behavior below.
+
+1. **Consignment store commission (current code)** default `0.1` (10% store / 90% publisher of sold cost). Env: `ALMANAHEL_CONSIGNMENT_COMMISSION_RATE`. After Phase 1, new/open receipts stamp `full_unit_cost` / rate `1.0` on the receipt and allocation; live global rate must not change stamped payables.
 2. **Lot allocation** for sales/gifts/transfers: FIFO by `stock_lots.id` ascending.
 3. **Customer return allocation restore**: LIFO of that invoice’s `sale_lot_allocations`.
 4. **Partial supplier settlement** allowed; allocations recorded per receipt.

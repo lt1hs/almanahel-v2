@@ -7,7 +7,9 @@ use App\Models\Branch;
 use App\Models\Inventory;
 use App\Models\User;
 use App\Support\ActivityLogger;
-use App\Support\SalesCogs;
+use App\Support\Authorization\BranchAccess;
+use App\Services\Reports\LedgerReportService;
+use App\Services\Treasury\FinancialAccountBootstrap;
 use Illuminate\Http\Request;
 
 class BranchController extends Controller
@@ -66,6 +68,7 @@ class BranchController extends Controller
         ]);
 
         $branch = Branch::create($validated);
+        app(FinancialAccountBootstrap::class)->run(true);
 
         ActivityLogger::record(
             'branches',
@@ -171,41 +174,19 @@ class BranchController extends Controller
     }
 
     /** Get per-branch profit summary */
-    public function profit(Branch $branch)
+    public function profit(Request $request, Branch $branch)
     {
-        $sales = \App\Models\Invoice::where('branch_id', $branch->id)
-            ->where(function ($q) {
-                $q->whereNull('type')->orWhere('type', 'sale');
-            })
-            ->get();
+        BranchAccess::assertCanViewFinancialReports($request->user());
+        if ($request->user()->role === 'branch_manager' && (int) $request->user()->branch_id !== (int) $branch->id) {
+            BranchAccess::deny('اجازه مشاهده گزارش شعبه دیگر را ندارید');
+        }
+        $period = app(LedgerReportService::class)->period(
+            $request->input('date_from'),
+            $request->input('date_to'),
+            '1970-01-01',
+            now()->toDateString()
+        );
 
-        $expenses = \App\Models\Expense::where('branch_id', $branch->id)->get();
-        $gifts    = \App\Models\Gift::where('branch_id', $branch->id)->get();
-
-        $totalRevenueToman  = $sales->where('currency', 'toman')->sum('total');
-        $totalRevenueDinar  = $sales->where('currency', 'dinar')->sum('total');
-        $totalExpenseToman  = $expenses->where('currency', 'toman')->sum('amount');
-        $totalExpenseDinar  = $expenses->where('currency', 'dinar')->sum('amount');
-        $totalGiftCostToman = $gifts->where('currency', 'toman')->sum('cost_value');
-        $totalGiftCostDinar = $gifts->where('currency', 'dinar')->sum('cost_value');
-
-        $from = '1970-01-01';
-        $to = now()->toDateString();
-        $cogsToman = SalesCogs::forBranch((int) $branch->id, 'toman', $from, $to);
-        $cogsDinar = SalesCogs::forBranch((int) $branch->id, 'dinar', $from, $to);
-
-        return response()->json([
-            'branch'              => $branch,
-            'revenue_toman'       => $totalRevenueToman,
-            'revenue_dinar'       => $totalRevenueDinar,
-            'cogs_toman'          => $cogsToman,
-            'cogs_dinar'          => $cogsDinar,
-            'expenses_toman'      => $totalExpenseToman,
-            'expenses_dinar'      => $totalExpenseDinar,
-            'gift_costs_toman'    => $totalGiftCostToman,
-            'gift_costs_dinar'    => $totalGiftCostDinar,
-            'net_profit_toman'    => $totalRevenueToman - $cogsToman - $totalExpenseToman - $totalGiftCostToman,
-            'net_profit_dinar'    => $totalRevenueDinar - $cogsDinar - $totalExpenseDinar - $totalGiftCostDinar,
-        ]);
+        return response()->json(app(LedgerReportService::class)->branchProfit($branch, $period['from'], $period['to']));
     }
 }

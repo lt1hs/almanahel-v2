@@ -12,9 +12,14 @@ Scheduled:
 - `ledger:reconcile` daily — fail if unbalanced journals
 
 Also useful:
+- `php artisan finance:reports-preflight --format=json` — ledger vs operational recon (fails non-zero)
 - `stock:backfill-lots` after deploy of lots migration
 - `stock:reconcile-lots` for drift reports
+- `suppliers:backfill-accounts` after Wave 1 migrations (dry-run, review, then `--apply`)
 - `php artisan queue:work` if queues enabled (default sync)
+
+Wave 1 supplier-account deploy order: `backend/docs/WAVE1_DEPLOYMENT_RUNBOOK.md`.
+Always `php artisan migrate --force` and `optimize:clear` before `php artisan up`.
 
 ## Migrations
 

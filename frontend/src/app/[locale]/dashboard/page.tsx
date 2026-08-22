@@ -112,6 +112,10 @@ export default function DashboardPage() {
     const { t, formatNumber, language, isDinar } = useTranslation();
     const router = useRouter();
     const [alertFilter, setAlertFilter] = useState<AlertFilter>("all");
+    const role = user?.role;
+    const isWarehouse = role === "warehouse_staff";
+    const canGlobalKpis = role === "admin" || role === "super_admin" || role === "accountant";
+    const canFinance = canGlobalKpis || role === "branch_manager";
 
     const { data: bundle, isLoading, isFetching, refetch } = useQuery({
         queryKey: ["dashboard"],
@@ -249,7 +253,7 @@ export default function DashboardPage() {
             // Prefer selected currency; if that side is empty, show the other with its own label
             const useDinar = isDinar ? dinarVal > 0 || tomanVal <= 0 : dinarVal > 0 && tomanVal <= 0;
             return {
-                titleKey: "dashboard.inventoryValue",
+            titleKey: "dashboard.ownedInventoryAtCost",
                 value: useDinar ? dinarVal : tomanVal,
                 suffixKey: useDinar ? "common.dinar" : "common.toman",
                 icon: Banknote,
@@ -271,7 +275,18 @@ export default function DashboardPage() {
             color: "text-violet-600",
             href: "/dashboard/checks",
         },
-    ];
+    ].filter((stat) => {
+        if (isWarehouse && ["dashboard.todaySales", "dashboard.ownedInventoryAtCost", "dashboard.pendingChecks", "dashboard.totalSuppliers", "dashboard.totalBranches"].includes(stat.titleKey)) {
+            return false;
+        }
+        if (!canGlobalKpis && ["dashboard.totalSuppliers", "dashboard.totalBranches"].includes(stat.titleKey)) {
+            return false;
+        }
+        if (!canFinance && ["dashboard.todaySales", "dashboard.ownedInventoryAtCost", "dashboard.pendingChecks"].includes(stat.titleKey)) {
+            return false;
+        }
+        return true;
+    });
 
     const filters: { key: AlertFilter; label: string; count: number }[] = [
         { key: "all", label: t("common.notifications.filterAll"), count: counts.all },
@@ -358,7 +373,7 @@ export default function DashboardPage() {
                                         <h4 className="text-lg font-black font-vazirmatn text-ink tabular-nums tracking-tighter">
                                             {isLoading ? "…" : formatNumber(stat.value)}
                                         </h4>
-                                        {stat.suffixKey && (
+                                        {"suffixKey" in stat && stat.suffixKey && (
                                             <span className="text-[9px] font-vazirmatn text-ink/30 font-medium">
                                                 {t(stat.suffixKey)}
                                             </span>
@@ -550,6 +565,7 @@ export default function DashboardPage() {
                                     href: "/dashboard/sales",
                                     icon: TrendingUp,
                                     tone: "text-emerald-600 bg-emerald-50",
+                                    finance: true,
                                 },
                                 {
                                     label: t("dashboard.openTransfers"),
@@ -571,8 +587,9 @@ export default function DashboardPage() {
                                     href: "/dashboard/checks",
                                     icon: CreditCard,
                                     tone: "text-amber-600 bg-amber-50",
+                                    finance: true,
                                 },
-                            ].map((row) => (
+                            ].filter((row) => !("finance" in row && row.finance) || canFinance).map((row) => (
                                 <button
                                     key={row.href + row.label}
                                     type="button"

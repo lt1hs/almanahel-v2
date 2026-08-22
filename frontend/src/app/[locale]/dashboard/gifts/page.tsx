@@ -80,7 +80,7 @@ const EMPTY_FORM = {
   cost_value: "",
   currency: "toman" as "toman" | "dinar",
   is_consignment: false,
-  supplier_id: "",
+  supplier_account_id: "",
   gifted_at: new Date().toISOString().split("T")[0],
   reason: "",
 };
@@ -163,15 +163,14 @@ export default function GiftsPage() {
     }
     setIsLoadingForm(true);
     try {
-      const [brData, sData] = await Promise.all([
+      const [brData] = await Promise.all([
         apiRequest("/branches?lite=1"),
-        apiRequest("/suppliers?status=active"),
       ]);
       const branchListRaw = Array.isArray(brData) ? brData : [];
       const branchList = canPickBranch
         ? branchListRaw
         : branchListRaw.filter((b: { id: number }) => Number(b.id) === Number(userBranchId));
-      const supplierList = Array.isArray(sData) ? sData : [];
+      const supplierList: { id: number; name: string; supplier_id?: number }[] = [];
       setBranches(branchList);
       setSuppliers(supplierList);
       formLoadedRef.current = true;
@@ -195,6 +194,22 @@ export default function GiftsPage() {
       setIsLoadingForm(false);
     }
   }, [notify, preferredCurrency, user?.branch?.id, userBranchId, canPickBranch]);
+
+  useEffect(() => {
+    if (!form.branch_id) {
+      setSuppliers([]);
+      return;
+    }
+    apiRequest(`/supplier-accounts?branch_id=${form.branch_id}`)
+      .then((data) => {
+        const rows = Array.isArray(data) ? data : [];
+        setSuppliers(rows.map((row: { id: number; display_name?: string; name?: string }) => ({
+          id: row.id,
+          name: row.display_name || row.name || `#${row.id}`,
+        })));
+      })
+      .catch(() => setSuppliers([]));
+  }, [form.branch_id]);
 
   const openForm = async () => {
     setCostManualOverride(false);
@@ -275,7 +290,7 @@ export default function GiftsPage() {
         ...f,
         book_id: String(inv.book_id),
         is_consignment: isConsignment,
-        supplier_id: isConsignment && inv.supplier?.id ? String(inv.supplier.id) : f.supplier_id,
+        supplier_account_id: isConsignment && inv.supplier?.id ? "" : f.supplier_account_id,
       };
       return next;
     });
@@ -301,7 +316,7 @@ export default function GiftsPage() {
       notify.error("toast.requiredFields");
       return;
     }
-    if (form.is_consignment && !form.supplier_id) {
+    if (form.is_consignment && !form.supplier_account_id) {
       notify.error("toast.supplierBranchRequired");
       return;
     }
@@ -328,7 +343,7 @@ export default function GiftsPage() {
           cost_value: parseFloat(form.cost_value),
           currency: form.currency,
           is_consignment: form.is_consignment,
-          supplier_id: form.is_consignment ? parseInt(form.supplier_id, 10) : null,
+          supplier_account_id: form.is_consignment ? parseInt(form.supplier_account_id, 10) : null,
           gifted_at: form.gifted_at,
           reason: form.reason || null,
         }),
@@ -740,8 +755,8 @@ export default function GiftsPage() {
                   </label>
                   {form.is_consignment && (
                     <select
-                      value={form.supplier_id}
-                      onChange={(e) => setForm((f) => ({ ...f, supplier_id: e.target.value }))}
+                      value={form.supplier_account_id}
+                      onChange={(e) => setForm((f) => ({ ...f, supplier_account_id: e.target.value }))}
                       className="h-10 w-full rounded-xl border border-amber-200 bg-amber-50/30 px-3 text-[12px] outline-none"
                     >
                       <option value="">{t("gifts.form.selectPublisher")}</option>

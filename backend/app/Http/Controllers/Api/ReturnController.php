@@ -4,6 +4,9 @@ namespace App\Http\Controllers\Api;
 
 use App\Exceptions\DomainException;
 use App\Http\Controllers\Controller;
+use App\Models\Check;
+use App\Models\Customer;
+use App\Models\CustomerPayment;
 use App\Models\CustomerReturn;
 use App\Models\CustomerReturnItem;
 use App\Models\ConsignmentReturn;
@@ -12,40 +15,21 @@ use App\Models\ConsignmentReceiptItem;
 use App\Models\Invoice;
 use App\Models\Inventory;
 use App\Support\ActivityLogger;
+use App\Support\Authorization\BranchAccess;
 use App\Support\Money;
 use App\Support\StockMovementLogger;
 use App\Services\Stock\StockLotService;
-use App\Services\Ledger\LedgerPoster;
+use App\Services\Ledger\FinancePostingGateway;
+use App\Services\Receivables\InvoiceBalance;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
 class ReturnController extends Controller
 {
-    private function isAdmin($user): bool
-    {
-        return in_array($user?->role, ['super_admin', 'admin'], true);
-    }
-
-    /** @return int[]|null */
-    private function visibleBranchIds($user): ?array
-    {
-        if ($this->isAdmin($user)) {
-            return null;
-        }
-        $ids = [];
-        if ($user?->branch_id) {
-            $ids[] = (int) $user->branch_id;
-        }
-        foreach ($user->iraq_only_visible_branches ?? [] as $id) {
-            $ids[] = (int) $id;
-        }
-        return array_values(array_unique(array_filter($ids)));
-    }
-
     private function scopeToUserBranch($query, $user, string $column = 'branch_id')
     {
-        $ids = $this->visibleBranchIds($user);
+        $ids = BranchAccess::visibleBranchIds($user);
         if ($ids === null) {
             return $query;
         }
@@ -55,23 +39,12 @@ class ReturnController extends Controller
         return $query->whereIn($column, $ids);
     }
 
-    private function assertBranchAllowed($user, int $branchId): void
-    {
-        $ids = $this->visibleBranchIds($user);
-        if ($ids === null) {
-            return;
-        }
-        if (!in_array($branchId, $ids, true)) {
-            abort(403, 'اجازه دسترسی به این شعبه را ندارید');
-        }
-    }
-
     public function customerReturns(Request $request)
     {
         $query = CustomerReturn::with(['invoice', 'branch', 'user', 'items.book']);
         $this->scopeToUserBranch($query, $request->user());
         if ($request->has('branch_id')) {
-            $this->assertBranchAllowed($request->user(), (int) $request->branch_id);
+            BranchAccess::assertBranchAllowed($request->user(), (int) $request->branch_id);
             $query->where('branch_id', $request->branch_id);
         }
         return response()->json($query->latest()->paginate(20));
@@ -83,14 +56,36 @@ class ReturnController extends Controller
             'invoice_id'    => 'required|exists:invoices,id',
             'refund_method' => 'required|in:cash,credit',
             'reason'        => 'nullable|string',
+            'customer_id'   => 'nullable|exists:customers,id',
             'items'         => 'required|array|min:1',
             'items.*.invoice_item_id' => 'required|exists:invoice_items,id',
             'items.*.quantity'        => 'required|integer|min:1',
+            'financial_account_id' => 'nullable|exists:financial_accounts,id',
         ]);
 
         return DB::transaction(function () use ($request, $validated) {
             $invoice = Invoice::with('items')->lockForUpdate()->findOrFail($validated['invoice_id']);
-            $this->assertBranchAllowed($request->user(), (int) $invoice->branch_id);
+            BranchAccess::assertCanMutateInBranch($request->user(), (int) $invoice->branch_id);
+            Check::query()->where('invoice_id', $invoice->id)->lockForUpdate()->get();
+            CustomerPayment::query()->where('invoice_id', $invoice->id)->lockForUpdate()->get();
+            CustomerReturn::query()->where('invoice_id', $invoice->id)->lockForUpdate()->get();
+
+            if (!empty($validated['customer_id'])) {
+                $linked = $this->resolveReturnCustomer((int) $validated['customer_id'], (int) $invoice->branch_id);
+                if ($invoice->customer_id && (int) $invoice->customer_id !== (int) $linked->id) {
+                    throw new DomainException('فاکتور به مشتری دیگری وابسته است', 422);
+                }
+                if (!$invoice->customer_id) {
+                    $invoice->customer_id = $linked->id;
+                    if (!$invoice->customer_name) {
+                        $invoice->customer_name = $linked->name;
+                    }
+                    if (!$invoice->customer_phone) {
+                        $invoice->customer_phone = $linked->phone;
+                    }
+                    $invoice->save();
+                }
+            }
 
             $aggregated = [];
             foreach ($validated['items'] as $item) {
@@ -129,6 +124,17 @@ class ReturnController extends Controller
                 ];
             }
 
+            $split = app(InvoiceBalance::class)->planReturn($invoice, $refundAmount, $validated['refund_method']);
+            if (Money::cmp($split['customer_credit_created'], '0') > 0) {
+                $invoice->refresh();
+                $customer = $invoice->customer_id
+                    ? Customer::query()->lockForUpdate()->find($invoice->customer_id)
+                    : null;
+                if (!$customer || $customer->archived_at) {
+                    throw new DomainException('ایجاد اعتبار مشتری نیازمند مشتری فعال ثبت‌شده است', 422);
+                }
+            }
+
             $return = CustomerReturn::create([
                 'invoice_id'    => $invoice->id,
                 'branch_id'     => $invoice->branch_id,
@@ -137,11 +143,16 @@ class ReturnController extends Controller
                 'refund_amount' => $refundAmount,
                 'refund_method' => $validated['refund_method'],
                 'reason'        => $validated['reason'] ?? null,
+                'returned_at'   => now(),
+                'receivable_reduction' => $split['receivable_reduction'],
+                'cash_refund' => $split['cash_refund'],
+                'customer_credit_created' => $split['customer_credit_created'],
+                'currency' => $split['currency'],
             ]);
 
             foreach ($prepared as $item) {
                 $invoiceItem = $item['invoice_item'];
-                CustomerReturnItem::create([
+                $returnItem = CustomerReturnItem::create([
                     'customer_return_id' => $return->id,
                     'book_id'            => $invoiceItem->book_id,
                     'invoice_item_id'    => $invoiceItem->id,
@@ -149,7 +160,12 @@ class ReturnController extends Controller
                     'unit_price'         => $item['unit_price'],
                 ]);
 
-                app(StockLotService::class)->reverseSaleAllocations($invoiceItem, $item['quantity']);
+                app(StockLotService::class)->reverseSaleAllocations(
+                    $invoiceItem,
+                    $item['quantity'],
+                    $return,
+                    $returnItem
+                );
 
                 StockMovementLogger::log(
                     (int) $invoice->branch_id,
@@ -183,16 +199,19 @@ class ReturnController extends Controller
                     $cogs = Money::add($cogs, Money::mul($alloc->unit_cost, min($item['quantity'], (int) $alloc->quantity_returned)));
                 }
             }
-            app(LedgerPoster::class)->postCustomerReturn(
+            app(FinancePostingGateway::class)->customerReturn(
                 $return,
                 $refundAmount,
                 $cogs,
                 $invoice->currency,
                 (int) $invoice->branch_id,
-                $validated['refund_method']
+                $validated['refund_method'],
+                $validated['financial_account_id'] ?? null
             );
 
-            return response()->json($return->load(['items.book', 'invoice']), 201);
+            $invoice = app(InvoiceBalance::class)->refresh($invoice);
+
+            return response()->json($return->fresh()->load(['items.book', 'invoice']), 201);
         });
     }
 
@@ -201,7 +220,7 @@ class ReturnController extends Controller
         $query = ConsignmentReturn::with(['supplier', 'branch', 'user', 'items.book']);
         $this->scopeToUserBranch($query, $request->user());
         if ($request->has('branch_id')) {
-            $this->assertBranchAllowed($request->user(), (int) $request->branch_id);
+            BranchAccess::assertBranchAllowed($request->user(), (int) $request->branch_id);
             $query->where('branch_id', $request->branch_id);
         }
         if ($request->has('supplier_id')) {
@@ -213,7 +232,8 @@ class ReturnController extends Controller
     public function createConsignmentReturn(Request $request)
     {
         $validated = $request->validate([
-            'supplier_id' => 'required|exists:suppliers,id',
+            'supplier_account_id' => 'nullable|exists:supplier_accounts,id',
+            'supplier_id' => 'required_without:supplier_account_id|nullable|exists:suppliers,id',
             'branch_id'   => 'required|exists:branches,id',
             'reason'      => 'nullable|string',
             'items'       => 'required|array|min:1',
@@ -222,7 +242,23 @@ class ReturnController extends Controller
             'items.*.cost_price' => 'nullable|numeric|min:0',
         ]);
 
-        $this->assertBranchAllowed($request->user(), (int) $validated['branch_id']);
+        BranchAccess::assertCanMutateInBranch($request->user(), (int) $validated['branch_id']);
+        if ($request->boolean('aggregate')) {
+            throw new DomainException('حالت تجمیعی برای ثبت مجاز نیست', 422, ['error' => 'aggregate_not_allowed']);
+        }
+        $resolved = app(\App\Services\Suppliers\SupplierAccountResolver::class)->resolveForMutation(
+            (int) $validated['branch_id'],
+            $validated['supplier_account_id'] ?? null,
+            $validated['supplier_id'] ?? null,
+            true
+        );
+        $validated['supplier_id'] = $resolved['supplier_id'];
+        $validated['supplier_account_id'] = $resolved['account']->id;
+        if (!$validated['supplier_id']) {
+            throw new DomainException('مرجوعی امانی به تأمین‌کننده متعارف نیاز دارد', 422, [
+                'error' => 'supplier_account_unresolved',
+            ]);
+        }
 
         return DB::transaction(function () use ($request, $validated) {
             $lotService = app(\App\Services\Stock\StockLotService::class);
@@ -261,6 +297,7 @@ class ReturnController extends Controller
 
             $return = ConsignmentReturn::create([
                 'supplier_id'   => $validated['supplier_id'],
+                'supplier_account_id' => $validated['supplier_account_id'],
                 'branch_id'     => $validated['branch_id'],
                 'user_id'       => $request->user()->id,
                 'return_number' => 'CRR-' . strtoupper(Str::random(8)),
@@ -329,5 +366,21 @@ class ReturnController extends Controller
             $receiptItem->increment('quantity_returned', $returned);
             $remaining -= $returned;
         }
+    }
+
+    private function resolveReturnCustomer(int $customerId, int $branchId): Customer
+    {
+        $customer = Customer::query()->lockForUpdate()->find($customerId);
+        if (!$customer) {
+            throw new DomainException('مشتری یافت نشد', 422);
+        }
+        if ($customer->archived_at) {
+            throw new DomainException('مشتری غیرفعال است', 422);
+        }
+        if ($customer->branch_id !== null && (int) $customer->branch_id !== $branchId) {
+            throw new DomainException('این مشتری در شعبه فاکتور قابل استفاده نیست', 422);
+        }
+
+        return $customer;
     }
 }

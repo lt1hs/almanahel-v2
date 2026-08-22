@@ -22,19 +22,46 @@ import { useNotify } from "@/hooks/useNotify";
 import { cn } from "@/lib/utils";
 import { apiRequest } from "@/lib/api";
 import { useAuth } from "@/contexts/AuthContext";
+import { buildConsignmentSettleHref } from "@/lib/consignmentSettlementLink";
 
-type ConsignmentStatus = "unsettled" | "partially_settled" | "settled";
+type ConsignmentStatus = "not_due" | "unsettled" | "partially_settled" | "settled";
+
+interface ConsignmentMoneySummary {
+  inventory_value: string;
+  payable_generated: string;
+  payable_settled: string;
+  payable_outstanding: string;
+}
+
+interface ConsignmentSummary {
+  receipts_count: number;
+  not_due_count: number;
+  unsettled_count: number;
+  partially_settled_count: number;
+  settled_count: number;
+  currencies: Record<"toman" | "dinar", ConsignmentMoneySummary>;
+}
 
 interface ConsignmentReceipt {
   id: number;
   receipt_number: string;
+  supplier_account_id?: number;
   supplier: { id: number; name: string; phone?: string };
   branch: { id: number; name: string };
   received_at: string;
-  status: ConsignmentStatus;
+  status: "unsettled" | "partially_settled" | "settled";
+  payable_status: ConsignmentStatus;
   currency: "toman" | "dinar";
-  total_value: number;
-  settled_amount: number;
+  total_value: string;
+  settled_amount: string;
+  inventory_value: string;
+  payable_generated: string;
+  payable_settled: string;
+  payable_outstanding: string;
+  quantity_received: number;
+  quantity_sold: number;
+  quantity_returned: number;
+  quantity_in_stock: number;
   items_count: number;
 }
 
@@ -58,6 +85,7 @@ const STATUS_STYLES: Record<
   ConsignmentStatus,
   { icon: React.ElementType; color: string; bg: string; border: string }
 > = {
+  not_due: { icon: PackageCheck, color: "text-sky-500", bg: "bg-sky-50", border: "border-sky-100" },
   unsettled: { icon: AlertCircle, color: "text-rose-500", bg: "bg-rose-50", border: "border-rose-100" },
   partially_settled: { icon: Clock, color: "text-amber-500", bg: "bg-amber-50", border: "border-amber-100" },
   settled: { icon: CheckCircle2, color: "text-emerald-500", bg: "bg-emerald-50", border: "border-emerald-100" },
@@ -72,6 +100,10 @@ function useDebouncedValue<T>(value: T, delay = 300) {
   return debounced;
 }
 
+function displayDate(value: string) {
+  return value.includes("T") ? value.split("T")[0] : value;
+}
+
 export default function ConsignmentPage() {
   const { t, tn, formatNumber, isArabic, isDinar, preferredCurrency } = useTranslation();
   const notify = useNotify();
@@ -81,6 +113,7 @@ export default function ConsignmentPage() {
   const userBranchId = user?.branch_id ? Number(user.branch_id) : user?.branch?.id ? Number(user.branch.id) : null;
 
   const statusLabel = (status: ConsignmentStatus) => {
+    if (status === "not_due") return t("consignment.status.notDue");
     if (status === "unsettled") return t("consignment.status.unsettled");
     if (status === "partially_settled") return t("consignment.status.partial");
     return t("consignment.status.settled");
@@ -94,9 +127,11 @@ export default function ConsignmentPage() {
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(false);
   const [totalCount, setTotalCount] = useState(0);
+  const [summary, setSummary] = useState<ConsignmentSummary | null>(null);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<ConsignmentStatus | "all">("all");
   const [supplierFilter, setSupplierFilter] = useState<string>("");
+  const [supplierFilterField, setSupplierFilterField] = useState<"supplier_id" | "supplier_account_id">("supplier_id");
   const [isLoading, setIsLoading] = useState(true);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
 
@@ -115,7 +150,7 @@ export default function ConsignmentPage() {
   const [isLoadingDetail, setIsLoadingDetail] = useState(false);
 
   const [newReceipt, setNewReceipt] = useState({
-    supplier_id: "",
+    supplier_account_id: "",
     branch_id: user?.branch?.id ? String(user.branch.id) : "",
     received_at: new Date().toISOString().split("T")[0],
     currency: preferredCurrency as "toman" | "dinar",
@@ -130,6 +165,8 @@ export default function ConsignmentPage() {
   });
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isClosingId, setIsClosingId] = useState<number | null>(null);
+  const [adminBranchId, setAdminBranchId] = useState("");
+  const [adminBranches, setAdminBranches] = useState<{ id: number; name: string }[]>([]);
   const formLoadedRef = useRef(false);
 
   const closeReceipt = async (id: number) => {
@@ -148,24 +185,43 @@ export default function ConsignmentPage() {
 
   const debouncedSearch = useDebouncedValue(search, 300);
 
-  // URL supplier_id from suppliers page deep-link
+  // URL deep-link from suppliers page
   useEffect(() => {
     if (typeof window === "undefined") return;
     const params = new URLSearchParams(window.location.search);
+    const accountId = params.get("supplier_account_id");
+    if (accountId) {
+      setSupplierFilter(accountId);
+      setSupplierFilterField("supplier_account_id");
+      return;
+    }
     const sid = params.get("supplier_id");
-    if (sid) setSupplierFilter(sid);
+    if (sid) {
+      setSupplierFilter(sid);
+      setSupplierFilterField("supplier_id");
+    }
   }, []);
 
   const fetchReceipts = useCallback(
     async (pageNum = 1, append = false) => {
+      if (isAdmin && !adminBranchId) {
+        if (!append) {
+          setReceipts([]);
+          setSummary(null);
+          setIsLoading(false);
+        }
+        return;
+      }
+
       if (append) setIsLoadingMore(true);
       else setIsLoading(true);
 
       try {
         const params = new URLSearchParams({ page: String(pageNum) });
-        if (statusFilter !== "all") params.set("status", statusFilter);
+        if (isAdmin && adminBranchId) params.set("branch_id", adminBranchId);
+        if (statusFilter !== "all") params.set("payable_status", statusFilter);
         if (debouncedSearch.trim()) params.set("q", debouncedSearch.trim());
-        if (supplierFilter) params.set("supplier_id", supplierFilter);
+        if (supplierFilter) params.set(supplierFilterField, supplierFilter);
 
         const data = await apiRequest(`/consignments?${params.toString()}`);
         const rows: ConsignmentReceipt[] = data.data || [];
@@ -173,16 +229,32 @@ export default function ConsignmentPage() {
         setPage(data.current_page || pageNum);
         setHasMore(Boolean(data.next_page_url));
         setTotalCount(data.total ?? rows.length);
+        setSummary(data.summary ?? null);
       } catch (error) {
         console.error("Failed to fetch consignments:", error);
-        if (!append) setReceipts([]);
+        if (!append) {
+          setReceipts([]);
+          setSummary(null);
+        }
       } finally {
         setIsLoading(false);
         setIsLoadingMore(false);
       }
     },
-    [statusFilter, debouncedSearch, supplierFilter]
+    [statusFilter, debouncedSearch, supplierFilter, supplierFilterField, isAdmin, adminBranchId]
   );
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    apiRequest("/branches?lite=1")
+      .then((data) => {
+        const rows = (Array.isArray(data) ? data : []).filter(
+          (b: { type?: string }) => b.type === "store" || b.type === "warehouse"
+        );
+        setAdminBranches(rows);
+      })
+      .catch(console.error);
+  }, [isAdmin]);
 
   useEffect(() => {
     fetchReceipts(1, false);
@@ -195,21 +267,15 @@ export default function ConsignmentPage() {
     }
     setIsLoadingForm(true);
     try {
-      const [sData, bData] = await Promise.all([
-        apiRequest("/suppliers?status=active"),
-        apiRequest("/branches?lite=1"),
-      ]);
-      const supplierList = Array.isArray(sData) ? sData : [];
+      const bData = await apiRequest("/branches?lite=1");
       const branchListRaw = Array.isArray(bData) ? bData : [];
       const branchList = isAdmin
         ? branchListRaw
         : branchListRaw.filter((b: { id: number }) => {
             const ids = new Set<number>();
             if (userBranchId) ids.add(userBranchId);
-            (user?.iraq_only_visible_branches || []).forEach((id) => ids.add(Number(id)));
             return ids.has(Number(b.id));
           });
-      setSuppliers(supplierList.filter((s: { status?: string }) => (s.status || "active") === "active"));
       setBranches(branchList);
       formLoadedRef.current = true;
       setFormReady(true);
@@ -223,7 +289,7 @@ export default function ConsignmentPage() {
 
       setNewReceipt((prev) => ({
         ...prev,
-        supplier_id: prev.supplier_id || (supplierFilter ? String(supplierFilter) : ""),
+        supplier_account_id: prev.supplier_account_id || (supplierFilter ? String(supplierFilter) : ""),
         branch_id: !isAdmin && userBranchId ? String(userBranchId) : (prev.branch_id || lockedBranch),
         currency: preferredCurrency,
       }));
@@ -233,7 +299,31 @@ export default function ConsignmentPage() {
     } finally {
       setIsLoadingForm(false);
     }
-  }, [notify, preferredCurrency, supplierFilter, user?.iraq_only_visible_branches, userBranchId, isAdmin]);
+  }, [notify, preferredCurrency, supplierFilter, userBranchId, isAdmin]);
+
+  const loadSupplierAccounts = useCallback(async (branchId: string) => {
+    if (!branchId) {
+      setSuppliers([]);
+      return;
+    }
+    try {
+      const data = await apiRequest(`/supplier-accounts?branch_id=${branchId}`);
+      const rows = Array.isArray(data) ? data : [];
+      setSuppliers(
+        rows.map((row: { id: number; display_name?: string; name?: string }) => ({
+          id: row.id,
+          name: row.display_name || row.name || `#${row.id}`,
+        }))
+      );
+    } catch {
+      setSuppliers([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!showNewForm || !newReceipt.branch_id) return;
+    loadSupplierAccounts(newReceipt.branch_id);
+  }, [showNewForm, newReceipt.branch_id, loadSupplierAccounts]);
 
   const openNewForm = async () => {
     setShowNewForm(true);
@@ -316,7 +406,7 @@ export default function ConsignmentPage() {
 
   const resetForm = () => {
     setNewReceipt({
-      supplier_id: supplierFilter || "",
+      supplier_account_id: supplierFilter || "",
       branch_id: user?.branch?.id ? String(user.branch.id) : branches[0] ? String(branches[0].id) : "",
       received_at: new Date().toISOString().split("T")[0],
       currency: preferredCurrency,
@@ -329,7 +419,7 @@ export default function ConsignmentPage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newReceipt.supplier_id || !newReceipt.branch_id || newReceipt.items.length === 0) {
+    if (!newReceipt.supplier_account_id || !newReceipt.branch_id || newReceipt.items.length === 0) {
       notify.error("toast.consignmentFieldsRequired");
       return;
     }
@@ -347,7 +437,7 @@ export default function ConsignmentPage() {
       await apiRequest("/consignments", {
         method: "POST",
         body: JSON.stringify({
-          supplier_id: Number(newReceipt.supplier_id),
+          supplier_account_id: Number(newReceipt.supplier_account_id),
           branch_id: Number(newReceipt.branch_id),
           received_at: newReceipt.received_at,
           currency: newReceipt.currency,
@@ -374,24 +464,23 @@ export default function ConsignmentPage() {
   };
 
   const kpi = useMemo(() => {
-    const unsettled = receipts.filter((r) => r.status === "unsettled").length;
-    const partial = receipts.filter((r) => r.status === "partially_settled").length;
-    const balance = receipts
-      .filter((r) => r.status !== "settled" && r.currency === preferredCurrency)
-      .reduce((acc, r) => acc + (Number(r.total_value) - Number(r.settled_amount)), 0);
+    const currencySummary = summary?.currencies?.[preferredCurrency];
+    const needsSettlement = summary
+      ? summary.unsettled_count + summary.partially_settled_count
+      : receipts.filter((r) => r.payable_status === "unsettled" || r.payable_status === "partially_settled").length;
 
     return [
-      { label: t("consignment.kpi.totalReceipts"), value: totalCount || receipts.length, color: "text-primary" },
-      { label: t("consignment.status.unsettled"), value: unsettled, color: "text-rose-500" },
-      { label: t("consignment.status.partial"), value: partial, color: "text-amber-500" },
+      { label: t("consignment.kpi.totalReceipts"), value: summary?.receipts_count ?? totalCount ?? receipts.length, color: "text-primary" },
+      { label: t("consignment.kpi.notDue"), value: summary?.not_due_count ?? 0, color: "text-sky-500" },
+      { label: t("consignment.kpi.needsSettlement"), value: needsSettlement, color: "text-rose-500" },
       {
         label: t("consignment.kpi.totalBalance"),
-        value: balance,
+        value: Number(currencySummary?.payable_outstanding ?? 0),
         color: "text-ink",
         unit: ` ${currencySymbol}`,
       },
     ];
-  }, [receipts, totalCount, preferredCurrency, currencySymbol, t]);
+  }, [receipts, summary, totalCount, preferredCurrency, currencySymbol, t]);
 
   return (
     <div className="space-y-5 pb-10">
@@ -425,6 +514,27 @@ export default function ConsignmentPage() {
         </div>
       </div>
 
+      {isAdmin && (
+        <div className="max-w-xs space-y-1.5">
+          <label className="text-[10px] font-black uppercase tracking-widest text-ink/40 flex items-center gap-1.5">
+            <Building2 className="h-3 w-3" />
+            {t("consignment.form.branch")}
+          </label>
+          <select
+            value={adminBranchId}
+            onChange={(e) => setAdminBranchId(e.target.value)}
+            className="h-10 w-full rounded-xl border border-white bg-white/70 px-3 text-[12px] font-vazirmatn shadow-sm outline-none focus:border-primary/30"
+          >
+            <option value="">{t("expenses.form.selectBranch")}</option>
+            {adminBranches.map((b) => (
+              <option key={b.id} value={b.id}>
+                {b.name}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
+
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         {kpi.map((item) => (
           <Card key={item.label} className="rounded-[14px] border border-white/70 bg-white/70 shadow-sm backdrop-blur-xl">
@@ -449,7 +559,7 @@ export default function ConsignmentPage() {
             className="h-10 w-full rounded-xl border border-white bg-white/70 pe-9 ps-3 text-[12px] font-vazirmatn shadow-sm outline-none placeholder:text-ink/20 focus:border-primary/30"
           />
         </div>
-        {(["all", "unsettled", "partially_settled", "settled"] as const).map((s) => (
+        {(["all", "not_due", "unsettled", "partially_settled", "settled"] as const).map((s) => (
           <button
             key={s}
             type="button"
@@ -483,12 +593,14 @@ export default function ConsignmentPage() {
           ))
         ) : (
           receipts.map((receipt) => {
-            const cfg = STATUS_STYLES[receipt.status];
-            const balance = Number(receipt.total_value) - Number(receipt.settled_amount);
+            const cfg = STATUS_STYLES[receipt.payable_status];
+            const balance = Number(receipt.payable_outstanding);
             const pct =
-              Number(receipt.total_value) > 0
-                ? (Number(receipt.settled_amount) / Number(receipt.total_value)) * 100
+              Number(receipt.payable_generated) > 0
+                ? (Number(receipt.payable_settled) / Number(receipt.payable_generated)) * 100
                 : 0;
+            const settleHref = buildConsignmentSettleHref(receipt.id, receipt.supplier_account_id);
+            const showDataIntegrityWarning = balance > 0 && (receipt.items_count || 0) > 0 && !settleHref;
 
             return (
               <Card
@@ -513,7 +625,7 @@ export default function ConsignmentPage() {
                           {receipt.supplier?.name || "—"}
                         </span>
                         <Badge className={cn("border text-[8px] font-black", cfg.bg, cfg.color, cfg.border)}>
-                          {statusLabel(receipt.status)}
+                          {statusLabel(receipt.payable_status)}
                         </Badge>
                         <span className="font-mono text-[9px] text-ink/25">{receipt.receipt_number}</span>
                       </div>
@@ -524,7 +636,7 @@ export default function ConsignmentPage() {
                         </span>
                         <span className="flex items-center gap-1 text-[9px] text-ink/35">
                           <CalendarDays className="h-3 w-3" />
-                          {receipt.received_at}
+                          {displayDate(receipt.received_at)}
                         </span>
                         <span className="flex items-center gap-1 text-[9px] text-ink/35">
                           <FileText className="h-3 w-3" />
@@ -536,23 +648,24 @@ export default function ConsignmentPage() {
                           <div
                             className={cn(
                               "h-full rounded-full transition-all",
-                              receipt.status === "settled" ? "bg-emerald-400" : "bg-primary"
+                              receipt.payable_status === "settled" ? "bg-emerald-400" : "bg-primary"
                             )}
                             style={{ width: `${Math.min(100, pct)}%` }}
                           />
                         </div>
                         <p className="mt-0.5 text-[8px] text-ink/25">
-                          {pct.toFixed(0)}
-                          {t("consignment.settledPercent")}
+                          {receipt.payable_status === "not_due"
+                            ? t("consignment.noPayableHint")
+                            : `${pct.toFixed(0)}${t("consignment.settledPercent")}`}
                         </p>
                       </div>
                     </div>
 
                     <div className="flex shrink-0 flex-col items-end gap-1">
                       <div className="text-end">
-                        <p className="text-[8px] uppercase tracking-widest text-ink/25">{t("consignment.totalDebt")}</p>
+                        <p className="text-[8px] uppercase tracking-widest text-ink/25">{t("consignment.inventoryValue")}</p>
                         <p className="text-[14px] font-black font-vazirmatn text-ink">
-                          {formatNumber(Number(receipt.total_value))}
+                          {formatNumber(Number(receipt.inventory_value))}
                           <span className="ms-0.5 text-[9px] text-ink/25">
                             {receipt.currency === "toman"
                               ? t("common.currency.tomanSymbol")
@@ -560,16 +673,14 @@ export default function ConsignmentPage() {
                           </span>
                         </p>
                       </div>
-                      {balance > 0 && (
-                        <div className="text-end">
-                          <p className="text-[8px] uppercase tracking-widest text-rose-400">
-                            {t("consignment.remaining")}
-                          </p>
-                          <p className="text-[12px] font-black font-vazirmatn text-rose-500">
-                            {formatNumber(balance)}
-                          </p>
-                        </div>
-                      )}
+                      <div className="text-end">
+                        <p className="text-[8px] uppercase tracking-widest text-rose-400">
+                          {t("consignment.payableOutstanding")}
+                        </p>
+                        <p className={cn("text-[12px] font-black font-vazirmatn", balance > 0 ? "text-rose-500" : "text-emerald-600")}>
+                          {formatNumber(balance)}
+                        </p>
+                      </div>
                     </div>
 
                     <div className="flex shrink-0 gap-1.5">
@@ -581,7 +692,7 @@ export default function ConsignmentPage() {
                       >
                         {t("common.details")}
                       </Button>
-                      {receipt.status !== "settled" && (receipt.items_count || 0) === 0 && (
+                      {receipt.payable_status !== "settled" && (receipt.items_count || 0) === 0 && (
                         <Button
                           size="sm"
                           variant="outline"
@@ -593,15 +704,16 @@ export default function ConsignmentPage() {
                           {t("consignment.closeReceipt")}
                         </Button>
                       )}
-                      {receipt.status !== "settled" && (receipt.items_count || 0) > 0 && (
+                      {showDataIntegrityWarning && (
+                        <p className="text-[9px] font-bold text-amber-600 max-w-[140px] text-end leading-snug">
+                          {t("consignment.supplierAccountDataIntegrity")}
+                        </p>
+                      )}
+                      {balance > 0 && (receipt.items_count || 0) > 0 && settleHref && (
                         <Button
                           size="sm"
                           className="h-8 rounded-lg bg-emerald-500 px-3 text-[10px] font-bold text-white shadow-sm hover:bg-emerald-600"
-                          onClick={() =>
-                            router.push(
-                              `/dashboard/consignment/settle?receipt_id=${receipt.id}&supplier_id=${receipt.supplier?.id}`
-                            )
-                          }
+                          onClick={() => router.push(settleHref)}
                         >
                           {t("finance.makeSettlement")}
                         </Button>
@@ -685,12 +797,42 @@ export default function ConsignmentPage() {
                     </div>
                     <div>
                       <p className="text-ink/35">{t("consignment.form.receivedDate")}</p>
-                      <p className="font-black text-ink">{detail.received_at}</p>
+                      <p className="font-black text-ink">{displayDate(detail.received_at)}</p>
                     </div>
                     <div>
                       <p className="text-ink/35">{t("common.status")}</p>
-                      <p className="font-black text-ink">{statusLabel(detail.status)}</p>
+                      <p className="font-black text-ink">{statusLabel(detail.payable_status)}</p>
                     </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3 rounded-2xl border border-ink/5 bg-white p-4 text-[11px]">
+                    {[
+                      [t("consignment.inventoryValue"), detail.inventory_value],
+                      [t("consignment.payableGenerated"), detail.payable_generated],
+                      [t("consignment.payableSettled"), detail.payable_settled],
+                      [t("consignment.payableOutstanding"), detail.payable_outstanding],
+                    ].map(([label, value]) => (
+                      <div key={label}>
+                        <p className="text-ink/35">{label}</p>
+                        <p className="font-black text-ink">
+                          {formatNumber(Number(value))} {detail.currency === "toman" ? t("common.currency.tomanSymbol") : t("common.currency.dinarSymbol")}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="grid grid-cols-4 gap-2 rounded-2xl border border-ink/5 bg-parchment/20 p-3 text-center text-[10px]">
+                    {[
+                      [t("consignment.received"), detail.quantity_received],
+                      [t("consignment.sold"), detail.quantity_sold],
+                      [t("consignment.returned"), detail.quantity_returned],
+                      [t("consignment.inStock"), detail.quantity_in_stock],
+                    ].map(([label, value]) => (
+                      <div key={label}>
+                        <p className="text-ink/35">{label}</p>
+                        <p className="mt-1 text-sm font-black text-ink">{formatNumber(Number(value))}</p>
+                      </div>
+                    ))}
                   </div>
 
                   <div className="overflow-hidden rounded-xl border border-ink/5">
@@ -777,9 +919,9 @@ export default function ConsignmentPage() {
                         </label>
                         <select
                           required
-                          value={newReceipt.supplier_id}
+                          value={newReceipt.supplier_account_id}
                           onChange={(e) =>
-                            setNewReceipt((prev) => ({ ...prev, supplier_id: e.target.value }))
+                            setNewReceipt((prev) => ({ ...prev, supplier_account_id: e.target.value }))
                           }
                           className="h-10 w-full rounded-xl border border-ink/10 bg-parchment/20 px-3 text-[12px] font-vazirmatn outline-none focus:ring-1 focus:ring-primary"
                         >
@@ -800,7 +942,11 @@ export default function ConsignmentPage() {
                           value={newReceipt.branch_id}
                           disabled={!isAdmin}
                           onChange={(e) =>
-                            setNewReceipt((prev) => ({ ...prev, branch_id: e.target.value }))
+                            setNewReceipt((prev) => ({
+                              ...prev,
+                              branch_id: e.target.value,
+                              supplier_account_id: "",
+                            }))
                           }
                           className="h-10 w-full rounded-xl border border-ink/10 bg-parchment/20 px-3 text-[12px] font-vazirmatn outline-none focus:ring-1 focus:ring-primary disabled:opacity-60"
                         >

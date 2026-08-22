@@ -97,6 +97,9 @@
     "actualPrice": "السعر الفعلي",
     "checkInfo": "معلومات الشيك",
     "creditInfo": "معلومات الآجل",
+    "searchCustomer": "بحث عن عميل (الاسم أو الهاتف)",
+    "createCustomer": "إنشاء عميل جديد واختياره",
+    "selectedCustomer": "العميل المحدد",
     "customerName": "اسم العميل",
     "customerPhone": "هاتف العميل",
     "checkNumber": "رقم الشيك",
@@ -111,7 +114,7 @@
       "checkNumberRequired": "رقم الشيك مطلوب",
       "checkDueRequired": "تاريخ استحقاق الشيك مطلوب",
       "payerNameRequired": "اسم مُصدر الشيك مطلوب",
-      "creditCustomerRequired": "اسم العميل للآجل مطلوب",
+      "creditCustomerRequired": "للبيع الآجل يجب اختيار عميل موجود أو إنشاء عميل جديد",
       "creditDueRequired": "تاريخ استحقاق الآجل مطلوب"
     }
   },
@@ -206,7 +209,12 @@
       "notesPlaceholder": "ملاحظات...",
       "consignmentBooks": "كتب الأمانة",
       "maxQtyPrice": "الحد الأقصى للكمية / السعر",
-      "noConsignmentBooks": "لا توجد كتب أمانة"
+      "noConsignmentBooks": "لا توجد كتب أمانة",
+      "creditCustomer": "عميل الرصيد",
+      "creditCustomerLinked": "عميل الفاتورة",
+      "searchCustomer": "بحث عن عميل (الاسم أو الهاتف)",
+      "creditCustomerRequired": "لإنشاء رصيد عميل يجب اختيار عميل مسجَّل",
+      "creditLiabilityNote": "رصيد العميل حالياً التزام مسجَّل وليس قابلاً للاستخدام في البيع"
     }
   },
   "checks": {
@@ -289,12 +297,21 @@
     "noReceipts": "لا توجد إيصالات أمانة",
     "totalDebt": "إجمالي الدين",
     "remaining": "المتبقي",
+    "inventoryValue": "قيمة الكتب المستلمة",
+    "payableGenerated": "الدين الناتج عن البيع والهدايا",
+    "payableSettled": "المدفوع للمورد",
+    "payableOutstanding": "المبلغ المستحق للتسوية",
+    "noPayableHint": "لم يُسجّل بيع أو إهداء بعد",
     "settledPercent": "٪ تمت التسوية",
+    "inStock": "الموجود لدينا",
     "kpi": {
       "totalReceipts": "إجمالي الإيصالات",
-      "totalBalance": "الرصيد الإجمالي (تومان)"
+      "totalBalance": "المبلغ المستحق للتسوية",
+      "notDue": "لا دين حالياً",
+      "needsSettlement": "بحاجة إلى تسوية"
     },
     "status": {
+      "notDue": "لم ينشأ دين بعد",
       "unsettled": "غير مسوّى",
       "partial": "مسوّى جزئياً",
       "settled": "مسوّى"

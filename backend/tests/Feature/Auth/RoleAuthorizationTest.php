@@ -125,8 +125,8 @@ class RoleAuthorizationTest extends TestCase
         ]);
 
         $response->assertCreated();
-        $this->assertCount(1, $response->json('items'));
-        $this->assertEquals(3, $response->json('items.0.quantity'));
+        $this->assertCount(2, $response->json('items'));
+        $this->assertEquals(3, collect($response->json('items'))->sum('quantity'));
         $this->assertEquals(2, $book->fresh()->inventories()->where('branch_id', $branch->id)->value('quantity'));
     }
 

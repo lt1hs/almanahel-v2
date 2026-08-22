@@ -31,5 +31,6 @@
         <env name="TELESCOPE_ENABLED" value="false"/>
         <env name="ALMANAHEL_CONSIGNMENT_COMMISSION_RATE" value="0.1"/>
         <env name="ALMANAHEL_LOW_STOCK_THRESHOLD" value="5"/>
+        <env name="FINANCE_LEDGER_REPORTS_ENABLED" value="true"/>
     </php>
 </phpunit>

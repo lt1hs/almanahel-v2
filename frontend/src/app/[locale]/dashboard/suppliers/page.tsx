@@ -24,6 +24,8 @@ import { useTranslation } from "@/hooks/useTranslation";
 import { useNotify } from "@/hooks/useNotify";
 import { apiRequest } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { useAuth } from "@/contexts/AuthContext";
+import { supplierAccountsUrl } from "@/lib/supplierAccountSelection";
 
 type SupplierType = "publisher" | "company" | "individual";
 type SupplierStatus = "active" | "inactive";
@@ -54,6 +56,9 @@ const EMPTY_FORM = {
 export default function SuppliersPage() {
   const { t, formatNumber } = useTranslation();
   const notify = useNotify();
+  const { user } = useAuth();
+  const isAdminCatalog = user?.role === "admin" || user?.role === "super_admin";
+  const branchId = user?.branch_id ? Number(user.branch_id) : null;
 
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -70,14 +75,32 @@ export default function SuppliersPage() {
   const fetchSuppliers = useCallback(async () => {
     setIsLoading(true);
     try {
-      const data = await apiRequest("/suppliers");
-      setSuppliers(Array.isArray(data) ? data : []);
+      if (isAdminCatalog) {
+        const data = await apiRequest("/suppliers");
+        setSuppliers(Array.isArray(data) ? data : []);
+      } else if (branchId) {
+        const data = await apiRequest(supplierAccountsUrl(branchId));
+        setSuppliers(
+          (Array.isArray(data) ? data : []).map((row: Record<string, unknown>) => ({
+            id: Number(row.id),
+            name: String(row.display_name ?? row.name ?? `#${row.id}`),
+            email: (row.email as string | null | undefined) ?? null,
+            phone: (row.phone as string | null | undefined) ?? null,
+            address: (row.address as string | null | undefined) ?? null,
+            city: (row.city as string | null | undefined) ?? null,
+            type: (row.type as SupplierType | undefined) ?? "publisher",
+            status: (row.status as SupplierStatus | undefined) ?? "active",
+          }))
+        );
+      } else {
+        setSuppliers([]);
+      }
     } catch (error) {
       console.error("Failed to fetch suppliers:", error);
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [branchId, isAdminCatalog]);
 
   useEffect(() => {
     fetchSuppliers();
@@ -111,19 +134,45 @@ export default function SuppliersPage() {
 
     setIsSaving(true);
     try {
-      const method = editingSupplier ? "PUT" : "POST";
-      const url = editingSupplier ? `/suppliers/${editingSupplier.id}` : "/suppliers";
-      await apiRequest(url, {
-        method,
-        body: JSON.stringify({
-          name: formData.name.trim(),
+      if (isAdminCatalog) {
+        const method = editingSupplier ? "PUT" : "POST";
+        const url = editingSupplier ? `/suppliers/${editingSupplier.id}` : "/suppliers";
+        await apiRequest(url, {
+          method,
+          body: JSON.stringify({
+            name: formData.name.trim(),
+            email: formData.email.trim() || null,
+            phone: formData.phone.trim() || null,
+            address: formData.address.trim() || null,
+            city: formData.city.trim() || null,
+            type: formData.type,
+          }),
+        });
+      } else if (branchId) {
+        const payload = {
+          branch_id: branchId,
+          display_name: formData.name.trim(),
           email: formData.email.trim() || null,
           phone: formData.phone.trim() || null,
           address: formData.address.trim() || null,
           city: formData.city.trim() || null,
           type: formData.type,
-        }),
-      });
+        };
+        if (editingSupplier) {
+          await apiRequest(`/supplier-accounts/${editingSupplier.id}`, {
+            method: "PUT",
+            body: JSON.stringify(payload),
+          });
+        } else {
+          await apiRequest("/supplier-accounts", {
+            method: "POST",
+            body: JSON.stringify(payload),
+          });
+        }
+      } else {
+        notify.error("toast.supplierSaveError");
+        return;
+      }
       setShowForm(false);
       setEditingSupplier(null);
       setFormData(EMPTY_FORM);
@@ -160,10 +209,17 @@ export default function SuppliersPage() {
   const handleToggleStatus = async (supplier: Supplier) => {
     const nextStatus: SupplierStatus = supplier.status === "inactive" ? "active" : "inactive";
     try {
-      await apiRequest(`/suppliers/${supplier.id}`, {
-        method: "PUT",
-        body: JSON.stringify({ status: nextStatus }),
-      });
+      if (isAdminCatalog) {
+        await apiRequest(`/suppliers/${supplier.id}`, {
+          method: "PUT",
+          body: JSON.stringify({ status: nextStatus }),
+        });
+      } else {
+        await apiRequest(`/supplier-accounts/${supplier.id}`, {
+          method: "PUT",
+          body: JSON.stringify({ status: nextStatus }),
+        });
+      }
       await fetchSuppliers();
       notify.success(nextStatus === "active" ? "toast.supplierActivated" : "toast.supplierDeactivated");
     } catch (error) {
@@ -343,6 +399,7 @@ export default function SuppliersPage() {
                       >
                         <Power className="h-3.5 w-3.5" />
                       </button>
+                      {isAdminCatalog && (
                       <button
                         type="button"
                         onClick={() => setPendingDelete(supplier)}
@@ -352,6 +409,7 @@ export default function SuppliersPage() {
                       >
                         <Trash2 className="h-3.5 w-3.5" />
                       </button>
+                      )}
                     </div>
                   </div>
 
@@ -391,7 +449,11 @@ export default function SuppliersPage() {
                       {isInactive ? t("suppliers.statusInactive") : t("suppliers.statusActive")}
                     </Badge>
                     <Link
-                      href={`/dashboard/consignment?supplier_id=${supplier.id}`}
+                      href={
+                        isAdminCatalog
+                          ? `/dashboard/consignment?supplier_id=${supplier.id}`
+                          : `/dashboard/consignment?supplier_account_id=${supplier.id}`
+                      }
                       className="rounded-lg px-2 py-1 text-[10px] font-bold text-primary transition-colors hover:bg-primary/5"
                     >
                       {t("suppliers.viewTransactions")}

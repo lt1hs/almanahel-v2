@@ -5,7 +5,7 @@ import { AlertCircle, Info, PackagePlus } from "lucide-react";
 import { Input } from "@/components/ui/Input";
 import { Button } from "@/components/ui/Button";
 import { FilterSelect } from "@/components/ui/FilterSelect";
-import { SupplierSelect } from "@/components/inventory/SupplierSelect";
+import { SupplierSelect, type SupplierAccountSelection } from "@/components/inventory/SupplierSelect";
 import { useTranslation } from "@/hooks/useTranslation";
 import { useNotify } from "@/hooks/useNotify";
 import { cn } from "@/lib/utils";
@@ -61,7 +61,7 @@ export function AddStockForm({
     book: AddStockBook;
     branches: BranchOption[];
     defaultBranchId?: number | "overview" | null;
-    initialSupplier?: { id: number; name: string } | null;
+    initialSupplier?: SupplierAccountSelection | null;
     onCancel: () => void;
     onSuccess: () => void;
 }) {
@@ -70,7 +70,7 @@ export function AddStockForm({
     const [type, setType] = useState<"owned" | "consignment">(
         book.type === "consignment" ? "consignment" : "owned"
     );
-    const [supplier, setSupplier] = useState<{ id: number; name: string } | null>(initialSupplier ?? null);
+    const [supplier, setSupplier] = useState<SupplierAccountSelection | null>(initialSupplier ?? null);
     const [branchId, setBranchId] = useState<string>("");
     const [quantity, setQuantity] = useState("");
     const [costPrice, setCostPrice] = useState("");
@@ -147,7 +147,7 @@ export function AddStockForm({
             notify.error("inventory.addStockNeedPrice");
             return;
         }
-        if (type === "consignment" && !supplier?.id) {
+        if (type === "consignment" && !supplier?.accountId) {
             notify.error("inventory.addStockNeedSupplier");
             return;
         }
@@ -158,7 +158,7 @@ export function AddStockForm({
                 branchId: Number(selectedBranch.id),
                 quantity: qty,
                 type,
-                supplierId: supplier?.id ?? null,
+                selection: supplier,
                 currency,
                 costPrice: cost,
                 sellingPrice: selling || cost,
@@ -235,8 +235,9 @@ export function AddStockForm({
                         {type === "consignment" ? "" : ` — ${t("inventory.addStockSupplierOptional")}`}
                     </p>
                     <SupplierSelect
-                        selectedId={supplier?.id}
-                        onSelect={(row) => setSupplier({ id: Number(row.id), name: row.name })}
+                        branchId={branchId ? Number(branchId) : null}
+                        selectedAccountId={supplier?.accountId}
+                        onSelect={setSupplier}
                     />
                 </div>
 

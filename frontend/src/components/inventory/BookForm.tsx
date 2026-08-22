@@ -35,6 +35,12 @@ interface BookFormProps {
     stockFieldLabels?: Partial<Record<BranchStockKey, string>>;
     /** Which sell/cost prices to show. */
     priceScope?: "all" | "qom" | "mashhad" | "iraq";
+    /** Existing stock changes must go through intake/transfer workflows. */
+    readOnlyStock?: boolean;
+    /** Historical lot cost is immutable; edit displays its current weighted value. */
+    readOnlyCost?: boolean;
+    /** Ownership belongs to immutable stock lots after intake. */
+    readOnlyOwnership?: boolean;
 }
 
 const fieldClass = "h-12 bg-white/40 border-white/60 focus:bg-white rounded-[10px] text-sm";
@@ -47,12 +53,20 @@ export function BookForm({
     visibleStockKeys,
     stockFieldLabels,
     priceScope = "all",
+    readOnlyStock = false,
+    readOnlyCost = false,
+    readOnlyOwnership = false,
 }: BookFormProps) {
     const { t, formatNumber } = useTranslation();
     const notify = useNotify();
     const [isScannerOpen, setIsScannerOpen] = React.useState(false);
     const [isUploadingCover, setIsUploadingCover] = React.useState(false);
     const [categories, setCategories] = useState<string[]>([...BOOK_CATEGORIES]);
+    const dataRef = React.useRef(data);
+
+    useEffect(() => {
+        dataRef.current = data;
+    }, [data]);
 
     useEffect(() => {
         let cancelled = false;
@@ -107,7 +121,9 @@ export function BookForm({
     }, [branchStock, visibleBranchKeys]);
 
     const handleChange = (field: string, value: any) => {
-        onChange({ ...data, [field]: value });
+        const next = { ...dataRef.current, [field]: value };
+        dataRef.current = next;
+        onChange(next);
     };
 
     const handlePriceChange = (field: string, raw: string) => {
@@ -115,11 +131,14 @@ export function BookForm({
     };
 
     const handleBranchStockChange = (key: BranchStockKey, raw: string) => {
+        if (readOnlyStock) return;
         const digits = parsePriceDigits(raw);
-        onChange({
-            ...data,
+        const next = {
+            ...dataRef.current,
             branchStock: { ...branchStock, [key]: digits },
-        });
+        };
+        dataRef.current = next;
+        onChange(next);
     };
 
     const handleCoverFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -127,32 +146,40 @@ export function BookForm({
         if (!file) return;
 
         const preview = URL.createObjectURL(file);
-        onChange({ ...data, coverImagePreview: preview });
+        handleChange("coverImagePreview", preview);
         setIsUploadingCover(true);
 
         try {
             const formData = new FormData();
             formData.append("image", file);
             const res = await apiUpload("/books/upload-cover", formData);
-            onChange({
-                ...data,
+            const next = {
+                ...dataRef.current,
                 coverImage: res.path,
-                coverImagePreview: res.url || resolveBookCoverUrl(res.path) || preview,
-            });
+                coverImagePreview: resolveBookCoverUrl(res.path) || preview,
+            };
+            dataRef.current = next;
+            onChange(next);
         } catch {
             notify.error("messages.errorOccurred");
-            onChange({
-                ...data,
-                coverImagePreview: data.coverImage ? resolveBookCoverUrl(data.coverImage) : "",
-            });
+            const current = dataRef.current;
+            const next = {
+                ...current,
+                coverImagePreview: current.coverImage ? resolveBookCoverUrl(current.coverImage) : "",
+            };
+            dataRef.current = next;
+            onChange(next);
         } finally {
+            URL.revokeObjectURL(preview);
             setIsUploadingCover(false);
             e.target.value = "";
         }
     };
 
     const clearCover = () => {
-        onChange({ ...data, coverImage: "", coverImagePreview: "" });
+        const next = { ...dataRef.current, coverImage: "", coverImagePreview: "" };
+        dataRef.current = next;
+        onChange(next);
     };
 
     const branchLabel = (key: BranchStockKey) =>
@@ -364,10 +391,12 @@ export function BookForm({
                         <div className="flex bg-ink/5 p-1 rounded-[10px] border border-ink/5 overflow-hidden w-full md:w-auto">
                             <button
                                 type="button"
+                                disabled={readOnlyOwnership}
                                 onClick={() => handleChange("type", "consignment")}
                                 className={cn(
                                     "flex-1 md:flex-none px-8 py-2.5 rounded-[5px] text-[11px] font-black font-vazirmatn transition-all flex items-center justify-center gap-2",
-                                    data.type === "consignment" ? "bg-white text-primary shadow-sm ring-1 ring-ink/5" : "text-ink/40 hover:text-ink/60"
+                                    data.type === "consignment" ? "bg-white text-primary shadow-sm ring-1 ring-ink/5" : "text-ink/40 hover:text-ink/60",
+                                    readOnlyOwnership && "cursor-default opacity-70"
                                 )}
                             >
                                 <Info className="w-3.5 h-3.5" />
@@ -375,10 +404,12 @@ export function BookForm({
                             </button>
                             <button
                                 type="button"
+                                disabled={readOnlyOwnership}
                                 onClick={() => handleChange("type", "owned")}
                                 className={cn(
                                     "flex-1 md:flex-none px-8 py-2.5 rounded-[5px] text-[11px] font-black font-vazirmatn transition-all flex items-center justify-center gap-2",
-                                    data.type === "owned" ? "bg-white text-primary shadow-sm ring-1 ring-ink/5" : "text-ink/40 hover:text-ink/60"
+                                    data.type === "owned" ? "bg-white text-primary shadow-sm ring-1 ring-ink/5" : "text-ink/40 hover:text-ink/60",
+                                    readOnlyOwnership && "cursor-default opacity-70"
                                 )}
                             >
                                 <AlertCircle className="w-3.5 h-3.5" />
@@ -397,7 +428,8 @@ export function BookForm({
                                 placeholder={t("inventory.form.costPriceHint")}
                                 value={formatPriceDisplay(data.costPriceToman)}
                                 onChange={(e) => handlePriceChange("costPriceToman", e.target.value)}
-                                className={cn(priceClass, "text-lg font-black text-ink")}
+                                readOnly={readOnlyCost}
+                                className={cn(priceClass, "text-lg font-black text-ink", readOnlyCost && "bg-ink/[0.03] cursor-default")}
                             />
                         </div>
                         )}
@@ -410,7 +442,8 @@ export function BookForm({
                                 placeholder={t("inventory.form.costPriceHint")}
                                 value={formatPriceDisplay(data.costPriceDinar)}
                                 onChange={(e) => handlePriceChange("costPriceDinar", e.target.value)}
-                                className={cn(priceClass, "text-lg font-black text-ink")}
+                                readOnly={readOnlyCost}
+                                className={cn(priceClass, "text-lg font-black text-ink", readOnlyCost && "bg-ink/[0.03] cursor-default")}
                             />
                         </div>
                         )}
@@ -493,7 +526,8 @@ export function BookForm({
                                 placeholder="0"
                                 value={branchStock[key] || ""}
                                 onChange={(e) => handleBranchStockChange(key, e.target.value)}
-                                className={cn(fieldClass, "text-lg font-black text-ink tabular-nums")}
+                                readOnly={readOnlyStock}
+                                className={cn(fieldClass, "text-lg font-black text-ink tabular-nums", readOnlyStock && "bg-ink/[0.03] cursor-default")}
                             />
                         </div>
                     ))}

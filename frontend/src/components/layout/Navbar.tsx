@@ -88,10 +88,11 @@ const PAGE_TITLE_KEYS: Record<string, string> = {
     "/dashboard/reports": "finance.title",
 };
 
-function resolvePageTitle(pathname: string): string | null {
-    if (PAGE_TITLE_KEYS[pathname]) return PAGE_TITLE_KEYS[pathname];
+function resolvePageTitle(pathname: string | null): string | null {
+    const path = pathname || "";
+    if (PAGE_TITLE_KEYS[path]) return PAGE_TITLE_KEYS[path];
     const match = Object.keys(PAGE_TITLE_KEYS)
-        .filter((p) => p !== "/dashboard" && pathname.startsWith(p + "/"))
+        .filter((p) => p !== "/dashboard" && path.startsWith(p + "/"))
         .sort((a, b) => b.length - a.length)[0];
     return match ? PAGE_TITLE_KEYS[match] : PAGE_TITLE_KEYS["/dashboard"];
 }

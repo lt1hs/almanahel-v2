@@ -8,7 +8,8 @@ class CustomerPayment extends Model
 {
     protected $fillable = [
         'customer_id', 'invoice_id', 'branch_id', 'user_id',
-        'amount', 'currency', 'method', 'notes', 'paid_at',
+        'amount', 'currency', 'method', 'notes', 'paid_at', 'financial_account_id',
+        'idempotency_key', 'payload_hash',
     ];
 
     protected $casts = ['paid_at' => 'datetime', 'amount' => 'decimal:2'];

@@ -25,6 +25,7 @@ const ScannerModal = dynamic(
 
 const LOW_STOCK = 5;
 const EMPTY_PAYMENT: PaymentDetails = {
+    customer_id: null,
     customer_name: "",
     customer_phone: "",
     notes: "",
@@ -321,7 +322,9 @@ export default function SalesPage() {
         }
 
         try {
-            const book = await apiRequest(`/books/by-barcode/${encodeURIComponent(trimmed)}`);
+            const book = await apiRequest(
+                `/books/by-barcode/${encodeURIComponent(trimmed)}${branchId ? `?branch_id=${branchId}` : ""}`
+            );
             const branchInv = branchId
                 ? book.inventories?.find((inv: any) => inv.branch_id === branchId)
                 : book.inventories?.[0];
@@ -620,6 +623,7 @@ export default function SalesPage() {
                             currency={preferredCurrency}
                             paymentDetails={paymentDetails}
                             onPaymentDetailsChange={setPaymentDetails}
+                            branchId={branchId}
                         />
                     </CardContent>
                 </Card>

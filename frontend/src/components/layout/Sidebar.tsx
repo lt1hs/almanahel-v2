@@ -79,7 +79,7 @@ const NAV_GROUPS: NavGroup[] = [
     {
         titleKey: "nav.groups.system",
         items: [
-            { titleKey: "nav.suppliers", href: "/dashboard/suppliers", icon: Users, roles: ["super_admin", "admin"], color: "text-amber-600" },
+            { titleKey: "nav.suppliers", href: "/dashboard/suppliers", icon: Users, roles: ["super_admin", "admin", "branch_manager"], color: "text-amber-600" },
             { titleKey: "nav.admin", href: "/dashboard/admin", icon: Settings, roles: ["super_admin", "admin"], color: "text-slate-500" },
             { titleKey: "nav.activityLog", href: "/dashboard/admin/activity", icon: Activity, roles: ["super_admin", "admin"], color: "text-teal-600" },
         ],
@@ -87,7 +87,7 @@ const NAV_GROUPS: NavGroup[] = [
 ];
 
 function useIsActive(href: string) {
-    const pathname = usePathname();
+    const pathname = usePathname() ?? "";
     if (href === "/dashboard") return pathname === "/dashboard";
     return pathname === href || pathname.startsWith(href + "/");
 }

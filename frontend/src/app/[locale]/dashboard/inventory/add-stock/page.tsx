@@ -6,6 +6,7 @@ import { ArrowRight, PackagePlus } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { RequireRole } from "@/components/auth/RequireRole";
 import { AddStockForm, type AddStockBook } from "@/components/inventory/AddStockForm";
+import type { SupplierAccountSelection } from "@/lib/supplierAccountSelection";
 import { useSearchParams } from "next/navigation";
 import { useRouter } from "@/i18n/routing";
 import { useTranslation } from "@/hooks/useTranslation";
@@ -53,7 +54,7 @@ function AddStockContent() {
 
     const [book, setBook] = useState<AddStockBook | null>(null);
     const [branches, setBranches] = useState<any[]>([]);
-    const [supplier, setSupplier] = useState<{ id: number; name: string } | null>(null);
+    const [supplier, setSupplier] = useState<SupplierAccountSelection | null>(null);
     const [isLoading, setIsLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
 
@@ -72,10 +73,7 @@ function AddStockContent() {
             const mapped = mapBook(data);
             setBook(mapped);
             setBranches(Array.isArray(branchList) ? branchList : []);
-            const firstInv = Array.isArray(data.inventories) ? data.inventories[0] : null;
-            if (firstInv?.supplier?.id) {
-                setSupplier({ id: Number(firstInv.supplier.id), name: firstInv.supplier.name });
-            }
+            setSupplier(null);
         } catch (err) {
             setError(err instanceof Error ? err.message : "error");
             setBook(null);

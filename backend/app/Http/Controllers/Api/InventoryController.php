@@ -56,7 +56,12 @@ class InventoryController extends Controller
             ->values();
 
         $booksQuery = Book::query()
-            ->select(['id', 'title', 'author', 'isbn', 'category', 'iraq_only', 'low_stock_threshold'])
+            ->select([
+                'id', 'title', 'author', 'isbn', 'publisher', 'size', 'cover',
+                'publication_year', 'cover_image', 'weight', 'weight_with_packaging',
+                'volume_count', 'category', 'description', 'language', 'iraq_only',
+                'low_stock_threshold',
+            ])
             ->with([
                 'inventories' => function ($q) {
                     $q->select([
@@ -94,7 +99,17 @@ class InventoryController extends Controller
                 'title'               => $book->title,
                 'author'              => $book->author,
                 'isbn'                => $book->isbn,
+                'publisher'           => $book->publisher,
+                'size'                => $book->size,
+                'cover'               => $book->cover,
+                'publication_year'    => $book->publication_year,
+                'cover_image'         => $book->cover_image,
+                'weight'              => $book->weight,
+                'weight_with_packaging' => $book->weight_with_packaging,
+                'volume_count'        => $book->volume_count,
                 'category'            => $book->category,
+                'description'         => $book->description,
+                'language'            => $book->language,
                 'iraq_only'           => $book->iraq_only,
                 'low_stock_threshold' => $threshold,
                 'total_qty'           => $byBranch->sum('quantity'),

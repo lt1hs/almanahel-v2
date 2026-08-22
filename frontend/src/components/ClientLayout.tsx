@@ -30,7 +30,7 @@ export default function ClientLayout({
 
   return (
     <LanguageProvider initialLocale={initialLocale}>
-      <LocaleSync>
+      <LocaleSync locale={initialLocale}>
         <LanguageHandler>{children}</LanguageHandler>
       </LocaleSync>
     </LanguageProvider>

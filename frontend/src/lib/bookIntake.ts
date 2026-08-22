@@ -9,8 +9,12 @@ import {
     sellingDinarForBranch,
     sellingTomanForBranch,
 } from "@/lib/bookFormUtils";
+import {
+    intakeSupplierPayload,
+    type SupplierAccountSelection,
+} from "@/lib/supplierAccountSelection";
 
-export type { BranchStockKey };
+export type { BranchStockKey, SupplierAccountSelection };
 
 function parsePrice(value: string | undefined): number {
     return parseFloat(parsePriceDigits(value)) || 0;
@@ -32,9 +36,7 @@ async function upsertBranchPricing(
     bookId: number,
     branchId: number,
     book: BookPriceFields,
-    key: BranchStockKey,
-    supplierId: number | null,
-    quantity?: number
+    key: BranchStockKey
 ) {
     const isIraq = key === "najaf";
     const selling = isIraq ? sellingDinarForBranch(book) : sellingTomanForBranch(key, book);
@@ -46,12 +48,8 @@ async function upsertBranchPricing(
             branch_id: branchId,
             book_id: bookId,
             type,
-            supplier_id: type === "consignment" ? supplierId : null,
             price_toman: isIraq ? null : selling > 0 ? selling : null,
             price_dinar: isIraq ? (selling > 0 ? selling : null) : null,
-            cost_price_toman: isIraq ? null : costToman(book, selling),
-            cost_price_dinar: isIraq ? costDinar(book, selling) : null,
-            ...(quantity != null ? { quantity } : {}),
         }),
     });
 }
@@ -63,7 +61,7 @@ async function upsertBranchPricing(
 export async function syncBookBranchInventories(
     book: BookPriceFields,
     branches: BranchLike[],
-    supplierId: number | null,
+    selection: SupplierAccountSelection | null,
     bookId: number,
     options?: {
         existingInventories?: Array<{ id: number; branch_id: number }>;
@@ -82,20 +80,19 @@ export async function syncBookBranchInventories(
         const isIraq = key === "najaf";
         const selling = isIraq ? sellingDinarForBranch(book) : sellingTomanForBranch(key, book);
         const existingRow = existing.find((inv) => Number(inv.branch_id) === branchId);
+        const supplierFields = intakeSupplierPayload(selection, branchId);
 
-        // —— Edit: update existing inventory row ——
         if (existingRow?.id) {
-            const payload: Record<string, unknown> = {
-                quantity: qty,
-                type: book.type === "consignment" ? "consignment" : "owned",
-                supplier_id: book.type === "consignment" ? supplierId : null,
-                cost_price_toman: isIraq ? null : costToman(book, selling),
-                cost_price_dinar: isIraq ? costDinar(book, selling) : null,
-            };
+            const payload: Record<string, unknown> = {};
+            if (syncQuantities) {
+                payload.quantity = qty;
+                payload.adjustment_reason = "ویرایش تعداد موجودی";
+            }
             if (selling > 0) {
                 payload.price_toman = isIraq ? null : selling;
                 payload.price_dinar = isIraq ? selling : null;
             }
+            if (Object.keys(payload).length === 0) continue;
             await apiRequest(`/inventory/${existingRow.id}`, {
                 method: "PUT",
                 body: JSON.stringify(payload),
@@ -103,7 +100,6 @@ export async function syncBookBranchInventories(
             continue;
         }
 
-        // —— Create/intake: add stock when qty > 0 ——
         if (qty > 0 && !syncQuantities) {
             const cost = isIraq
                 ? costDinar(book, selling) || 0
@@ -112,11 +108,14 @@ export async function syncBookBranchInventories(
             const priceToman = isIraq ? null : selling > 0 ? selling : null;
             const priceDinar = isIraq ? (selling > 0 ? selling : null) : null;
 
-            if (book.type === "consignment" && supplierId) {
+            if (book.type === "consignment") {
+                if (!selection) {
+                    throw new Error("supplier_required");
+                }
                 await apiRequest("/consignments", {
                     method: "POST",
                     body: JSON.stringify({
-                        supplier_id: supplierId,
+                        ...supplierFields,
                         branch_id: branchId,
                         currency,
                         received_at: book.settlementDate || new Date().toISOString().split("T")[0],
@@ -145,7 +144,7 @@ export async function syncBookBranchInventories(
                         selling_price: selling || cost,
                         price_toman: priceToman,
                         price_dinar: priceDinar,
-                        supplier_id: supplierId,
+                        ...supplierFields,
                         notes: book.notes || null,
                         log_date: book.settlementDate || null,
                     }),
@@ -154,18 +153,10 @@ export async function syncBookBranchInventories(
             continue;
         }
 
-        // —— No row yet: still store sell prices (and qty on edit) ——
         if (selling > 0) {
-            await upsertBranchPricing(
-                bookId,
-                branchId,
-                book,
-                key,
-                supplierId,
-                syncQuantities ? qty : undefined
-            );
+            await upsertBranchPricing(bookId, branchId, book, key);
         } else if (syncQuantities && qty > 0) {
-            await upsertBranchPricing(bookId, branchId, book, key, supplierId, qty);
+            await upsertBranchPricing(bookId, branchId, book, key);
         }
     }
 }
@@ -176,7 +167,7 @@ export async function addStockIntake(params: {
     branchId: number;
     quantity: number;
     type: "owned" | "consignment";
-    supplierId: number | null;
+    selection: SupplierAccountSelection | null;
     currency: "toman" | "dinar";
     costPrice: number;
     sellingPrice: number;
@@ -188,15 +179,16 @@ export async function addStockIntake(params: {
     const date = params.receivedAt || new Date().toISOString().split("T")[0];
     const priceToman = params.currency === "toman" ? selling : null;
     const priceDinar = params.currency === "dinar" ? selling : null;
+    const supplierFields = intakeSupplierPayload(params.selection, params.branchId);
 
     if (params.type === "consignment") {
-        if (!params.supplierId) {
+        if (!params.selection) {
             throw new Error("supplier_required");
         }
         return apiRequest("/consignments", {
             method: "POST",
             body: JSON.stringify({
-                supplier_id: params.supplierId,
+                ...supplierFields,
                 branch_id: params.branchId,
                 currency: params.currency,
                 received_at: date,
@@ -226,7 +218,7 @@ export async function addStockIntake(params: {
             selling_price: selling || cost,
             price_toman: priceToman,
             price_dinar: priceDinar,
-            supplier_id: params.supplierId,
+            ...supplierFields,
             notes: params.notes || null,
             log_date: date,
         }),

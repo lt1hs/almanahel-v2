@@ -97,6 +97,9 @@
     "actualPrice": "قیمت واقعی",
     "checkInfo": "اطلاعات چک",
     "creditInfo": "اطلاعات نسیه",
+    "searchCustomer": "جستجوی مشتری (نام یا تلفن)",
+    "createCustomer": "ایجاد مشتری جدید و انتخاب",
+    "selectedCustomer": "مشتری انتخاب‌شده",
     "customerName": "نام مشتری",
     "customerPhone": "تلفن مشتری",
     "checkNumber": "شماره چک",
@@ -111,7 +114,7 @@
       "checkNumberRequired": "شماره چک الزامی است",
       "checkDueRequired": "تاریخ سررسید چک الزامی است",
       "payerNameRequired": "نام صادرکننده چک الزامی است",
-      "creditCustomerRequired": "نام مشتری برای نسیه الزامی است",
+      "creditCustomerRequired": "برای نسیه باید مشتری موجود را انتخاب کنید یا مشتری جدید بسازید",
       "creditDueRequired": "تاریخ سررسید نسیه الزامی است"
     }
   },
@@ -206,7 +209,12 @@
       "notesPlaceholder": "توضیحات...",
       "consignmentBooks": "کتب امانی",
       "maxQtyPrice": "حداکثر تعداد / قیمت",
-      "noConsignmentBooks": "کتاب امانی یافت نشد"
+      "noConsignmentBooks": "کتاب امانی یافت نشد",
+      "creditCustomer": "مشتری اعتبار",
+      "creditCustomerLinked": "مشتری فاکتور",
+      "searchCustomer": "جستجوی مشتری (نام یا تلفن)",
+      "creditCustomerRequired": "برای اعتبار فروشگاهی باید مشتری ثبت‌شده را انتخاب کنید",
+      "creditLiabilityNote": "اعتبار مشتری فعلاً بدهی/بستانکاری ثبت‌شده است و قابل مصرف در فروش نیست"
     }
   },
   "checks": {
@@ -289,12 +297,21 @@
     "noReceipts": "رسید امانی یافت نشد",
     "totalDebt": "کل بدهی",
     "remaining": "مانده",
+    "inventoryValue": "ارزش کتاب‌های دریافتی",
+    "payableGenerated": "بدهی ایجادشده از فروش و هدیه",
+    "payableSettled": "پرداخت‌شده به تأمین‌کننده",
+    "payableOutstanding": "مانده قابل تسویه",
+    "noPayableHint": "هنوز فروش یا هدیه‌ای ثبت نشده",
     "settledPercent": "٪ تسویه شده",
+    "inStock": "موجود نزد ما",
     "kpi": {
       "totalReceipts": "کل رسیدها",
-      "totalBalance": "مانده کل (تومان)"
+      "totalBalance": "مانده قابل تسویه",
+      "notDue": "بدون بدهی فعلی",
+      "needsSettlement": "نیازمند تسویه"
     },
     "status": {
+      "notDue": "هنوز بدهی ایجاد نشده",
       "unsettled": "تسویه نشده",
       "partial": "تسویه جزئی",
       "settled": "تسویه شده"

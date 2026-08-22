@@ -4,24 +4,33 @@ namespace Tests\Support;
 
 use App\Models\Book;
 use App\Models\Branch;
+use App\Models\BranchCatalogItem;
 use App\Models\ConsignmentReceipt;
 use App\Models\ConsignmentReceiptItem;
 use App\Models\Inventory;
 use App\Models\Supplier;
 use App\Models\User;
+use App\Services\Catalog\BranchCatalogService;
+use App\Support\Catalog\CatalogSource;
 use Laravel\Sanctum\Sanctum;
 
 trait CreatesDomainData
 {
-    protected function makeBranch(array $attrs = []): Branch
+    protected function makeBranch(array $attrs = [], bool $bootstrapTreasury = true): Branch
     {
-        return Branch::create(array_merge([
+        $branch = Branch::create(array_merge([
             'name' => 'Test Store',
             'city' => 'قم',
             'country' => 'ایران',
             'type' => 'store',
             'status' => 'active',
         ], $attrs));
+
+        if ($bootstrapTreasury) {
+            app(\App\Services\Treasury\FinancialAccountBootstrap::class)->run(true);
+        }
+
+        return $branch;
     }
 
     protected function makeUser(?Branch $branch = null, string $role = 'admin', array $attrs = []): User
@@ -60,8 +69,19 @@ trait CreatesDomainData
         ], $attrs));
     }
 
+    protected function makeCustomer(?Branch $branch = null, array $attrs = []): \App\Models\Customer
+    {
+        return \App\Models\Customer::create(array_merge([
+            'name' => 'مشتری آزمایشی',
+            'phone' => '09120000000',
+            'branch_id' => $branch?->id,
+        ], $attrs));
+    }
+
     protected function makeInventory(Branch $branch, Book $book, array $attrs = []): Inventory
     {
+        $this->ensureCatalog($branch, $book);
+
         $inventory = Inventory::create(array_merge([
             'branch_id' => $branch->id,
             'book_id' => $book->id,
@@ -125,5 +145,17 @@ trait CreatesDomainData
         $receipt->update(['total_value' => $qty * $cost]);
 
         return $receipt->fresh('items');
+    }
+
+    protected function ensureCatalog(
+        Branch $branch,
+        Book $book,
+        string $source = CatalogSource::LOCAL
+    ): BranchCatalogItem {
+        return app(BranchCatalogService::class)->ensure(
+            $branch->id,
+            $book->id,
+            $source
+        );
     }
 }

@@ -31,7 +31,7 @@ const MOBILE_ITEMS: {
 ];
 
 export function MobileNav() {
-    const pathname = usePathname();
+    const pathname = usePathname() ?? "";
     const { t } = useTranslation();
     const { user } = useAuth();
 

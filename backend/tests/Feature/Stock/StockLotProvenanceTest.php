@@ -3,6 +3,7 @@
 namespace Tests\Feature\Stock;
 
 use App\Models\ConsignmentReceiptItem;
+use App\Models\ConsignmentReceipt;
 use App\Models\StockLot;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\Support\CreatesDomainData;
@@ -82,6 +83,8 @@ class StockLotProvenanceTest extends TestCase
 
         $this->assertSame('shipped', $transfer['status']);
         $this->putJson('/api/transfers/' . $transfer['id'] . '/status', ['status' => 'received'])->assertOk();
+
+        $this->assertSame(1, ConsignmentReceipt::count(), 'A branch transfer must not create a new supplier receipt.');
 
         $destLot = StockLot::where('branch_id', $mashhad->id)->where('book_id', $book->id)->first();
         $this->assertNotNull($destLot);

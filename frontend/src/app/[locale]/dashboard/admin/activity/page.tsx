@@ -3,7 +3,8 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
     Activity, ArrowRight, Download, Filter, RefreshCw, Search, X, Calendar,
-    User as UserIcon, Building2, ShieldAlert,
+    User as UserIcon, Building2, ShieldAlert, Database, Users, AlertTriangle,
+    CalendarDays, Fingerprint, Network,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
@@ -19,6 +20,12 @@ interface ActivityRow {
     id: number;
     module: string;
     action: string;
+    severity?: "info" | "warning" | "critical";
+    event_uuid?: string | null;
+    request_id?: string | null;
+    http_method?: string | null;
+    route?: string | null;
+    status_code?: number | null;
     description: string;
     subject_type?: string | null;
     subject_id?: number | null;
@@ -35,6 +42,7 @@ interface MetaPayload {
     actions: string[];
     known_modules: string[];
     known_actions: string[];
+    severities?: string[];
     users: { id: number; name: string; email: string }[];
     branches: { id: number; name: string; city?: string }[];
 }
@@ -44,6 +52,7 @@ type Filters = {
     date_to: string;
     module: string;
     action: string;
+    severity: string;
     user_id: string;
     branch_id: string;
     q: string;
@@ -54,10 +63,21 @@ const EMPTY_FILTERS: Filters = {
     date_to: "",
     module: "",
     action: "",
+    severity: "",
     user_id: "",
     branch_id: "",
     q: "",
 };
+
+interface SummaryPayload {
+    total: number;
+    today: number;
+    important: number;
+    unique_users: number;
+    modules: { module: string; total: number }[];
+    actions: { action: string; total: number }[];
+    latest_at?: string | null;
+}
 
 function buildQuery(filters: Filters, page?: number) {
     const params = new URLSearchParams();
@@ -94,6 +114,7 @@ export default function ActivityLogPage() {
     const [page, setPage] = useState(1);
     const [lastPage, setLastPage] = useState(1);
     const [total, setTotal] = useState(0);
+    const [summary, setSummary] = useState<SummaryPayload | null>(null);
     const [isLoading, setIsLoading] = useState(true);
     const [isExporting, setIsExporting] = useState(false);
     const [selected, setSelected] = useState<ActivityRow | null>(null);
@@ -116,15 +137,20 @@ export default function ActivityLogPage() {
     const loadLogs = useCallback(async (nextPage = 1, nextFilters = applied) => {
         setIsLoading(true);
         try {
-            const data = await apiRequest(`/activity-logs?${buildQuery(nextFilters, nextPage)}`);
+            const [data, summaryData] = await Promise.all([
+                apiRequest(`/activity-logs?${buildQuery(nextFilters, nextPage)}`),
+                apiRequest(`/activity-logs/summary?${buildQuery(nextFilters)}`),
+            ]);
             setRows(Array.isArray(data?.data) ? data.data : []);
             setPage(Number(data?.current_page || 1));
             setLastPage(Number(data?.last_page || 1));
             setTotal(Number(data?.total || 0));
+            setSummary(summaryData as SummaryPayload);
         } catch (error) {
             console.error(error);
             notify.error("activityLog.loadError");
             setRows([]);
+            setSummary(null);
         } finally {
             setIsLoading(false);
         }
@@ -252,6 +278,13 @@ export default function ActivityLogPage() {
                 </div>
             </div>
 
+            <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+                <StatCard icon={Database} label={t("activityLog.stats.total")} value={summary?.total ?? total} tone="primary" />
+                <StatCard icon={CalendarDays} label={t("activityLog.stats.today")} value={summary?.today ?? 0} tone="blue" />
+                <StatCard icon={Users} label={t("activityLog.stats.users")} value={summary?.unique_users ?? 0} tone="violet" />
+                <StatCard icon={AlertTriangle} label={t("activityLog.stats.important")} value={summary?.important ?? 0} tone={(summary?.important ?? 0) > 0 ? "rose" : "green"} />
+            </div>
+
             <Card className="border border-white/70 bg-white/70 rounded-2xl">
                 <CardHeader className="px-4 py-3 border-b border-ink/5 flex flex-row items-center gap-2">
                     <Filter className="w-3.5 h-3.5 text-ink/35" />
@@ -301,6 +334,18 @@ export default function ActivityLogPage() {
                                 ))}
                             </select>
                         </Field>
+                        <Field label={t("activityLog.severity")}>
+                            <select
+                                value={filters.severity}
+                                onChange={(e) => setFilters((f) => ({ ...f, severity: e.target.value }))}
+                                className="w-full h-9 rounded-xl border border-ink/10 bg-white px-3 text-[12px] font-bold text-ink outline-none focus:border-primary/40 focus:ring-2 focus:ring-primary/15"
+                            >
+                                <option value="">{t("activityLog.allSeverities")}</option>
+                                {(meta?.severities || ["info", "warning", "critical"]).map((severity) => (
+                                    <option key={severity} value={severity}>{t(`activityLog.severities.${severity}`)}</option>
+                                ))}
+                            </select>
+                        </Field>
                         <Field label={t("activityLog.user")}>
                             <select
                                 value={filters.user_id}
@@ -325,7 +370,7 @@ export default function ActivityLogPage() {
                                 ))}
                             </select>
                         </Field>
-                        <Field label={t("activityLog.search")} className="sm:col-span-2">
+                        <Field label={t("activityLog.search")} className="lg:col-span-2">
                             <div className="relative">
                                 <Search className="absolute start-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-ink/30" />
                                 <input
@@ -349,6 +394,15 @@ export default function ActivityLogPage() {
                     </div>
                 </CardContent>
             </Card>
+
+            {summary && summary.modules.length > 0 && (
+                <Card className="border border-white/70 bg-white/70 rounded-2xl">
+                    <CardContent className="grid gap-5 p-4 lg:grid-cols-2">
+                        <Distribution title={t("activityLog.moduleDistribution")} items={summary.modules.map((item) => ({ label: moduleLabel(item.module), value: item.total }))} total={summary.total} />
+                        <Distribution title={t("activityLog.actionDistribution")} items={summary.actions.map((item) => ({ label: actionLabel(item.action), value: item.total }))} total={summary.total} />
+                    </CardContent>
+                </Card>
+            )}
 
             <div className="grid grid-cols-1 xl:grid-cols-5 gap-4">
                 <Card className="xl:col-span-3 border border-white/70 bg-white/70 rounded-2xl overflow-hidden">
@@ -411,7 +465,7 @@ export default function ActivityLogPage() {
                                                     </Badge>
                                                 </td>
                                                 <td className="px-3 py-2.5">
-                                                    <Badge className="text-[9px] font-bold bg-primary/10 text-primary border-0">
+                                                    <Badge className={cn("text-[9px] font-bold border-0", severityClass(row.severity))}>
                                                         {actionLabel(row.action)}
                                                     </Badge>
                                                 </td>
@@ -490,6 +544,13 @@ export default function ActivityLogPage() {
                                     }
                                 />
                                 <DetailRow label={t("activityLog.ip")} value={selected.ip_address || "—"} />
+                                <div className="grid grid-cols-2 gap-2">
+                                    <DetailRow icon={Network} label={t("activityLog.request")} value={`${selected.http_method || "—"} · ${selected.status_code || "—"}`} />
+                                    <DetailRow label={t("activityLog.severity")} value={t(`activityLog.severities.${selected.severity || "info"}`)} />
+                                </div>
+                                <DetailRow label={t("activityLog.route")} value={selected.route || "—"} />
+                                <DetailRow icon={Fingerprint} label={t("activityLog.eventId")} value={selected.event_uuid || "—"} />
+                                <DetailRow label={t("activityLog.requestId")} value={selected.request_id || "—"} />
                                 {selected.user_agent && (
                                     <div>
                                         <p className="text-[9px] font-black text-ink/30 mb-1">{t("activityLog.userAgent")}</p>
@@ -499,9 +560,7 @@ export default function ActivityLogPage() {
                                 {selected.properties && Object.keys(selected.properties).length > 0 && (
                                     <div>
                                         <p className="text-[9px] font-black text-ink/30 mb-1.5">{t("activityLog.properties")}</p>
-                                        <pre className="text-[10px] font-mono bg-parchment/40 border border-ink/5 rounded-xl p-3 overflow-auto max-h-56 text-ink/70 whitespace-pre-wrap break-all">
-                                            {JSON.stringify(selected.properties, null, 2)}
-                                        </pre>
+                                        <PropertyPanel value={selected.properties} t={t} />
                                     </div>
                                 )}
                             </div>
@@ -511,6 +570,33 @@ export default function ActivityLogPage() {
             </div>
         </div>
     );
+}
+
+function severityClass(severity?: string) {
+    if (severity === "critical") return "bg-rose-100 text-rose-700";
+    if (severity === "warning") return "bg-amber-100 text-amber-700";
+    return "bg-primary/10 text-primary";
+}
+
+function StatCard({ icon: Icon, label, value, tone }: { icon: React.ComponentType<{ className?: string }>; label: string; value: number; tone: "primary" | "blue" | "violet" | "rose" | "green" }) {
+    const tones = { primary: "bg-primary/5 text-primary", blue: "bg-sky-50 text-sky-700", violet: "bg-violet-50 text-violet-700", rose: "bg-rose-50 text-rose-700", green: "bg-emerald-50 text-emerald-700" };
+    return <Card className="rounded-2xl border border-white/70 bg-white/75"><CardContent className="flex items-center gap-3 p-4"><span className={cn("flex h-10 w-10 items-center justify-center rounded-xl", tones[tone])}><Icon className="h-4 w-4" /></span><div><p className="text-[9px] font-black text-ink/35">{label}</p><p className="mt-0.5 text-lg font-black tabular-nums text-ink">{value.toLocaleString("fa-IR")}</p></div></CardContent></Card>;
+}
+
+function Distribution({ title, items, total }: { title: string; items: { label: string; value: number }[]; total: number }) {
+    return <div><p className="mb-3 text-[11px] font-black text-ink">{title}</p><div className="space-y-2">{items.slice(0, 6).map((item) => { const percent = total > 0 ? Math.max(2, (item.value / total) * 100) : 0; return <div key={item.label}><div className="mb-1 flex justify-between text-[9px] font-bold text-ink/45"><span>{item.label}</span><span>{item.value.toLocaleString("fa-IR")}</span></div><div className="h-1.5 overflow-hidden rounded-full bg-ink/5"><div className="h-full rounded-full bg-primary/70" style={{ width: `${percent}%` }} /></div></div>; })}</div></div>;
+}
+
+function PropertyPanel({ value, t }: { value: Record<string, unknown>; t: (key: string) => string }) {
+    const label = (key: string) => { const path = `activityLog.propertyKeys.${key}`; const translated = t(path); return translated === path ? key.replaceAll("_", " ") : translated; };
+    const render = (item: unknown): string => {
+        if (item === null || item === undefined || item === "") return "—";
+        if (typeof item === "boolean") return item ? t("common.yes") : t("common.no");
+        if (Array.isArray(item)) return item.map(render).join("، ");
+        if (typeof item === "object") return JSON.stringify(item, null, 2);
+        return String(item);
+    };
+    return <div className="max-h-72 space-y-1 overflow-auto rounded-xl border border-ink/5 bg-parchment/25 p-2">{Object.entries(value).map(([key, item]) => <div key={key} className="grid grid-cols-[110px_1fr] gap-2 rounded-lg bg-white/65 px-2.5 py-2 text-[10px]"><span className="font-black text-ink/35">{label(key)}</span><pre className="whitespace-pre-wrap break-all font-vazirmatn font-bold text-ink/70">{render(item)}</pre></div>)}</div>;
 }
 
 function Field({

@@ -46,11 +46,12 @@ class SalesCogs
             ->where(function ($q) {
                 $q->whereNull('invoices.type')->orWhere('invoices.type', 'sale');
             })
-            ->whereBetween(DB::raw('DATE(invoices.created_at)'), [$dateFrom, $dateTo])
+            ->whereBetween(DB::raw('DATE(COALESCE(invoices.sold_at, invoices.created_at))'), [$dateFrom, $dateTo])
             ->select(
                 'sale_lot_allocations.quantity',
                 'sale_lot_allocations.quantity_returned',
                 'sale_lot_allocations.unit_cost',
+                'sale_lot_allocations.publisher_payable',
                 'stock_lots.ownership_type'
             )
             ->get();
@@ -60,7 +61,13 @@ class SalesCogs
             $qty = max(0, (int) $row->quantity - (int) $row->quantity_returned);
             $line = Money::mul($row->unit_cost, $qty);
             if (($row->ownership_type ?? '') === 'consignment') {
-                $line = ConsignmentFinance::publisherShare($line);
+                if ($row->publisher_payable === null) {
+                    throw new \App\Exceptions\DomainException('بدهی امانی مُهر نشده است');
+                }
+                $soldQty = (int) $row->quantity;
+                $line = $soldQty === $qty
+                    ? Money::of($row->publisher_payable)
+                    : Money::mul(bcdiv(Money::of($row->publisher_payable), (string) $soldQty, 2), $qty);
             }
             $cogs = Money::add($cogs, $line);
         }
@@ -100,9 +107,6 @@ class SalesCogs
         $cogs = '0.00';
         foreach ($rows as $row) {
             $line = Money::mul($row->unit_cost, (int) $row->quantity);
-            if (($row->inventory_type ?? '') === 'consignment') {
-                $line = ConsignmentFinance::publisherShare($line);
-            }
             $cogs = Money::add($cogs, $line);
         }
 

@@ -5,13 +5,19 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\Supplier;
 use App\Support\ActivityLogger;
+use App\Support\Authorization\BranchAccess;
 use Illuminate\Http\Request;
 
 class SupplierController extends Controller
 {
     public function index(Request $request)
     {
+        BranchAccess::assertCanViewCanonicalSuppliers($request->user());
         $query = Supplier::withCount(['consignmentReceipts', 'inventories', 'settlements'])
+            ->where(function ($builder) {
+                $builder->whereNull('identity_origin')
+                    ->orWhere('identity_origin', '!=', 'branch_local');
+            })
             ->orderBy('name');
 
         if ($request->filled('status')) {
@@ -37,6 +43,9 @@ class SupplierController extends Controller
 
     public function store(Request $request)
     {
+        if (!BranchAccess::isAdmin($request->user())) {
+            BranchAccess::deny('ایجاد تأمین‌کننده فقط برای مدیران مجاز است');
+        }
         $validated = $request->validate([
             'name'    => 'required|string|max:255',
             'phone'   => 'nullable|string|max:30',
@@ -49,6 +58,7 @@ class SupplierController extends Controller
 
         $validated['status'] = $validated['status'] ?? 'active';
         $validated['type'] = $validated['type'] ?? 'publisher';
+        $validated['identity_origin'] = 'admin';
 
         $supplier = Supplier::create($validated);
 
@@ -63,13 +73,17 @@ class SupplierController extends Controller
         return response()->json($supplier->loadCount(['consignmentReceipts', 'inventories', 'settlements']), 201);
     }
 
-    public function show(Supplier $supplier)
+    public function show(Request $request, Supplier $supplier)
     {
+        BranchAccess::assertCanViewCanonicalSuppliers($request->user());
         return response()->json($supplier->load(['consignmentReceipts.items.book']));
     }
 
     public function update(Request $request, Supplier $supplier)
     {
+        if (!BranchAccess::isAdmin($request->user())) {
+            BranchAccess::deny('ویرایش تأمین‌کننده فقط برای مدیران مجاز است');
+        }
         $validated = $request->validate([
             'name'    => 'sometimes|required|string|max:255',
             'phone'   => 'nullable|string|max:30',
@@ -129,8 +143,9 @@ class SupplierController extends Controller
     }
 
     /** Get unsettled balance per supplier (sold-based publisher share). */
-    public function balance(Supplier $supplier)
+    public function balance(Request $request, Supplier $supplier)
     {
+        BranchAccess::assertCanViewCanonicalSuppliers($request->user());
         $payable = app(\App\Services\Settlement\SupplierPayable::class);
         $receipts = \App\Models\ConsignmentReceipt::with('items')
             ->where('supplier_id', $supplier->id)
@@ -140,16 +155,16 @@ class SupplierController extends Controller
         $byCurrency = [];
         foreach ($receipts as $receipt) {
             $bal = $payable->outstanding($receipt);
-            if ($bal <= 0) {
+            if (\App\Support\Money::cmp($bal, '0') <= 0) {
                 continue;
             }
             $cur = $receipt->currency;
-            $byCurrency[$cur] = ($byCurrency[$cur] ?? 0) + $bal;
+            $byCurrency[$cur] = \App\Support\Money::add($byCurrency[$cur] ?? '0', $bal);
         }
 
         $unsettled = collect($byCurrency)->map(fn ($balance, $currency) => [
             'currency' => $currency,
-            'balance' => round($balance, 2),
+            'balance' => $balance,
         ])->values();
 
         return response()->json([

@@ -22,6 +22,7 @@ import {
     emptyPriceBands,
     priceBandForBranch,
     PriceBandValues,
+    resolveBookCoverUrl,
 } from "@/lib/bookFormUtils";
 
 const PAGE_SIZE = 25;
@@ -52,6 +53,16 @@ interface BookData {
     by_branch?: BranchStock[];
     iraq_only?: boolean;
     low_stock_threshold?: number;
+    publisher?: string;
+    size?: string;
+    cover?: string;
+    publication_year?: string;
+    cover_image?: string;
+    weight?: number | string | null;
+    weight_with_packaging?: number | string | null;
+    volume_count?: number | null;
+    description?: string;
+    language?: string;
 }
 
 interface BranchOption {
@@ -90,6 +101,16 @@ function mapOverviewBook(book: any): BookData {
         by_branch: byBranch,
         iraq_only: book.iraq_only,
         low_stock_threshold: book.low_stock_threshold,
+        publisher: book.publisher || "",
+        size: book.size || "",
+        cover: book.cover || "",
+        publication_year: book.publication_year || "",
+        cover_image: book.cover_image || "",
+        weight: book.weight,
+        weight_with_packaging: book.weight_with_packaging,
+        volume_count: book.volume_count,
+        description: book.description || "",
+        language: book.language || "",
     };
 }
 
@@ -127,6 +148,16 @@ function mapInventoryRow(item: any, branch?: { name?: string; type?: string; cit
             category: item.book.category || "",
             iraq_only: item.book.iraq_only,
             low_stock_threshold: item.book.low_stock_threshold,
+            publisher: item.book.publisher || "",
+            size: item.book.size || "",
+            cover: item.book.cover || "",
+            publication_year: item.book.publication_year || "",
+            cover_image: item.book.cover_image || "",
+            weight: item.book.weight,
+            weight_with_packaging: item.book.weight_with_packaging,
+            volume_count: item.book.volume_count,
+            description: item.book.description || "",
+            language: item.book.language || "",
         };
     }
     const inventories = item.inventories || [];
@@ -149,6 +180,16 @@ function mapInventoryRow(item: any, branch?: { name?: string; type?: string; cit
         ),
         supplier: inv?.supplier?.name || "",
         category: item.category || "",
+        publisher: item.publisher || "",
+        size: item.size || "",
+        cover: item.cover || "",
+        publication_year: item.publication_year || "",
+        cover_image: item.cover_image || "",
+        weight: item.weight,
+        weight_with_packaging: item.weight_with_packaging,
+        volume_count: item.volume_count,
+        description: item.description || "",
+        language: item.language || "",
     };
 }
 
@@ -569,8 +610,17 @@ export default function InventoryPage() {
                                         >
                                             <td className="p-3">
                                                 <div className="flex items-center gap-3 min-w-0">
-                                                    <div className="w-9 h-12 rounded-lg bg-parchment/40 border border-ink/5 flex items-center justify-center shrink-0">
-                                                        <Book className="w-4 h-4 text-ink/15" />
+                                                    <div className="w-9 h-12 rounded-lg bg-parchment/40 border border-ink/5 flex items-center justify-center shrink-0 overflow-hidden">
+                                                        {resolveBookCoverUrl(book.cover_image) ? (
+                                                            // eslint-disable-next-line @next/next/no-img-element
+                                                            <img
+                                                                src={resolveBookCoverUrl(book.cover_image) || ""}
+                                                                alt={book.title}
+                                                                className="w-full h-full object-cover"
+                                                            />
+                                                        ) : (
+                                                            <Book className="w-4 h-4 text-ink/15" />
+                                                        )}
                                                     </div>
                                                     <div className="min-w-0">
                                                         <p className="font-vazirmatn font-black text-[13px] text-ink truncate">
@@ -751,8 +801,17 @@ export default function InventoryPage() {
 
                         <div className="flex-1 overflow-y-auto p-5 space-y-5">
                             <div className="flex items-start gap-4">
-                                <div className="w-20 h-28 bg-parchment border border-ink/5 rounded-xl flex items-center justify-center shrink-0">
-                                    <Book className="w-8 h-8 text-ink/10" />
+                                <div className="w-20 h-28 bg-parchment border border-ink/5 rounded-xl flex items-center justify-center shrink-0 overflow-hidden">
+                                    {resolveBookCoverUrl(selectedBook.cover_image) ? (
+                                        // eslint-disable-next-line @next/next/no-img-element
+                                        <img
+                                            src={resolveBookCoverUrl(selectedBook.cover_image) || ""}
+                                            alt={selectedBook.title}
+                                            className="w-full h-full object-cover"
+                                        />
+                                    ) : (
+                                        <Book className="w-8 h-8 text-ink/10" />
+                                    )}
                                 </div>
                                 <div className="min-w-0 pt-1">
                                     {selectedBook.category && (
@@ -767,6 +826,38 @@ export default function InventoryPage() {
                                     </div>
                                 </div>
                             </div>
+
+                            <div className="grid grid-cols-2 gap-2">
+                                <DetailValue label={t("inventory.form.publisher")} value={selectedBook.publisher} />
+                                <DetailValue label={t("inventory.form.publicationYear")} value={selectedBook.publication_year} />
+                                <DetailValue label={t("inventory.form.size")} value={selectedBook.size} />
+                                <DetailValue label={t("inventory.form.cover")} value={selectedBook.cover} />
+                                <DetailValue
+                                    label={t("inventory.form.volumeCount")}
+                                    value={selectedBook.volume_count != null ? formatNumber(selectedBook.volume_count) : ""}
+                                />
+                                <DetailValue
+                                    label={t("inventory.form.weight")}
+                                    value={selectedBook.weight != null ? formatNumber(Number(selectedBook.weight)) : ""}
+                                />
+                                <DetailValue
+                                    label={t("inventory.form.weightWithPackaging")}
+                                    value={selectedBook.weight_with_packaging != null ? formatNumber(Number(selectedBook.weight_with_packaging)) : ""}
+                                />
+                                <DetailValue
+                                    label={t("inventory.form.lowStockThreshold")}
+                                    value={selectedBook.low_stock_threshold != null ? formatNumber(selectedBook.low_stock_threshold) : ""}
+                                />
+                            </div>
+
+                            {selectedBook.description && (
+                                <div className="p-4 rounded-xl bg-white border border-ink/5">
+                                    <h4 className="text-[10px] font-black text-ink/30 mb-2">{t("inventory.form.notes")}</h4>
+                                    <p className="text-[12px] leading-6 font-vazirmatn text-ink/65 whitespace-pre-wrap">
+                                        {selectedBook.description}
+                                    </p>
+                                </div>
+                            )}
 
                             <div className="p-4 rounded-xl bg-parchment/30 border border-ink/5 space-y-3">
                                 <h4 className="text-[10px] font-black text-ink/30">{t("inventory.stockManagement")}</h4>
@@ -965,6 +1056,17 @@ function PriceBandList({
                     </span>
                 </span>
             ))}
+        </div>
+    );
+}
+
+function DetailValue({ label, value }: { label: string; value?: string | null }) {
+    return (
+        <div className="rounded-xl bg-parchment/25 border border-ink/5 px-3 py-2.5 min-w-0">
+            <p className="text-[9px] font-bold text-ink/30 truncate">{label}</p>
+            <p className="text-[11px] font-black font-vazirmatn text-ink/75 mt-1 truncate">
+                {value || "—"}
+            </p>
         </div>
     );
 }

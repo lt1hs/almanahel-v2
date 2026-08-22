@@ -4,148 +4,86 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\Invoice;
-use App\Models\Expense;
-use App\Models\Gift;
 use App\Models\Branch;
 use App\Models\Inventory;
 use App\Models\Check;
 use App\Models\Book;
 use App\Models\Transfer;
+use App\Services\Reports\LedgerReportService;
 use App\Support\ActivityLogger;
+use App\Support\Authorization\BranchAccess;
 use App\Support\IntakePolicy;
-use App\Support\SalesCogs;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Cache;
-use Illuminate\Support\Facades\Schema;
 
 class ReportController extends Controller
 {
     public function allBranchBalance(Request $request)
     {
-        \App\Support\Authorization\BranchAccess::assertCanViewAllReports($request->user());
+        BranchAccess::assertCanViewAllReports($request->user());
+        $period = app(LedgerReportService::class)->period(
+            $request->input('date_from'),
+            $request->input('date_to')
+        );
 
-        $dateFrom = $request->date_from ?? now()->startOfMonth()->toDateString();
-        $dateTo   = $request->date_to   ?? now()->toDateString();
-
-        $branches = Branch::where('type', 'store')
-            ->orderBy('id')
-            ->get()
-            ->unique(fn ($b) => mb_strtolower(trim((string) $b->name)))
-            ->values()
-            ->map(function ($branch) use ($dateFrom, $dateTo) {
-            $salesToman = Invoice::where('branch_id', $branch->id)
-                ->where('currency', 'toman')
-                ->where(function ($q) {
-                    $q->whereNull('type')->orWhere('type', 'sale');
-                })
-                ->whereBetween(DB::raw('DATE(created_at)'), [$dateFrom, $dateTo])
-                ->sum('total');
-
-            $salesDinar = Invoice::where('branch_id', $branch->id)
-                ->where('currency', 'dinar')
-                ->where(function ($q) {
-                    $q->whereNull('type')->orWhere('type', 'sale');
-                })
-                ->whereBetween(DB::raw('DATE(created_at)'), [$dateFrom, $dateTo])
-                ->sum('total');
-
-            $expensesToman = Expense::where('branch_id', $branch->id)
-                ->where('currency', 'toman')
-                ->whereBetween('date', [$dateFrom, $dateTo])
-                ->sum('amount');
-
-            $expensesDinar = Expense::where('branch_id', $branch->id)
-                ->where('currency', 'dinar')
-                ->whereBetween('date', [$dateFrom, $dateTo])
-                ->sum('amount');
-
-            $giftCostsToman = Gift::where('branch_id', $branch->id)
-                ->where('currency', 'toman')
-                ->whereBetween('gifted_at', [$dateFrom, $dateTo])
-                ->sum('cost_value');
-
-            $giftCostsDinar = Gift::where('branch_id', $branch->id)
-                ->where('currency', 'dinar')
-                ->whereBetween('gifted_at', [$dateFrom, $dateTo])
-                ->sum('cost_value');
-
-            $cogsToman = SalesCogs::forBranch((int) $branch->id, 'toman', $dateFrom, $dateTo);
-            $cogsDinar = SalesCogs::forBranch((int) $branch->id, 'dinar', $dateFrom, $dateTo);
-
-            $pendingCreditToman = Invoice::where('branch_id', $branch->id)
-                ->where('payment_method', 'credit')
-                ->where('payment_status', 'pending')
-                ->where('currency', 'toman')
-                ->sum('total');
-
-            $pendingCreditDinar = Invoice::where('branch_id', $branch->id)
-                ->where('payment_method', 'credit')
-                ->where('payment_status', 'pending')
-                ->where('currency', 'dinar')
-                ->sum('total');
-
-            return [
-                'branch'              => $branch,
-                'revenue_toman'       => $salesToman,
-                'revenue_dinar'       => $salesDinar,
-                'cogs_toman'          => $cogsToman,
-                'cogs_dinar'          => $cogsDinar,
-                'expenses_toman'      => $expensesToman,
-                'expenses_dinar'      => $expensesDinar,
-                'gift_costs_toman'    => $giftCostsToman,
-                'gift_costs_dinar'    => $giftCostsDinar,
-                'pending_credit_toman'=> $pendingCreditToman,
-                'pending_credit_dinar'=> $pendingCreditDinar,
-                'pending_credit'      => $pendingCreditToman + $pendingCreditDinar,
-                'net_profit_toman'    => $salesToman - $cogsToman - $expensesToman - $giftCostsToman,
-                'net_profit_dinar'    => $salesDinar - $cogsDinar - $expensesDinar - $giftCostsDinar,
-            ];
-        });
-
-        return response()->json($branches);
+        return response()->json(app(LedgerReportService::class)->allBranchPnls($period['from'], $period['to']));
     }
 
     public function dashboardStats(Request $request)
     {
         $user = $request->user();
-        $branchFilter = ($user->role === 'branch_manager') ? $user->branch_id : null;
-        $isAdmin = in_array($user->role, ['super_admin', 'admin'], true);
+        $alertBranches = BranchAccess::alertBranchIds($user);
+        $canFinance = BranchAccess::canViewFinancialReports($user);
+        $canAllReports = BranchAccess::canViewAllReports($user);
 
-        $totalTitles = $isAdmin && !$branchFilter
+        $inventoryQuery = Inventory::query();
+        if ($alertBranches !== null) {
+            $inventoryQuery->whereIn('branch_id', $alertBranches ?: [0]);
+        }
+
+        $totalTitles = $canAllReports
             ? Book::count()
-            : (int) Inventory::query()
-                ->when($branchFilter, fn ($q) => $q->where('branch_id', $branchFilter))
-                ->distinct()
-                ->count('book_id');
+            : (int) (clone $inventoryQuery)->distinct()->count('book_id');
 
-        $totalStock = (float) Inventory::query()
-            ->when($branchFilter, fn ($q) => $q->where('branch_id', $branchFilter))
-            ->sum('quantity');
+        $totalStock = (int) (clone $inventoryQuery)->sum('quantity');
 
-        $todaySalesToman = Invoice::where('currency', 'toman')
-            ->whereDate('created_at', today())
-            ->when($branchFilter, fn($q) => $q->where('branch_id', $branchFilter))
-            ->sum('total');
+        $financials = !$canFinance
+            ? [
+                'today_sales_toman' => '0.00',
+                'today_sales_dinar' => '0.00',
+                'today_gross_sales_toman' => '0.00',
+                'today_gross_sales_dinar' => '0.00',
+                'today_returns_toman' => '0.00',
+                'today_returns_dinar' => '0.00',
+                'today_invoice_count' => 0,
+                'inventory_value_toman' => '0.00',
+                'inventory_value_dinar' => '0.00',
+                'inventory_value_basis' => 'owned_inventory_at_cost',
+            ]
+            : app(LedgerReportService::class)->dashboardFinancials(
+                $user->role === 'branch_manager' ? (int) $user->branch_id : null,
+                now()
+            );
 
-        $todaySalesDinar = Invoice::where('currency', 'dinar')
-            ->whereDate('created_at', today())
-            ->when($branchFilter, fn($q) => $q->where('branch_id', $branchFilter))
-            ->sum('total');
-
-        $todayInvoiceCount = Invoice::whereDate('created_at', today())
-            ->when($branchFilter, fn($q) => $q->where('branch_id', $branchFilter))
-            ->count();
-
-        $totalSuppliers = \App\Models\Supplier::count();
-        $totalBranches = Branch::where('status', 'active')->count();
-        $pendingChecks  = Check::where('status', 'pending')
-            ->where('due_date', '<=', now()->addDays(7))->count();
+        $totalSuppliers = $canAllReports ? \App\Models\Supplier::count() : 0;
+        $totalBranches = $canAllReports
+            ? Branch::where('status', 'active')->count()
+            : 0;
+        $pendingChecks = 0;
+        if ($canFinance) {
+            $pendingQuery = Check::where('status', 'pending')
+                ->where('due_date', '<=', now()->addDays(7));
+            if ($alertBranches !== null) {
+                $pendingQuery->whereIn('branch_id', $alertBranches ?: [0]);
+            }
+            $pendingChecks = $pendingQuery->count();
+        }
 
         $globalThreshold = (int) Cache::get('almanahel.low_stock_threshold', config('almanahel.low_stock_threshold', 5));
         $lowStockCount = Inventory::query()
             ->join('books', 'inventories.book_id', '=', 'books.id')
-            ->when($branchFilter, fn ($q) => $q->where('inventories.branch_id', $branchFilter))
+            ->when($alertBranches !== null, fn ($q) => $q->whereIn('inventories.branch_id', $alertBranches ?: [0]))
             ->where('inventories.quantity', '>', 0)
             ->whereRaw(
                 'inventories.quantity <= COALESCE(books.low_stock_threshold, ?)',
@@ -153,187 +91,44 @@ class ReportController extends Controller
             )
             ->count();
 
-        $outOfStockCount = $isAdmin && !$branchFilter
+        $outOfStockCount = $canAllReports
             ? Book::whereDoesntHave('inventories', fn ($q) => $q->where('quantity', '>', 0))->count()
             : 0;
 
-        $inventoryValues = $this->inventoryAssetValues($branchFilter ? (int) $branchFilter : null);
-
-        return response()->json([
+        return response()->json(array_merge([
             'total_titles'           => $totalTitles,
             'total_stock'            => $totalStock,
-            // Back-compat: previously this was stock copies
             'total_books'            => $totalTitles,
-            'today_sales_toman'      => $todaySalesToman,
-            'today_sales_dinar'      => $todaySalesDinar,
-            'today_invoice_count'    => $todayInvoiceCount,
             'total_suppliers'        => $totalSuppliers,
             'total_branches'         => $totalBranches,
             'low_stock_count'        => $lowStockCount,
             'out_of_stock_count'     => $outOfStockCount,
             'pending_checks'         => $pendingChecks,
-            'inventory_value_toman'  => $inventoryValues['toman'],
-            'inventory_value_dinar'  => $inventoryValues['dinar'],
-        ]);
-    }
-
-    /**
-     * Sell-side inventory asset value per currency — never converts toman↔dinar.
-     * Missing local prices may fall back to the same currency on another branch of the book.
-     *
-     * @return array{toman: float, dinar: float}
-     */
-    private function inventoryAssetValues(?int $branchId): array
-    {
-        $rows = Inventory::query()
-            ->when($branchId, fn ($q) => $q->where('branch_id', $branchId))
-            ->where('quantity', '>', 0)
-            ->get(['book_id', 'quantity', 'price_toman', 'price_dinar']);
-
-        $needTomanIds = $rows
-            ->filter(fn ($inv) => !(float) ($inv->price_toman ?? 0))
-            ->pluck('book_id')
-            ->unique()
-            ->values();
-        $needDinarIds = $rows
-            ->filter(fn ($inv) => !(float) ($inv->price_dinar ?? 0))
-            ->pluck('book_id')
-            ->unique()
-            ->values();
-
-        $tomanDonors = collect();
-        if ($needTomanIds->isNotEmpty()) {
-            $tomanDonors = Inventory::query()
-                ->whereIn('book_id', $needTomanIds)
-                ->where('price_toman', '>', 0)
-                ->get(['book_id', 'price_toman'])
-                ->groupBy('book_id');
-        }
-
-        $dinarDonors = collect();
-        if ($needDinarIds->isNotEmpty()) {
-            $dinarDonors = Inventory::query()
-                ->whereIn('book_id', $needDinarIds)
-                ->where('price_dinar', '>', 0)
-                ->get(['book_id', 'price_dinar'])
-                ->groupBy('book_id');
-        }
-
-        $toman = 0.0;
-        $dinar = 0.0;
-
-        foreach ($rows as $inv) {
-            $pt = (float) ($inv->price_toman ?? 0);
-            $pd = (float) ($inv->price_dinar ?? 0);
-            if ($pt <= 0) {
-                $pt = (float) ($tomanDonors->get($inv->book_id)?->first()?->price_toman ?? 0);
-            }
-            if ($pd <= 0) {
-                $pd = (float) ($dinarDonors->get($inv->book_id)?->first()?->price_dinar ?? 0);
-            }
-
-            $qty = (float) $inv->quantity;
-            if ($pt > 0) {
-                $toman += $qty * $pt;
-            }
-            if ($pd > 0) {
-                $dinar += $qty * $pd;
-            }
-        }
-
-        return ['toman' => $toman, 'dinar' => $dinar];
+        ], $financials));
     }
 
     public function monthlyTrends(Request $request)
     {
-        $months   = min(12, max(3, (int) ($request->months ?? 6)));
-        $currency = $request->currency ?? 'toman';
-        $branchId = $request->branch_id;
+        $branchId = BranchAccess::resolveReportBranchId($request->user(), $request->input('branch_id'));
+        $currency = app(LedgerReportService::class)->currency($request->input('currency'));
+        $months = min(12, max(3, (int) ($request->months ?? 6)));
 
-        $data = [];
-        for ($i = $months - 1; $i >= 0; $i--) {
-            $start = now()->subMonths($i)->startOfMonth();
-            $end   = now()->subMonths($i)->endOfMonth();
-
-            $storeIds = Branch::where('type', 'store')
-                ->orderBy('id')
-                ->get()
-                ->unique(fn ($b) => mb_strtolower(trim((string) $b->name)))
-                ->pluck('id');
-
-            $salesQuery = Invoice::where('currency', $currency)
-                ->where(function ($q) {
-                    $q->whereNull('type')->orWhere('type', 'sale');
-                })
-                ->whereBetween('created_at', [$start, $end]);
-
-            if ($branchId) {
-                $salesQuery->where('branch_id', $branchId);
-            } else {
-                $salesQuery->whereIn('branch_id', $storeIds);
-            }
-            $sales = $salesQuery->sum('total');
-
-            $expenses = Expense::where('currency', $currency)
-                ->when($branchId, fn($q) => $q->where('branch_id', $branchId))
-                ->when(!$branchId, fn($q) => $q->whereIn('branch_id', $storeIds))
-                ->whereBetween('date', [$start->toDateString(), $end->toDateString()])
-                ->sum('amount');
-
-            $gifts = Gift::where('currency', $currency)
-                ->when($branchId, fn($q) => $q->where('branch_id', $branchId))
-                ->when(!$branchId, fn($q) => $q->whereIn('branch_id', $storeIds))
-                ->whereBetween('gifted_at', [$start->toDateString(), $end->toDateString()])
-                ->sum('cost_value');
-
-            $cogs = 0.0;
-            $cogsBranchIds = $branchId ? [(int) $branchId] : $storeIds->map(fn ($id) => (int) $id)->all();
-            foreach ($cogsBranchIds as $id) {
-                $cogs += SalesCogs::forBranch(
-                    (int) $id,
-                    $currency,
-                    $start->toDateString(),
-                    $end->toDateString()
-                );
-            }
-
-            $data[] = [
-                'label'  => $start->format('Y-m'),
-                'month'  => (int) $start->format('n'),
-                'sales'  => (float) $sales,
-                'cogs'   => (float) $cogs,
-                'profit' => (float) ($sales - $cogs - $expenses - $gifts),
-            ];
-        }
-
-        return response()->json($data);
+        return response()->json(app(LedgerReportService::class)->monthlyTrends($branchId, $currency, $months));
     }
 
     public function topBooks(Request $request)
     {
-        $dateFrom = $request->date_from ?? now()->startOfMonth()->toDateString();
-        $dateTo   = $request->date_to   ?? now()->toDateString();
+        BranchAccess::assertCanViewFinancialReports($request->user());
+        $period = app(LedgerReportService::class)->period(
+            $request->input('date_from'),
+            $request->input('date_to')
+        );
+        $branchId = BranchAccess::resolveReportBranchId($request->user(), $request->input('branch_id'));
+        $currency = $request->filled('currency')
+            ? app(LedgerReportService::class)->currency($request->input('currency'))
+            : null;
 
-        $top = DB::table('invoice_items')
-            ->join('invoices', 'invoice_items.invoice_id', '=', 'invoices.id')
-            ->join('books', 'invoice_items.book_id', '=', 'books.id')
-            ->whereBetween(DB::raw('DATE(invoices.created_at)'), [$dateFrom, $dateTo])
-            ->when($request->branch_id, fn($q) => $q->where('invoices.branch_id', $request->branch_id))
-            ->when($request->boolean('iraq_only'), fn($q) => $q->where('books.iraq_only', true))
-            ->when($request->boolean('exclude_iraq_only'), fn($q) => $q->where('books.iraq_only', false))
-            ->groupBy('invoice_items.book_id', 'books.title', 'books.author')
-            ->select(
-                'invoice_items.book_id',
-                'books.title',
-                'books.author',
-                DB::raw('SUM(invoice_items.quantity) as total_sold'),
-                DB::raw('SUM(invoice_items.actual_price * invoice_items.quantity) as total_revenue')
-            )
-            ->orderByDesc('total_sold')
-            ->limit(10)
-            ->get();
-
-        return response()->json($top);
+        return response()->json(app(LedgerReportService::class)->topBooks($branchId, $period['from'], $period['to'], $currency));
     }
 
     public function notifications(Request $request)
@@ -433,137 +228,18 @@ class ReportController extends Controller
         ]);
     }
 
-    /** Iraq branch P&L split by lot origin (iraq_local vs qom_distributed). */
     public function iraqProfit(Request $request)
     {
-        \App\Support\Authorization\BranchAccess::assertCanViewAllReports($request->user());
+        BranchAccess::assertCanViewAllReports($request->user());
+        $period = app(LedgerReportService::class)->period(
+            $request->input('date_from'),
+            $request->input('date_to')
+        );
+        $currency = app(LedgerReportService::class)->currency($request->input('currency'));
 
-        $dateFrom = $request->date_from ?? now()->startOfMonth()->toDateString();
-        $dateTo   = $request->date_to   ?? now()->toDateString();
-
-        $iraqBranches = Branch::query()
-            ->where('type', 'store')
-            ->where(function ($q) {
-                $q->where('country', 'عراق')
-                    ->orWhere('is_iraq_store', true);
-            })
-            ->get();
-
-        $iraqBranch = $iraqBranches->first();
-        $branchIds = $iraqBranches->pluck('id')->all();
-
-        $empty = [
-            'revenue' => 0, 'cogs' => 0, 'expenses' => 0, 'gifts' => 0, 'net_profit' => 0, 'sales_count' => 0,
-            'returns' => 0,
-        ];
-
-        $compute = function (array $origins) use ($branchIds, $dateFrom, $dateTo, $empty) {
-            if (!$branchIds) {
-                return $empty;
-            }
-
-            $hasLots = Schema::hasTable('sale_lot_allocations') && Schema::hasTable('stock_lots');
-
-            $invoiceQuery = DB::table('invoices')
-                ->whereIn('branch_id', $branchIds)
-                ->where(function ($q) {
-                    $q->whereNull('type')->orWhere('type', 'sale');
-                })
-                ->whereBetween(DB::raw('DATE(created_at)'), [$dateFrom, $dateTo]);
-
-            if ($hasLots && $origins) {
-                $invoiceIds = DB::table('invoice_items')
-                    ->join('sale_lot_allocations', 'sale_lot_allocations.invoice_item_id', '=', 'invoice_items.id')
-                    ->join('stock_lots', 'stock_lots.id', '=', 'sale_lot_allocations.stock_lot_id')
-                    ->whereIn('stock_lots.origin', $origins)
-                    ->pluck('invoice_items.invoice_id')
-                    ->unique();
-                $invoiceQuery->whereIn('id', $invoiceIds);
-            } elseif ($origins === ['iraq_local']) {
-                $invoiceQuery->whereExists(function ($q) {
-                    $q->select(DB::raw(1))
-                        ->from('invoice_items')
-                        ->join('books', 'books.id', '=', 'invoice_items.book_id')
-                        ->whereColumn('invoice_items.invoice_id', 'invoices.id')
-                        ->where('books.iraq_only', true);
-                });
-            } elseif ($origins === ['qom_distributed']) {
-                $invoiceQuery->whereExists(function ($q) {
-                    $q->select(DB::raw(1))
-                        ->from('invoice_items')
-                        ->join('books', 'books.id', '=', 'invoice_items.book_id')
-                        ->whereColumn('invoice_items.invoice_id', 'invoices.id')
-                        ->where('books.iraq_only', false);
-                });
-            }
-
-            $revenue = (float) (clone $invoiceQuery)->sum('total');
-            $salesCount = (int) (clone $invoiceQuery)->count();
-
-            $cogs = 0.0;
-            foreach ($branchIds as $bid) {
-                foreach (['toman', 'dinar'] as $cur) {
-                    $cogs += SalesCogs::forBranch($bid, $cur, $dateFrom, $dateTo);
-                }
-            }
-
-            $expenses = (float) Expense::whereIn('branch_id', $branchIds)
-                ->whereBetween('date', [$dateFrom, $dateTo])
-                ->sum('amount');
-            $gifts = (float) Gift::whereIn('branch_id', $branchIds)
-                ->whereBetween(DB::raw('DATE(gifted_at)'), [$dateFrom, $dateTo])
-                ->sum('cost_value');
-            $returns = (float) DB::table('customer_returns')
-                ->whereIn('branch_id', $branchIds)
-                ->whereBetween(DB::raw('DATE(created_at)'), [$dateFrom, $dateTo])
-                ->sum('refund_amount');
-
-            $netRevenue = $revenue - $returns;
-            // Note: expenses/gifts/cogs are branch-level (not origin-split) when lots absent;
-            // with lots, cogs still branch-level sum — documented limitation until origin-filtered COGS helper.
-            return [
-                'revenue' => round($netRevenue, 2),
-                'cogs' => round($cogs, 2),
-                'expenses' => round($expenses, 2),
-                'gifts' => round($gifts, 2),
-                'returns' => round($returns, 2),
-                'net_profit' => round($netRevenue - $cogs - $expenses - $gifts, 2),
-                'sales_count' => $salesCount,
-            ];
-        };
-
-        $iraqLocal = $compute(['iraq_local']);
-        $distributed = $compute(['qom_distributed']);
-        $combined = $compute([]);
-
-        // Compatibility aliases
-        $iraqOnlyRevenue = $iraqLocal['revenue'];
-        $distributedRevenue = $distributed['revenue'];
-
-        return response()->json([
-            'branch' => $iraqBranch,
-            'branches' => $iraqBranches,
-            'period' => ['from' => $dateFrom, 'to' => $dateTo],
-            // UI fields
-            'revenue' => $combined['revenue'],
-            'expenses' => $combined['expenses'],
-            'net_profit' => $combined['net_profit'],
-            'sales_count' => $combined['sales_count'],
-            'cogs' => $combined['cogs'],
-            'gifts' => $combined['gifts'],
-            'returns' => $combined['returns'],
-            // Origin splits
-            'iraq_local' => $iraqLocal,
-            'qom_distributed' => $distributed,
-            'combined' => $combined,
-            // Legacy aliases
-            'iraq_only_revenue' => $iraqOnlyRevenue,
-            'distributed_revenue' => $distributedRevenue,
-            'total_iraq_revenue' => $combined['revenue'],
-        ]);
+        return response()->json(app(LedgerReportService::class)->iraqProfit($period['from'], $period['to'], $currency));
     }
 
-    /** Books shipped from Qom hub to other branches */
     public function distributionFromQom(Request $request)
     {
         $qom = IntakePolicy::qomBranch();

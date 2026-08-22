@@ -51,8 +51,8 @@ class SettlementPayableTest extends TestCase
             'currency' => 'toman',
         ]))->assertOk()->json();
 
-        // 2 * 100000 * 0.9 = 180000
-        $this->assertEquals(180000, (float) $preview['total_payable']);
+        // 2 * 100000 = 200000
+        $this->assertEquals(200000, (float) $preview['total_payable']);
 
         $this->postJson('/api/consignments/settle', [
             'supplier_id' => $supplier->id,
@@ -60,7 +60,7 @@ class SettlementPayableTest extends TestCase
             'period_type' => 'custom',
             'period_start' => now()->subMonth()->toDateString(),
             'period_end' => now()->toDateString(),
-            'amount' => 200000,
+            'amount' => 250000,
             'currency' => 'toman',
             'payment_method' => 'cash',
         ])->assertStatus(422);
@@ -71,13 +71,13 @@ class SettlementPayableTest extends TestCase
             'period_type' => 'custom',
             'period_start' => now()->subMonth()->toDateString(),
             'period_end' => now()->toDateString(),
-            'amount' => 180000,
+            'amount' => 200000,
             'currency' => 'toman',
             'payment_method' => 'cash',
         ])->assertCreated();
 
         $this->assertEquals(1, SettlementAllocation::count());
-        $this->assertEquals(180000, (float) $settle->json('amount'));
+        $this->assertEquals(200000, (float) $settle->json('amount'));
 
         $balance = $this->getJson('/api/suppliers/' . $supplier->id . '/balance')->assertOk()->json();
         $this->assertTrue(collect($balance['unsettled_balances'])->every(fn ($b) => (float) $b['balance'] === 0.0)

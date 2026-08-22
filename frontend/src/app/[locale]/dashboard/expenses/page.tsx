@@ -13,6 +13,8 @@ import { useNotify } from "@/hooks/useNotify";
 import { useAuth } from "@/contexts/AuthContext";
 import { cn } from "@/lib/utils";
 import { apiRequest } from "@/lib/api";
+import { Input } from "@/components/ui/Input";
+import { formatPriceDisplay, parsePriceDigits } from "@/lib/bookFormUtils";
 
 const CATEGORY_KEYS = [
     "rent", "salary", "utilities", "transport", "marketing", "office", "other",
@@ -239,7 +241,7 @@ export default function ExpensesPage() {
         setEditingId(exp.id);
         setForm({
             branch_id: String(exp.branch_id),
-            amount: String(exp.amount),
+            amount: parsePriceDigits(String(Math.round(Number(exp.amount) || 0))),
             currency: exp.currency,
             category: normalizeCategory(exp.category),
             description: exp.description || "",
@@ -258,14 +260,15 @@ export default function ExpensesPage() {
         const branchId = !isAdmin && userBranchId
             ? userBranchId
             : parseInt(form.branch_id, 10);
-        if (!branchId || !form.amount) {
+        const amount = Number(parsePriceDigits(form.amount));
+        if (!branchId || !amount) {
             notify.error("toast.branchAmountRequired");
             return;
         }
         setIsSaving(true);
         const payload = {
             branch_id: branchId,
-            amount: parseFloat(form.amount),
+            amount,
             currency: form.currency,
             category: form.category,
             description: form.description || null,
@@ -544,19 +547,19 @@ export default function ExpensesPage() {
                                 </span>
                             </div>
                         )}
-                        <div className="grid grid-cols-2 gap-2">
-                            <input
-                                type="number"
-                                inputMode="decimal"
+                        <div className="grid grid-cols-2 gap-2 items-end">
+                            <Input
+                                type="text"
+                                inputMode="numeric"
                                 placeholder={t("expenses.form.amount")}
-                                value={form.amount}
-                                onChange={(e) => setForm((f) => ({ ...f, amount: e.target.value }))}
-                                className="h-10 rounded-xl border border-ink/10 px-3 text-[12px] font-vazirmatn outline-none focus:ring-2 focus:ring-primary/15"
+                                value={formatPriceDisplay(form.amount)}
+                                onChange={(e) => setForm((f) => ({ ...f, amount: parsePriceDigits(e.target.value) }))}
+                                className="h-12 bg-ink/[0.03] border-white focus:bg-white rounded-[10px] tabular-nums text-lg font-black text-ink"
                             />
                             <select
                                 value={form.currency}
                                 onChange={(e) => setForm((f) => ({ ...f, currency: e.target.value as "toman" | "dinar" }))}
-                                className="h-10 rounded-xl border border-ink/10 px-3 text-[12px] font-vazirmatn outline-none focus:ring-2 focus:ring-primary/15"
+                                className="h-12 rounded-[10px] border border-ink/10 px-3 text-[12px] font-vazirmatn outline-none focus:ring-2 focus:ring-primary/15"
                             >
                                 <option value="toman">{t("common.toman")}</option>
                                 <option value="dinar">{t("common.dinar")}</option>

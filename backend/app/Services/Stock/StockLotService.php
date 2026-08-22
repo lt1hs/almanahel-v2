@@ -17,6 +17,11 @@ use App\Models\StockLotMovement;
 use App\Models\Transfer;
 use App\Models\TransferItem;
 use App\Models\TransferItemLotSplit;
+use App\Services\Ledger\ConsignmentReturnSplit;
+use App\Services\Settlement\PayableSnapshot;
+use App\Services\Suppliers\SupplierAccountResolver;
+use App\Support\Catalog\CatalogSource;
+use App\Support\Catalog\LotStatus;
 use App\Support\IntakePolicy;
 use App\Support\Money;
 use Illuminate\Database\Eloquent\Model;
@@ -27,8 +32,11 @@ class StockLotService
 {
     public function resolveOrigin(Branch $branch, bool $iraqOnlyBook = false): string
     {
-        if ($iraqOnlyBook || (bool) ($branch->is_iraq_store ?? false) || IntakePolicy::isIraqStore($branch)) {
+        if ($iraqOnlyBook) {
             return 'iraq_local';
+        }
+        if ((bool) ($branch->is_iraq_store ?? false) || IntakePolicy::isIraqStore($branch)) {
+            return 'qom_distributed';
         }
         if ((bool) ($branch->is_intake_hub ?? false)
             || (bool) ($branch->is_central_warehouse ?? false)
@@ -66,12 +74,14 @@ class StockLotService
         $inventory = $this->ensureAggregate($branchId, $bookId);
         $sum = (int) StockLot::where('branch_id', $branchId)
             ->where('book_id', $bookId)
+            ->sellable()
             ->sum('qty_available');
         $inventory->quantity = $sum;
 
         $lots = StockLot::where('branch_id', $branchId)
             ->where('book_id', $bookId)
             ->where('qty_available', '>', 0)
+            ->sellable()
             ->get();
 
         if ($lots->isNotEmpty()) {
@@ -119,12 +129,17 @@ class StockLotService
             throw new DomainException('مقدار ورود کالا باید مثبت باشد');
         }
 
-        $lot = StockLot::create([
+        $lot = StockLot::create(array_merge([
             'book_id' => $data['book_id'],
             'branch_id' => $data['branch_id'],
             'source_branch_id' => $data['source_branch_id'] ?? null,
             'consignment_receipt_item_id' => $data['consignment_receipt_item_id'] ?? null,
             'supplier_id' => $data['supplier_id'] ?? null,
+            'supplier_account_id' => $this->stampAccountId(
+                (int) $data['branch_id'],
+                isset($data['supplier_id']) ? (int) $data['supplier_id'] : null,
+                $data['supplier_account_id'] ?? null
+            ),
             'ownership_type' => $data['ownership_type'],
             'currency' => $data['currency'],
             'unit_cost' => Money::of($data['unit_cost']),
@@ -136,7 +151,18 @@ class StockLotService
             'legacy_uncertain' => $data['legacy_uncertain'] ?? false,
             'legacy_inventory_id' => $data['legacy_inventory_id'] ?? null,
             'migration_source' => $data['migration_source'] ?? 'intake',
-        ]);
+            'status' => $data['status'] ?? LotStatus::AVAILABLE,
+        ], $this->intakePayableFields($data)));
+
+        $catalogSource = ($data['migration_source'] ?? '') === 'transfer' || !empty($data['parent_lot_id'])
+            ? CatalogSource::TRANSFERRED
+            : CatalogSource::LOCAL;
+        app(\App\Services\Catalog\BranchCatalogService::class)->ensure(
+            (int) $data['branch_id'],
+            (int) $data['book_id'],
+            $catalogSource,
+            isset($data['supplier_account_id']) ? (int) $data['supplier_account_id'] : null
+        );
 
         $this->move($lot, 'intake', $qty, $reference);
         $this->syncAggregateQuantity((int) $data['branch_id'], (int) $data['book_id']);
@@ -207,14 +233,15 @@ class StockLotService
             }
             $this->decrementAvailable($lot, $take);
             $this->move($lot, 'sale', -$take, $invoiceItem);
-            $alloc = SaleLotAllocation::create([
+            $alloc = SaleLotAllocation::create(array_merge([
                 'invoice_item_id' => $invoiceItem->id,
                 'stock_lot_id' => $lot->id,
                 'quantity' => $take,
                 'unit_cost' => $lot->unit_cost,
                 'currency' => $lot->currency,
                 'quantity_returned' => 0,
-            ]);
+                'supplier_account_id' => $lot->supplier_account_id,
+            ], $this->allocationPayableFields($lot, $take)));
             $allocations[] = $alloc;
             if ($lot->ownership_type === 'consignment' && $lot->consignment_receipt_item_id) {
                 ConsignmentReceiptItem::where('id', $lot->consignment_receipt_item_id)
@@ -232,13 +259,23 @@ class StockLotService
         return $allocations;
     }
 
-    public function reverseSaleAllocations(InvoiceItem $invoiceItem, int $quantity): void
-    {
+    public function reverseSaleAllocations(
+        InvoiceItem $invoiceItem,
+        int $quantity,
+        ?\App\Models\CustomerReturn $return = null,
+        ?\App\Models\CustomerReturnItem $returnItem = null
+    ): void {
         $remaining = $quantity;
         $allocs = SaleLotAllocation::where('invoice_item_id', $invoiceItem->id)
             ->orderByDesc('id')
             ->lockForUpdate()
             ->get();
+
+        $alreadyReturned = (int) $allocs->sum('quantity_returned');
+        $sold = (int) $allocs->sum('quantity');
+        if ($alreadyReturned + $quantity > $sold) {
+            throw new DomainException('مقدار مرجوعی از تخصیص فروش بیشتر است');
+        }
 
         foreach ($allocs as $alloc) {
             if ($remaining <= 0) {
@@ -260,6 +297,26 @@ class StockLotService
                 $item = ConsignmentReceiptItem::where('id', $lot->consignment_receipt_item_id)->lockForUpdate()->first();
                 if ($item) {
                     $item->decrement('quantity_sold', min($take, (int) $item->quantity_sold));
+                }
+            }
+            if ($return && $returnItem) {
+                $row = \App\Models\CustomerReturnLotAllocation::create([
+                    'customer_return_id' => $return->id,
+                    'customer_return_item_id' => $returnItem->id,
+                    'sale_lot_allocation_id' => $alloc->id,
+                    'stock_lot_id' => $lot->id,
+                    'quantity' => $take,
+                    'unit_cost' => $alloc->unit_cost,
+                    'currency' => $alloc->currency,
+                    'ownership_type' => $lot->ownership_type,
+                    'supplier_id' => $lot->supplier_id,
+                    'supplier_account_id' => $lot->supplier_account_id ?? $alloc->supplier_account_id,
+                    'payable_basis' => $alloc->payable_basis,
+                    'payable_rate' => $alloc->payable_rate,
+                    'origin_scope' => $lot->origin,
+                ]);
+                if ($lot->ownership_type === 'consignment' && $alloc->publisher_payable !== null) {
+                    app(ConsignmentReturnSplit::class)->persist($row);
                 }
             }
             $remaining -= $take;
@@ -338,6 +395,11 @@ class StockLotService
                     'source_branch_id' => $transfer->from_branch_id,
                     'consignment_receipt_item_id' => $source->consignment_receipt_item_id,
                     'supplier_id' => $source->supplier_id,
+                    'supplier_account_id' => $this->stampAccountId(
+                        (int) $transfer->to_branch_id,
+                        $source->supplier_id ? (int) $source->supplier_id : null,
+                        null
+                    ),
                     'ownership_type' => $source->ownership_type,
                     'currency' => $source->currency,
                     'unit_cost' => $source->unit_cost,
@@ -386,6 +448,7 @@ class StockLotService
             ->where('supplier_id', $supplierId)
             ->where('ownership_type', 'consignment')
             ->where('qty_available', '>', 0)
+            ->sellable()
             ->orderBy('id')
             ->lockForUpdate()
             ->get();
@@ -449,7 +512,7 @@ class StockLotService
                 ConsignmentReceiptItem::where('id', $lot->consignment_receipt_item_id)
                     ->increment('quantity_sold', $take);
             }
-            $created[] = GiftLotAllocation::create([
+            $created[] = GiftLotAllocation::create(array_merge([
                 'gift_id' => $gift->id,
                 'stock_lot_id' => $lot->id,
                 'quantity' => $take,
@@ -457,7 +520,8 @@ class StockLotService
                 'currency' => $lot->currency,
                 'ownership_type' => $lot->ownership_type,
                 'supplier_id' => $lot->supplier_id,
-            ]);
+                'supplier_account_id' => $lot->supplier_account_id,
+            ], $this->allocationPayableFields($lot, $take)));
             $remaining -= $take;
         }
 
@@ -479,6 +543,7 @@ class StockLotService
                 'quantity' => $split['quantity'],
                 'unit_cost' => $split['lot']->unit_cost,
                 'currency' => $split['currency'],
+                'supplier_account_id' => $split['lot']->supplier_account_id,
             ]);
         }
     }
@@ -500,11 +565,80 @@ class StockLotService
         }
     }
 
+    /**
+     * @param  array<string, mixed>  $data
+     * @return array<string, mixed>
+     */
+    private function intakePayableFields(array $data): array
+    {
+        if (($data['ownership_type'] ?? '') !== 'consignment') {
+            return [
+                'payable_basis' => null,
+                'payable_rate' => null,
+                'payable_rule_source' => null,
+                'payable_rule_stamped_at' => null,
+            ];
+        }
+
+        if (!empty($data['parent_lot_id'])) {
+            $parent = StockLot::query()->whereKey($data['parent_lot_id'])->first();
+            if (!$parent) {
+                throw new DomainException('لات مبدأ انتقال یافت نشد');
+            }
+            if ($parent->payable_basis === null || $parent->payable_rate === null) {
+                throw new DomainException('لات امانی مبدأ مُهرشده نیست');
+            }
+
+            return [
+                'payable_basis' => $parent->payable_basis,
+                'payable_rate' => $parent->payable_rate,
+                'payable_rule_source' => $parent->payable_rule_source,
+                'payable_rule_stamped_at' => $parent->payable_rule_stamped_at,
+            ];
+        }
+
+        $snap = (new PayableSnapshot())->forNewIntake(new StockLot([
+            'unit_cost' => $data['unit_cost'],
+            'ownership_type' => 'consignment',
+        ]), 1);
+
+        return [
+            'payable_basis' => $snap['payable_basis'],
+            'payable_rate' => $snap['payable_rate'],
+            'payable_rule_source' => 'intake',
+            'payable_rule_stamped_at' => now(),
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function allocationPayableFields(StockLot $lot, int $quantity): array
+    {
+        if ((string) $lot->ownership_type !== 'consignment') {
+            return [];
+        }
+        if ($lot->payable_basis === null || $lot->payable_rate === null) {
+            throw new DomainException('لات امانی مُهرشده نیست');
+        }
+        $snap = (new PayableSnapshot())->fromStampedLot($lot, $quantity);
+
+        return [
+            'payable_basis' => $snap['payable_basis'],
+            'payable_rate' => $snap['payable_rate'],
+            'gross_cost' => $snap['gross_cost'],
+            'publisher_payable' => $snap['publisher_payable'],
+            'rule_source' => $snap['rule_source'],
+            'rule_stamped_at' => $lot->payable_rule_stamped_at ?? now(),
+        ];
+    }
+
     private function fifoLots(int $branchId, int $bookId, ?string $currency = null)
     {
         $q = StockLot::where('branch_id', $branchId)
             ->where('book_id', $bookId)
             ->where('qty_available', '>', 0)
+            ->sellable()
             ->orderBy('id')
             ->lockForUpdate();
         if ($currency) {
@@ -516,7 +650,7 @@ class StockLotService
 
     private function availableQty(int $branchId, int $bookId, ?string $currency = null): int
     {
-        $q = StockLot::where('branch_id', $branchId)->where('book_id', $bookId);
+        $q = StockLot::where('branch_id', $branchId)->where('book_id', $bookId)->sellable();
         if ($currency) {
             $q->where('currency', $currency);
         }
@@ -547,6 +681,18 @@ class StockLotService
         if ((int) $lot->qty_available < 0) {
             throw new DomainException('موجودی نمی‌تواند منفی شود');
         }
+    }
+
+    private function stampAccountId(int $branchId, ?int $supplierId, mixed $explicit = null): ?int
+    {
+        if ($explicit) {
+            return (int) $explicit;
+        }
+        if (!$supplierId) {
+            return null;
+        }
+
+        return app(SupplierAccountResolver::class)->ensureForPair($branchId, $supplierId)->id;
     }
 
     private function move(StockLot $lot, string $type, int $quantity, ?Model $reference = null, array $meta = []): void

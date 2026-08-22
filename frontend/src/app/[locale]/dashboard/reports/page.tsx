@@ -42,8 +42,8 @@ function ReportsPageContent() {
             const [dash, branchData, books, iraq, stock, dist] = await Promise.all([
                 apiRequest("/reports/dashboard"),
                 apiRequest("/reports/all-branches"),
-                apiRequest("/reports/top-books"),
-                apiRequest("/reports/iraq-profit").catch(() => null),
+                apiRequest(`/reports/top-books?currency=${isDinar ? "dinar" : "toman"}`),
+                apiRequest(`/reports/iraq-profit?currency=${isDinar ? "dinar" : "toman"}`).catch(() => null),
                 apiRequest("/books/low-stock"),
                 apiRequest("/reports/distribution-from-qom").catch(() => null),
             ]);
@@ -58,18 +58,21 @@ function ReportsPageContent() {
         } finally {
             setIsLoading(false);
         }
-    }, []);
+    }, [isDinar]);
 
     useEffect(() => {
         fetchReports();
     }, [fetchReports]);
 
-    const totalNetToman = branches.reduce((a, b) => a + (b.net_profit_toman || 0), 0);
+    const totalNet = branches.reduce(
+        (a, b) => a + Number(isDinar ? b.net_profit_dinar || 0 : b.net_profit_toman || 0),
+        0
+    );
 
     const kpiItems = [
         { label: t("reports.kpi.todaySalesToman"), value: dashboard?.today_sales_toman, icon: TrendingUp, color: "text-emerald-500" },
         { label: t("reports.kpi.todaySalesDinar"), value: dashboard?.today_sales_dinar, icon: Globe2, color: "text-sky-500" },
-        { label: t("reports.kpi.monthlyNetToman"), value: totalNetToman, icon: BarChart3, color: "text-primary" },
+        { label: isDinar ? t("finance.branchProfit.currencyDinar") : t("finance.branchProfit.currencyToman"), value: totalNet, icon: BarChart3, color: "text-primary" },
         { label: t("reports.kpi.lowStockAlert"), value: lowStock.length || dashboard?.low_stock_count, icon: AlertTriangle, color: "text-rose-500" },
     ];
 

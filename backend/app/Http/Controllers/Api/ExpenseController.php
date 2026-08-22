@@ -5,7 +5,9 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\Expense;
 use App\Support\ActivityLogger;
+use App\Services\Ledger\FinancePostingGateway;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 
 class ExpenseController extends Controller
 {
@@ -92,21 +94,29 @@ class ExpenseController extends Controller
     {
         $validated = $request->validate([
             'branch_id'   => 'required|exists:branches,id',
-            'amount'      => 'required|numeric|min:0',
+            'amount'      => 'required|numeric|min:0.01',
             'currency'    => 'required|in:toman,dinar',
             'category'    => 'required|string|max:100',
             'description' => 'nullable|string',
             'date'        => 'required|date',
+            'financial_account_id' => 'nullable|exists:financial_accounts,id',
         ]);
 
         $this->assertBranchAllowed($request->user(), (int) $validated['branch_id']);
+        \App\Support\Authorization\BranchAccess::assertCanMutateFinance($request->user());
 
+        return DB::transaction(function () use ($request, $validated) {
         $expense = Expense::create([
-            ...$validated,
+            'branch_id' => $validated['branch_id'],
+            'amount' => $validated['amount'],
+            'currency' => $validated['currency'],
+            'category' => $validated['category'],
+            'description' => $validated['description'] ?? null,
+            'date' => $validated['date'],
             'user_id' => $request->user()->id,
         ]);
 
-        app(\App\Services\Ledger\LedgerPoster::class)->postExpense($expense);
+        app(FinancePostingGateway::class)->expenseCreate($expense, $validated['financial_account_id'] ?? null);
 
         ActivityLogger::record(
             'expenses',
@@ -123,6 +133,7 @@ class ExpenseController extends Controller
         );
 
         return response()->json($expense->load(['branch', 'user']), 201);
+        });
     }
 
     public function update(Request $request, Expense $expense)
@@ -131,28 +142,24 @@ class ExpenseController extends Controller
 
         $validated = $request->validate([
             'branch_id'   => 'sometimes|required|exists:branches,id',
-            'amount'      => 'sometimes|required|numeric|min:0',
+            'amount'      => 'sometimes|required|numeric|min:0.01',
             'currency'    => 'sometimes|required|in:toman,dinar',
             'category'    => 'sometimes|required|string|max:100',
             'description' => 'nullable|string',
             'date'        => 'sometimes|required|date',
+            'financial_account_id' => 'nullable|exists:financial_accounts,id',
         ]);
 
         if (isset($validated['branch_id'])) {
             $this->assertBranchAllowed($request->user(), (int) $validated['branch_id']);
         }
 
+        return DB::transaction(function () use ($request, $expense, $validated) {
+        $accountId = $validated['financial_account_id'] ?? null;
+        unset($validated['financial_account_id']);
         $expense->update($validated);
 
-        $poster = app(\App\Services\Ledger\LedgerPoster::class);
-        $original = \App\Models\JournalEntry::where('source_type', Expense::class)
-            ->where('source_id', $expense->id)
-            ->where('event_type', 'expense')
-            ->first();
-        if ($original) {
-            $poster->reverse($original->load('lines.account'), $expense, 'expense_reversal');
-        }
-        $poster->postExpense($expense->fresh(), 'expense_replacement');
+        app(FinancePostingGateway::class)->expenseReplace($expense->fresh(), $accountId);
 
         ActivityLogger::record(
             'expenses',
@@ -168,6 +175,7 @@ class ExpenseController extends Controller
         );
 
         return response()->json($expense->fresh()->load(['branch', 'user']));
+        });
     }
 
     public function destroy(Request $request, Expense $expense)
@@ -182,14 +190,9 @@ class ExpenseController extends Controller
             'branch_id' => $expense->branch_id,
         ];
         $branchId = (int) $expense->branch_id;
-        $poster = app(\App\Services\Ledger\LedgerPoster::class);
-        $original = \App\Models\JournalEntry::where('source_type', Expense::class)
-            ->where('source_id', $expense->id)
-            ->where('event_type', 'expense')
-            ->first();
-        if ($original) {
-            $poster->reverse($original->load('lines.account'), $expense, 'expense_reversal');
-        }
+
+        return DB::transaction(function () use ($expense, $snapshot, $branchId) {
+        app(FinancePostingGateway::class)->expenseReverse($expense);
         $expense->update([
             'archived_at' => now(),
             'reversed_at' => now(),
@@ -205,5 +208,6 @@ class ExpenseController extends Controller
         );
 
         return response()->json(['message' => 'هزینه با موفقیت حذف شد']);
+        });
     }
 }

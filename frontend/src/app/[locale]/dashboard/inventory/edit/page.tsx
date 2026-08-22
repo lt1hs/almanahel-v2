@@ -9,7 +9,7 @@ import {
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { BookForm } from "@/components/inventory/BookForm";
-import { SupplierSelect } from "@/components/inventory/SupplierSelect";
+import { SupplierSelect, type SupplierAccountSelection } from "@/components/inventory/SupplierSelect";
 import { useTranslation } from "@/hooks/useTranslation";
 import { useNotify } from "@/hooks/useNotify";
 import { useAuth } from "@/contexts/AuthContext";
@@ -51,7 +51,7 @@ function EditBookContent() {
     const bookId = searchParams.get("id") || "";
 
     const [book, setBook] = useState<any>(null);
-    const [supplier, setSupplier] = useState<any>(null);
+    const [supplier, setSupplier] = useState<SupplierAccountSelection | null>(null);
     const [branches, setBranches] = useState<any[]>([]);
     const [inventories, setInventories] = useState<any[]>([]);
     const [isLoading, setIsLoading] = useState(true);
@@ -73,7 +73,7 @@ function EditBookContent() {
             setInventories(Array.isArray(data.inventories) ? data.inventories : []);
 
             const inventory = resolveInventory(data.inventories, user?.branch?.id);
-            setSupplier(inventory?.supplier ?? null);
+            setSupplier(null);
 
             const qomInv = data.inventories?.find((inv: any) => resolveBranchId(branchRows, "qom") === Number(inv.branch_id));
             const mashhadInv = data.inventories?.find((inv: any) => resolveBranchId(branchRows, "mashhad") === Number(inv.branch_id));
@@ -84,10 +84,6 @@ function EditBookContent() {
             const sellDinar = Number(najafInv?.price_dinar ?? inventory?.price_dinar);
             const costToman = Number(qomInv?.cost_price_toman ?? inventory?.cost_price_toman);
             const costDinar = Number(najafInv?.cost_price_dinar ?? inventory?.cost_price_dinar);
-            const legacyTomanCost =
-                sellTomanQom > 0 && costToman > 0 && Math.abs(costToman / sellTomanQom - 0.7) < 0.001;
-            const legacyDinarCost =
-                sellDinar > 0 && costDinar > 0 && Math.abs(costDinar / sellDinar - 0.7) < 0.001;
 
             setBook({
                 title: data.title || "",
@@ -110,8 +106,8 @@ function EditBookContent() {
                 priceTomanQom: toFormPrice(sellTomanQom),
                 priceTomanMashhad: toFormPrice(sellTomanMashhad),
                 priceDinar: toFormPrice(sellDinar),
-                costPriceToman: legacyTomanCost ? "" : toFormPrice(costToman),
-                costPriceDinar: legacyDinarCost ? "" : toFormPrice(costDinar),
+                costPriceToman: toFormPrice(costToman),
+                costPriceDinar: toFormPrice(costDinar),
                 branchStock: branchStockFromInventories(data.inventories, branchRows),
                 settlementDate: "",
                 unpaidSales: "0",
@@ -158,7 +154,7 @@ function EditBookContent() {
             setError(t("toast.titleRequired"));
             return;
         }
-        if (book.type === "consignment" && !supplier?.id) {
+        if (book.type === "consignment" && !supplier?.accountId) {
             setError(t("toast.selectSupplierFirst"));
             return;
         }
@@ -179,11 +175,11 @@ function EditBookContent() {
             await syncBookBranchInventories(
                 book,
                 branches,
-                supplier?.id ?? null,
+                supplier,
                 Number(bookId),
                 {
                     existingInventories: inventories,
-                    syncQuantities: true,
+                    syncQuantities: false,
                 }
             );
 
@@ -372,7 +368,11 @@ function EditBookContent() {
                         </p>
                     </div>
                 </div>
-                <SupplierSelect onSelect={setSupplier} selectedId={supplier?.id} />
+                <SupplierSelect
+                  branchId={user?.branch_id ?? branches[0]?.id ?? null}
+                  onSelect={setSupplier}
+                  selectedAccountId={supplier?.accountId}
+                />
             </div>
 
             <div className="bg-white/60 backdrop-blur-xl border border-white/80 rounded-2xl p-5 md:p-6 shadow-sm">
@@ -385,7 +385,13 @@ function EditBookContent() {
                         <p className="text-[10px] text-ink/30 font-bold mt-0.5">{t("inventory.editCore")}</p>
                     </div>
                 </div>
-                <BookForm data={book} onChange={setBook} />
+                <BookForm
+                    data={book}
+                    onChange={setBook}
+                    readOnlyStock
+                    readOnlyCost
+                    readOnlyOwnership
+                />
             </div>
 
             {isAdmin && (

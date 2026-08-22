@@ -9,7 +9,6 @@ import {
     LineElement,
     BarElement,
     Tooltip,
-    Filler,
     type ChartOptions,
 } from "chart.js";
 import { Line, Bar } from "react-chartjs-2";
@@ -18,7 +17,7 @@ import { cn } from "@/lib/utils";
 import { apiRequest } from "@/lib/api";
 import { useTranslation } from "@/hooks/useTranslation";
 
-ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, BarElement, Tooltip, Filler);
+ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, BarElement, Tooltip);
 
 const PRIMARY = "#007A7A";
 const ACCENT  = "#D4AF37";
@@ -93,52 +92,46 @@ export function ProfitCharts({ currency = "toman" }: ProfitChartsProps) {
     }, [period, currency]);
 
     const labels = useMemo(
-        () => trends.map((item) => t(`finance.charts.months.${item.month}`) || item.label),
+        () => trends.map((item) => t(`finance.charts.months.${item.month}`) || item.label || ""),
         [trends, t]
+    );
+
+    const salesValues = useMemo(
+        () => trends.map((item) => Number(item.sales) || 0),
+        [trends]
+    );
+
+    const profitValues = useMemo(
+        () => trends.map((item) => Number(item.profit) || 0),
+        [trends]
     );
 
     const salesData = useMemo(() => ({
         labels,
         datasets: [{
-            data: trends.map((item) => item.sales),
+            data: salesValues,
             borderColor: PRIMARY,
-            backgroundColor: (ctx: { chart: { ctx: CanvasRenderingContext2D; chartArea?: { top: number; bottom: number } } }) => {
-                const { chart } = ctx;
-                const { ctx: c, chartArea } = chart;
-                if (!chartArea) return `${PRIMARY}10`;
-                const grad = c.createLinearGradient(0, chartArea.top, 0, chartArea.bottom);
-                grad.addColorStop(0, `${PRIMARY}30`);
-                grad.addColorStop(1, `${PRIMARY}00`);
-                return grad;
-            },
+            backgroundColor: `${PRIMARY}22`,
             pointBackgroundColor: PRIMARY,
             pointBorderColor: "#fff",
             pointBorderWidth: 2,
             pointRadius: 4,
-            fill: true,
-            tension: 0.42,
+            fill: false,
+            tension: 0,
             borderWidth: 2,
         }],
-    }), [trends, labels]);
+    }), [labels, salesValues]);
 
     const profitData = useMemo(() => ({
         labels,
         datasets: [{
-            data: trends.map((item) => item.profit),
-            backgroundColor: (ctx: { chart: { ctx: CanvasRenderingContext2D; chartArea?: { top: number; bottom: number } } }) => {
-                const { chart } = ctx;
-                const { ctx: c, chartArea } = chart;
-                if (!chartArea) return `${ACCENT}bb`;
-                const grad = c.createLinearGradient(0, chartArea.top, 0, chartArea.bottom);
-                grad.addColorStop(0, `${ACCENT}ee`);
-                grad.addColorStop(1, `${ACCENT}66`);
-                return grad;
-            },
+            data: profitValues,
+            backgroundColor: `${ACCENT}cc`,
             hoverBackgroundColor: ACCENT,
             borderRadius: 7,
             borderSkipped: false,
         }],
-    }), [trends, labels]);
+    }), [labels, profitValues]);
 
     return (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">

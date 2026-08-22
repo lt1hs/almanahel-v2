@@ -9,7 +9,7 @@ class Supplier extends Model
 {
     use HasFactory;
 
-    protected $fillable = ['name', 'phone', 'email', 'address', 'city', 'contact_info', 'type', 'status'];
+    protected $fillable = ['name', 'phone', 'email', 'address', 'city', 'contact_info', 'type', 'status', 'identity_origin', 'origin_branch_id'];
 
     public function inventories()
     {
@@ -24,5 +24,10 @@ class Supplier extends Model
     public function settlements()
     {
         return $this->hasMany(Settlement::class);
+    }
+
+    public function accounts()
+    {
+        return $this->hasMany(SupplierAccount::class);
     }
 }

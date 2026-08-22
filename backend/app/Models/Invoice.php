@@ -9,10 +9,11 @@ class Invoice extends Model
     protected $fillable = [
         'branch_id', 'customer_id', 'user_id', 'invoice_number', 'payment_method',
         'payment_status', 'currency', 'subtotal', 'discount_amount',
-        'total', 'customer_name', 'customer_phone', 'notes', 'due_date', 'type'
+        'total', 'customer_name', 'customer_phone', 'notes', 'due_date', 'type',
+        'sold_at',
     ];
 
-    protected $casts = ['due_date' => 'date'];
+    protected $casts = ['due_date' => 'date', 'sold_at' => 'datetime'];
 
     public function branch() { return $this->belongsTo(Branch::class); }
     public function user() { return $this->belongsTo(User::class); }

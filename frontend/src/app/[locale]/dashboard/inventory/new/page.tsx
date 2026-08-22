@@ -6,7 +6,7 @@ import { ChevronRight, ChevronLeft, Save, ArrowRight, Book as BookIcon, User, Ha
 import { Button } from "@/components/ui/Button";
 import { Card, CardContent } from "@/components/ui/Card";
 import { Stepper } from "@/components/ui/Stepper";
-import { SupplierSelect } from "@/components/inventory/SupplierSelect";
+import { SupplierSelect, type SupplierAccountSelection } from "@/components/inventory/SupplierSelect";
 import { BookForm } from "@/components/inventory/BookForm";
 import { cn } from "@/lib/utils";
 
@@ -55,7 +55,7 @@ export default function NewInventoryPage() {
     } | null>(null);
     const [branches, setBranches] = useState<any[]>([]);
     const [formData, setFormData] = useState({
-        supplier: null as any,
+        supplier: null as SupplierAccountSelection | null,
         book: defaultBookFormState(),
     });
 
@@ -146,8 +146,12 @@ export default function NewInventoryPage() {
             (async () => {
                 const created = await apiRequest("/books", {
                     method: "POST",
-                    body: JSON.stringify(bookPayloadFromForm(formData.book)),
+                    body: JSON.stringify({
+                        ...bookPayloadFromForm(formData.book),
+                        branch_id: !isHubIntake && user?.branch_id ? Number(user.branch_id) : undefined,
+                    }),
                 });
+                const bookId = created?.book?.id ?? created?.id;
 
                 if (!isHubIntake && user?.branch_id) {
                     const selling = priceScope === "iraq"
@@ -159,11 +163,11 @@ export default function NewInventoryPage() {
                         ? parseFloat(parsePriceDigits(formData.book.costPriceDinar)) || 0
                         : parseFloat(parsePriceDigits(formData.book.costPriceToman)) || 0;
                     await addStockIntake({
-                        bookId: created.id,
+                        bookId,
                         branchId: Number(user.branch_id),
                         quantity: intakeQty,
                         type: formData.book.type === "consignment" ? "consignment" : "owned",
-                        supplierId: formData.supplier?.id ?? null,
+                        selection: formData.supplier,
                         currency: priceScope === "iraq" ? "dinar" : "toman",
                         costPrice: cost,
                         sellingPrice: selling || cost,
@@ -174,8 +178,8 @@ export default function NewInventoryPage() {
                     await syncBookBranchInventories(
                         formData.book,
                         branches,
-                        formData.supplier?.id ?? null,
-                        created.id
+                        formData.supplier,
+                        bookId
                     );
                 }
                 invalidateNotifications();
@@ -288,8 +292,9 @@ export default function NewInventoryPage() {
                                                     <p className="text-sm text-ink/50 font-medium">{t("inventory.wizard.supplierDesc")}</p>
                                                 </div>
                                                 <SupplierSelect
-                                                    onSelect={(s) => setFormData({ ...formData, supplier: s })}
-                                                    selectedId={formData.supplier?.id}
+                                                    branchId={user?.branch_id ?? intakeInfo?.default_intake_branch_id ?? branches[0]?.id ?? null}
+                                                    onSelect={(selection) => setFormData({ ...formData, supplier: selection })}
+                                                    selectedAccountId={formData.supplier?.accountId}
                                                 />
                                             </div>
                                         )}
@@ -328,7 +333,9 @@ export default function NewInventoryPage() {
                                                         </div>
                                                         <div>
                                                             <p className="font-vazirmatn font-black text-lg text-ink">{formData.supplier?.name}</p>
-                                                            <p className="text-[11px] text-ink/40 font-bold mt-1 uppercase tracking-wider">{formData.supplier?.city}</p>
+                                                            <p className="text-[11px] text-ink/40 font-bold mt-1 uppercase tracking-wider">
+                                                                {t("distribution.branchFallback")}: {formData.supplier?.branchId}
+                                                            </p>
                                                         </div>
                                                     </div>
 

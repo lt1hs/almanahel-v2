@@ -3,13 +3,12 @@
 namespace App\Services\Settlement;
 
 use App\Exceptions\DomainException;
+use App\Models\ConsignmentReceipt;
 use App\Models\GiftLotAllocation;
 use App\Models\SaleLotAllocation;
 use App\Models\Settlement;
 use App\Models\SettlementAllocation;
-use App\Support\ConsignmentFinance;
 use App\Support\Money;
-use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 
 class PeriodSettlement
@@ -17,9 +16,15 @@ class PeriodSettlement
     /**
      * @return array{total_payable: string, lines: list<array<string, mixed>>, commission_rate: string}
      */
-    public function preview(int $supplierId, string $currency, string $periodStart, string $periodEnd, ?int $branchId = null): array
-    {
-        $lines = $this->openLines($supplierId, $currency, $periodStart, $periodEnd, $branchId);
+    public function preview(
+        int $supplierId,
+        string $currency,
+        string $periodStart,
+        string $periodEnd,
+        ?int $branchId = null,
+        ?int $supplierAccountId = null
+    ): array {
+        $lines = $this->openLines($supplierId, $currency, $periodStart, $periodEnd, $branchId, $supplierAccountId);
         $total = '0.00';
         foreach ($lines as $line) {
             $total = Money::add($total, $line['open_amount']);
@@ -28,10 +33,12 @@ class PeriodSettlement
         return [
             'total_payable' => $total,
             'lines' => $lines,
-            'commission_rate' => ConsignmentFinance::commissionRate(),
+            'commission_rate' => '1.0000',
             'period_start' => $periodStart,
             'period_end' => $periodEnd,
             'currency' => $currency,
+            'supplier_account_id' => $supplierAccountId,
+            'branch_id' => $branchId,
         ];
     }
 
@@ -47,7 +54,8 @@ class PeriodSettlement
             $settlement->currency,
             $periodStart,
             $periodEnd,
-            $settlement->branch_id ? (int) $settlement->branch_id : null
+            $settlement->branch_id ? (int) $settlement->branch_id : null,
+            $settlement->supplier_account_id ? (int) $settlement->supplier_account_id : null
         );
 
         if ($expectedTotal !== null && Money::cmp($expectedTotal, $preview['total_payable']) !== 0) {
@@ -91,6 +99,7 @@ class PeriodSettlement
                 'currency' => $settlement->currency,
                 'quantity' => $line['open_qty'],
                 'unit_cost' => $line['unit_cost'],
+                'supplier_account_id' => $settlement->supplier_account_id,
             ]);
             $remaining = Money::sub($remaining, $pay);
         }
@@ -107,46 +116,70 @@ class PeriodSettlement
     }
 
     /** @return list<array<string, mixed>> */
-    public function openLines(int $supplierId, string $currency, string $periodStart, string $periodEnd, ?int $branchId): array
-    {
-        $sales = SaleLotAllocation::query()
+    public function openLines(
+        int $supplierId,
+        string $currency,
+        string $periodStart,
+        string $periodEnd,
+        ?int $branchId,
+        ?int $supplierAccountId = null
+    ): array {
+        $snapshots = app(SnapshotPayable::class);
+
+        $salesQuery = SaleLotAllocation::query()
             ->join('stock_lots', 'stock_lots.id', '=', 'sale_lot_allocations.stock_lot_id')
             ->join('invoice_items', 'invoice_items.id', '=', 'sale_lot_allocations.invoice_item_id')
             ->join('invoices', 'invoices.id', '=', 'invoice_items.invoice_id')
             ->where('stock_lots.ownership_type', 'consignment')
-            ->where('stock_lots.supplier_id', $supplierId)
             ->where('sale_lot_allocations.currency', $currency)
-            ->whereDate('invoices.created_at', '>=', $periodStart)
-            ->whereDate('invoices.created_at', '<=', $periodEnd)
-            ->when($branchId, fn ($q) => $q->where('invoices.branch_id', $branchId))
-            ->select(
-                'sale_lot_allocations.*',
-                'stock_lots.consignment_receipt_item_id',
-                'stock_lots.supplier_id'
-            )
-            ->get();
+            ->whereDate('invoices.sold_at', '>=', $periodStart)
+            ->whereDate('invoices.sold_at', '<=', $periodEnd)
+            ->lockForUpdate();
 
-        $gifts = GiftLotAllocation::query()
+        if ($supplierAccountId) {
+            $salesQuery->where('sale_lot_allocations.supplier_account_id', $supplierAccountId);
+            if ($branchId) {
+                $salesQuery->where('invoices.branch_id', $branchId);
+            }
+        } else {
+            $salesQuery->where('stock_lots.supplier_id', $supplierId);
+            if ($branchId) {
+                $salesQuery->where('invoices.branch_id', $branchId);
+            }
+        }
+
+        $sales = $salesQuery->select(
+            'sale_lot_allocations.*',
+            'stock_lots.consignment_receipt_item_id',
+            'stock_lots.supplier_id'
+        )->get();
+
+        $giftsQuery = GiftLotAllocation::query()
             ->join('gifts', 'gifts.id', '=', 'gift_lot_allocations.gift_id')
             ->join('stock_lots', 'stock_lots.id', '=', 'gift_lot_allocations.stock_lot_id')
             ->where('gift_lot_allocations.ownership_type', 'consignment')
-            ->where('gift_lot_allocations.supplier_id', $supplierId)
             ->where('gift_lot_allocations.currency', $currency)
             ->whereDate('gifts.gifted_at', '>=', $periodStart)
             ->whereDate('gifts.gifted_at', '<=', $periodEnd)
-            ->when($branchId, fn ($q) => $q->where('gifts.branch_id', $branchId))
-            ->lockForUpdate()
-            ->select('gift_lot_allocations.*', 'stock_lots.consignment_receipt_item_id')
-            ->get();
+            ->lockForUpdate();
+
+        if ($supplierAccountId) {
+            $giftsQuery->where('gift_lot_allocations.supplier_account_id', $supplierAccountId);
+            if ($branchId) {
+                $giftsQuery->where('gifts.branch_id', $branchId);
+            }
+        } else {
+            $giftsQuery->where('gift_lot_allocations.supplier_id', $supplierId);
+            if ($branchId) {
+                $giftsQuery->where('gifts.branch_id', $branchId);
+            }
+        }
+
+        $gifts = $giftsQuery->select('gift_lot_allocations.*', 'stock_lots.consignment_receipt_item_id')->get();
 
         $lines = [];
         foreach ($sales as $alloc) {
-            $openQty = max(0, (int) $alloc->quantity - (int) $alloc->quantity_returned);
-            if ($openQty <= 0) {
-                continue;
-            }
-            $owed = ConsignmentFinance::publisherShare(Money::mul($alloc->unit_cost, $openQty));
-            $open = Money::sub($owed, $alloc->settled_publisher_amount ?? 0);
+            $open = $snapshots->saleOpen($alloc);
             if (Money::cmp($open, '0') <= 0) {
                 continue;
             }
@@ -155,31 +188,30 @@ class PeriodSettlement
                 ? DB::table('consignment_receipt_items')->where('id', $receiptItemId)->value('consignment_receipt_id')
                 : null;
             if (!$receiptId) {
-                $receiptId = $this->fallbackReceiptId($supplierId, $currency);
+                throw new DomainException('تخصیص فروش امانی بدون رسید قابل تسویه نیست');
             }
             $lines[] = [
                 'kind' => 'sale',
                 'id' => $alloc->id,
-                'open_qty' => $openQty,
+                'open_qty' => max(0, (int) $alloc->quantity - (int) $alloc->quantity_returned),
                 'open_amount' => $open,
                 'unit_cost' => $alloc->unit_cost,
-                'consignment_receipt_id' => $receiptId ? (int) $receiptId : null,
-                'consignment_receipt_item_id' => $receiptItemId ? (int) $receiptItemId : null,
+                'consignment_receipt_id' => (int) $receiptId,
+                'consignment_receipt_item_id' => (int) $receiptItemId,
+                'supplier_account_id' => $alloc->supplier_account_id,
             ];
         }
-
         foreach ($gifts as $alloc) {
-            $owed = ConsignmentFinance::publisherShare(Money::mul($alloc->unit_cost, $alloc->quantity));
-            $open = Money::sub($owed, $alloc->settled_publisher_amount ?? 0);
+            $open = $snapshots->giftOpen($alloc);
             if (Money::cmp($open, '0') <= 0) {
                 continue;
             }
             $receiptItemId = $alloc->consignment_receipt_item_id;
             $receiptId = $receiptItemId
                 ? DB::table('consignment_receipt_items')->where('id', $receiptItemId)->value('consignment_receipt_id')
-                : $this->fallbackReceiptId($supplierId, $currency);
+                : null;
             if (!$receiptId) {
-                continue;
+                throw new DomainException('تخصیص هدیه امانی بدون رسید قابل تسویه نیست');
             }
             $lines[] = [
                 'kind' => 'gift',
@@ -189,36 +221,22 @@ class PeriodSettlement
                 'unit_cost' => $alloc->unit_cost,
                 'consignment_receipt_id' => (int) $receiptId,
                 'consignment_receipt_item_id' => $receiptItemId ? (int) $receiptItemId : null,
+                'supplier_account_id' => $alloc->supplier_account_id,
             ];
         }
 
         return $lines;
     }
 
-    private function fallbackReceiptId(int $supplierId, string $currency): ?int
-    {
-        return DB::table('consignment_receipts')
-            ->where('supplier_id', $supplierId)
-            ->where('currency', $currency)
-            ->orderBy('id')
-            ->value('id');
-    }
-
     private function touchReceipts(array $allocations): void
     {
         $ids = collect($allocations)->pluck('consignment_receipt_id')->unique()->filter();
+        $snapshots = app(SnapshotPayable::class);
         foreach ($ids as $id) {
-            $receipt = \App\Models\ConsignmentReceipt::with('items')->find($id);
-            if (!$receipt) {
-                continue;
+            $receipt = ConsignmentReceipt::with('items')->find($id);
+            if ($receipt) {
+                $snapshots->syncReceipt($receipt);
             }
-            $settled = Money::of(SettlementAllocation::where('consignment_receipt_id', $id)->sum('amount'));
-            $receipt->settled_amount = $settled;
-            $owed = app(SupplierPayable::class)->publisherOwed($receipt);
-            $receipt->status = Money::cmp($settled, $owed) >= 0 && Money::cmp($owed, '0') > 0
-                ? 'settled'
-                : (Money::cmp($settled, '0') > 0 ? 'partially_settled' : 'unsettled');
-            $receipt->save();
         }
     }
 }

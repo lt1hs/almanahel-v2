@@ -5,6 +5,7 @@ import { Trash2, Plus, Minus, Tag, BookOpen, ShoppingBag } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { cn } from "@/lib/utils";
 import { useTranslation } from "@/hooks/useTranslation";
+import { apiRequest } from "@/lib/api";
 
 interface CartItem {
     id: string;
@@ -15,6 +16,7 @@ interface CartItem {
 }
 
 export interface PaymentDetails {
+    customer_id: number | null;
     customer_name: string;
     customer_phone: string;
     notes: string;
@@ -34,9 +36,11 @@ interface CartProps {
     currency?: "toman" | "dinar";
     paymentDetails?: PaymentDetails;
     onPaymentDetailsChange?: (details: PaymentDetails) => void;
+    branchId?: number;
 }
 
 const EMPTY_PAYMENT: PaymentDetails = {
+    customer_id: null,
     customer_name: "",
     customer_phone: "",
     notes: "",
@@ -50,6 +54,14 @@ const EMPTY_PAYMENT: PaymentDetails = {
 const fieldClass =
     "w-full h-8 rounded-lg border border-ink/10 bg-white px-2.5 text-[11px] font-vazirmatn outline-none focus:ring-1 focus:ring-primary placeholder:text-ink/25";
 
+function roundMoney(value: number): number {
+    return Math.round((value + Number.EPSILON) * 100) / 100;
+}
+
+function percentOf(amount: number, percent: number): number {
+    return roundMoney((amount * percent) / 100);
+}
+
 export function Cart({
     items,
     onUpdateQty,
@@ -59,6 +71,7 @@ export function Cart({
     currency = "toman",
     paymentDetails = EMPTY_PAYMENT,
     onPaymentDetailsChange,
+    branchId,
 }: CartProps) {
     const { t } = useTranslation();
     const [discount, setDiscount] = React.useState(0);
@@ -66,6 +79,10 @@ export function Cart({
     const [overPrices, setOverPrices] = React.useState<Record<string, number>>({});
     const [isSubmitting, setIsSubmitting] = React.useState(false);
     const [localError, setLocalError] = React.useState<string | null>(null);
+    const [customerQuery, setCustomerQuery] = React.useState("");
+    const [customerHits, setCustomerHits] = React.useState<Array<{ id: number; name: string; phone?: string | null }>>([]);
+    const [searchingCustomers, setSearchingCustomers] = React.useState(false);
+    const [creatingCustomer, setCreatingCustomer] = React.useState(false);
 
     const currencySymbol = currency === "dinar"
         ? t("common.currency.dinarSymbol")
@@ -73,6 +90,9 @@ export function Cart({
 
     React.useEffect(() => {
         setLocalError(null);
+        if (paymentMethod !== "credit") {
+            setCustomerHits([]);
+        }
     }, [paymentMethod]);
 
     React.useEffect(() => {
@@ -92,10 +112,76 @@ export function Cart({
     };
 
     const subtotal = items.reduce((acc, item) => acc + getActualPrice(item) * item.quantity, 0);
-    const discountAmount = subtotal * (discount / 100);
-    const total = subtotal - discountAmount;
+    const lineNets = items.map((item) => {
+        const actual = getActualPrice(item);
+        const perUnitDiscount = percentOf(actual, discount);
+        return roundMoney((actual - perUnitDiscount) * item.quantity);
+    });
+    const discountAmount = roundMoney(subtotal - lineNets.reduce((acc, n) => acc + n, 0));
+    const total = roundMoney(lineNets.reduce((acc, n) => acc + n, 0));
 
-    const updatePayment = (field: keyof PaymentDetails, value: string) => {
+    React.useEffect(() => {
+        if (paymentMethod !== "credit" && paymentMethod !== "check") {
+            return;
+        }
+        const q = customerQuery.trim();
+        if (q.length < 2) {
+            setCustomerHits([]);
+            return;
+        }
+        const handle = window.setTimeout(async () => {
+            setSearchingCustomers(true);
+            try {
+                const params = new URLSearchParams({ search: q });
+                if (branchId) params.set("branch_id", String(branchId));
+                const data = await apiRequest(`/customers?${params.toString()}`);
+                setCustomerHits(Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : []);
+            } catch {
+                setCustomerHits([]);
+            } finally {
+                setSearchingCustomers(false);
+            }
+        }, 300);
+        return () => window.clearTimeout(handle);
+    }, [customerQuery, paymentMethod, branchId]);
+
+    const selectCustomer = (customer: { id: number; name: string; phone?: string | null }) => {
+        onPaymentDetailsChange?.({
+            ...paymentDetails,
+            customer_id: customer.id,
+            customer_name: customer.name,
+            customer_phone: customer.phone ?? "",
+        });
+        setCustomerQuery("");
+        setCustomerHits([]);
+        setLocalError(null);
+    };
+
+    const createCustomer = async () => {
+        const name = paymentDetails.customer_name.trim() || customerQuery.trim();
+        if (!name) {
+            setLocalError(t("sales.validation.creditCustomerRequired"));
+            return;
+        }
+        setCreatingCustomer(true);
+        try {
+            const created = await apiRequest("/customers", {
+                method: "POST",
+                body: JSON.stringify({
+                    name,
+                    phone: paymentDetails.customer_phone.trim() || undefined,
+                    branch_id: branchId,
+                }),
+            });
+            selectCustomer(created);
+        } catch (error) {
+            setLocalError(error instanceof Error ? error.message : t("sales.validation.creditCustomerRequired"));
+        } finally {
+            setCreatingCustomer(false);
+        }
+    };
+
+    const updatePayment = (field: Exclude<keyof PaymentDetails, "customer_id">, value: string) => {
         onPaymentDetailsChange?.({ ...paymentDetails, [field]: value });
     };
 
@@ -108,7 +194,7 @@ export function Cart({
             }
         }
         if (paymentMethod === "credit") {
-            if (!paymentDetails.customer_name.trim()) return t("sales.validation.creditCustomerRequired");
+            if (!paymentDetails.customer_id) return t("sales.validation.creditCustomerRequired");
             if (!paymentDetails.due_date) return t("sales.validation.creditDueRequired");
         }
         return null;
@@ -126,7 +212,6 @@ export function Cart({
 
         setIsSubmitting(true);
         try {
-            const perItemDiscount = items.length > 0 ? discountAmount / items.length : 0;
             const payload: Record<string, unknown> = {
                 currency,
                 payment_method: paymentMethod,
@@ -137,11 +222,12 @@ export function Cart({
                         quantity: i.quantity,
                         unit_price: i.price,
                         actual_price: actual,
-                        discount: perItemDiscount / (i.quantity || 1),
+                        discount: percentOf(actual, discount),
                     };
                 }),
             };
 
+            if (paymentDetails.customer_id) payload.customer_id = paymentDetails.customer_id;
             if (paymentDetails.customer_name) payload.customer_name = paymentDetails.customer_name;
             if (paymentDetails.customer_phone) payload.customer_phone = paymentDetails.customer_phone;
             if (paymentDetails.notes.trim()) payload.notes = paymentDetails.notes.trim();
@@ -204,7 +290,7 @@ export function Cart({
                             <div className="flex items-center justify-between">
                                 <div className="text-end">
                                     <span className="text-[13px] font-black font-vazirmatn tabular-nums text-ink/80">
-                                        {(getActualPrice(item) * item.quantity).toLocaleString()}
+                                        {roundMoney((getActualPrice(item) - percentOf(getActualPrice(item), discount)) * item.quantity).toLocaleString()}
                                     </span>
                                     <span className="text-[8px] font-vazirmatn text-ink/25 ms-0.5">{currencySymbol}</span>
                                 </div>
@@ -241,6 +327,65 @@ export function Cart({
                             {t("sales.buyerInfo")}
                         </p>
                         <div className="grid grid-cols-2 gap-1.5">
+                            {(paymentMethod === "credit" || paymentMethod === "check") && (
+                                <div className="col-span-2 space-y-1.5">
+                                    {paymentDetails.customer_id ? (
+                                        <div className="flex items-center justify-between gap-2 rounded-lg border border-primary/20 bg-primary/5 px-2.5 py-1.5">
+                                            <button
+                                                type="button"
+                                                className="text-[10px] text-ink/40 hover:text-rose-500"
+                                                onClick={() => onPaymentDetailsChange?.({
+                                                    ...paymentDetails,
+                                                    customer_id: null,
+                                                })}
+                                            >
+                                                {t("common.clear")}
+                                            </button>
+                                            <p className="text-[11px] font-black font-vazirmatn text-ink truncate">
+                                                {t("sales.selectedCustomer")}: {paymentDetails.customer_name}
+                                                {paymentDetails.customer_phone ? ` · ${paymentDetails.customer_phone}` : ""}
+                                            </p>
+                                        </div>
+                                    ) : (
+                                        <>
+                                            <input
+                                                type="search"
+                                                placeholder={t("sales.searchCustomer")}
+                                                value={customerQuery}
+                                                onChange={(e) => setCustomerQuery(e.target.value)}
+                                                className={fieldClass}
+                                            />
+                                            {searchingCustomers && (
+                                                <p className="text-[10px] text-ink/35">{t("common.pleaseWait")}</p>
+                                            )}
+                                            {customerHits.length > 0 && (
+                                                <div className="max-h-28 overflow-y-auto rounded-lg border border-ink/10 bg-white divide-y divide-ink/5">
+                                                    {customerHits.map((hit) => (
+                                                        <button
+                                                            key={hit.id}
+                                                            type="button"
+                                                            className="w-full text-end px-2.5 py-1.5 text-[11px] font-vazirmatn hover:bg-primary/5"
+                                                            onClick={() => selectCustomer(hit)}
+                                                        >
+                                                            {hit.name}{hit.phone ? ` · ${hit.phone}` : ""}
+                                                        </button>
+                                                    ))}
+                                                </div>
+                                            )}
+                                            {paymentMethod === "credit" && (
+                                                <button
+                                                    type="button"
+                                                    disabled={creatingCustomer}
+                                                    onClick={createCustomer}
+                                                    className="w-full h-7 rounded-lg border border-ink/10 text-[10px] font-black text-ink/60 hover:bg-white"
+                                                >
+                                                    {t("sales.createCustomer")}
+                                                </button>
+                                            )}
+                                        </>
+                                    )}
+                                </div>
+                            )}
                             <input
                                 type="text"
                                 placeholder={

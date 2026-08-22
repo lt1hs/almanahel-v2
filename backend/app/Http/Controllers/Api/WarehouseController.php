@@ -12,7 +12,8 @@ use Illuminate\Support\Facades\DB;
 use App\Support\IntakePolicy;
 use App\Support\StockMovementLogger;
 use App\Services\Stock\StockLotService;
-use App\Services\Ledger\LedgerPoster;
+use App\Services\Ledger\FinancePostingGateway;
+use App\Support\Authorization\BranchAccess;
 use App\Support\Money;
 
 class WarehouseController extends Controller
@@ -322,15 +323,19 @@ class WarehouseController extends Controller
             'book_id'          => 'required|exists:books,id',
             'quantity'         => 'required|integer|min:1',
             'currency'         => 'required|in:toman,dinar',
-            'cost_price'       => 'required|numeric|min:0',
+            'cost_price'       => 'required|numeric|min:0.01',
             'selling_price'    => 'required|numeric|min:0',
             'price_toman'      => 'nullable|numeric|min:0',
             'price_dinar'      => 'nullable|numeric|min:0',
+            'supplier_account_id' => 'nullable|exists:supplier_accounts,id',
             'supplier_id'      => 'nullable|exists:suppliers,id',
             'handler_name'     => 'nullable|string|max:255',
             'notes'            => 'nullable|string',
             'log_date'         => 'nullable|date',
+            'financial_account_id' => 'nullable|exists:financial_accounts,id',
         ]);
+
+        BranchAccess::assertCanMutateInBranch($request->user(), (int) $validated['branch_id']);
 
         $book = \App\Models\Book::find($validated['book_id']);
         if ($denied = IntakePolicy::assertIntakeAllowed(
@@ -358,10 +363,23 @@ class WarehouseController extends Controller
             $branch = \App\Models\Branch::find($validated['branch_id']);
             $book = \App\Models\Book::find($validated['book_id']);
             $lotService = app(StockLotService::class);
-            $lotService->createIntakeLot([
+            $supplierId = $validated['supplier_id'] ?? null;
+            $accountId = $validated['supplier_account_id'] ?? null;
+            if ($accountId || $supplierId) {
+                $resolved = app(\App\Services\Suppliers\SupplierAccountResolver::class)->resolveForMutation(
+                    (int) $validated['branch_id'],
+                    $accountId,
+                    $supplierId,
+                    true
+                );
+                $supplierId = $resolved['supplier_id'];
+                $accountId = $resolved['account']->id;
+            }
+            $lot = $lotService->createIntakeLot([
                 'book_id' => $validated['book_id'],
                 'branch_id' => $validated['branch_id'],
-                'supplier_id' => $validated['supplier_id'] ?? null,
+                'supplier_id' => $supplierId,
+                'supplier_account_id' => $accountId,
                 'ownership_type' => 'owned',
                 'currency' => $validated['currency'],
                 'unit_cost' => $validated['cost_price'],
@@ -379,13 +397,16 @@ class WarehouseController extends Controller
                 'notes'        => $validated['notes'] ?? 'خرید نقدی (مالکیت دارالمناهل)',
                 'log_date'     => $validated['log_date'] ?? now()->toDateString(),
                 'user_id'      => $request->user()->id,
+                'stock_lot_id' => $lot->id,
             ]);
 
-            app(LedgerPoster::class)->postPurchase(
+            app(FinancePostingGateway::class)->ownedCashPurchase(
                 $log,
+                $lot,
                 Money::mul($validated['cost_price'], $validated['quantity']),
                 $validated['currency'],
-                (int) $validated['branch_id']
+                (int) $validated['branch_id'],
+                $validated['financial_account_id'] ?? null
             );
 
             $inventory = $inventory->fresh();

@@ -2,14 +2,23 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Exceptions\DomainException;
 use App\Http\Controllers\Controller;
 use App\Models\ConsignmentReceipt;
 use App\Models\ConsignmentReceiptItem;
 use App\Models\Inventory;
 use App\Models\Settlement;
+use App\Services\Ledger\FinancePostingGateway;
+use App\Services\Ledger\SupplierCheckTransition;
+use App\Services\Settlement\PayableSnapshot;
+use App\Services\Settlement\SnapshotPayable;
+use App\Services\Settlement\PeriodSettlement;
+use App\Services\Settlement\SettlementRecorder;
+use App\Services\Settlement\SupplierPayable;
 use App\Support\ActivityLogger;
-use App\Support\ConsignmentFinance;
+use App\Support\Authorization\BranchAccess;
 use App\Support\IntakePolicy;
+use App\Support\Money;
 use App\Support\StockMovementLogger;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -17,61 +26,21 @@ use Illuminate\Support\Str;
 
 class ConsignmentController extends Controller
 {
-    private function isAdmin($user): bool
+    private function scopeOperationalReceipts($query, $user, Request $request): void
     {
-        return in_array($user?->role, ['super_admin', 'admin'], true);
+        $branchScope = BranchAccess::resolveOperationalConsignmentScope(
+            $user,
+            $request->filled('branch_id') ? (int) $request->branch_id : null,
+            $request->boolean('aggregate')
+        );
+        if ($branchScope !== null) {
+            $query->where('branch_id', $branchScope);
+        }
     }
 
-    /** @return int[]|null null = unrestricted (admin) */
-    private function visibleBranchIds($user): ?array
+    private function assertCanAccessReceipt($user, ConsignmentReceipt $receipt): void
     {
-        if ($this->isAdmin($user)) {
-            return null;
-        }
-
-        $ids = [];
-        if ($user?->branch_id) {
-            $ids[] = (int) $user->branch_id;
-        }
-        foreach ($user->iraq_only_visible_branches ?? [] as $id) {
-            $ids[] = (int) $id;
-        }
-
-        return array_values(array_unique(array_filter($ids)));
-    }
-
-    private function scopeReceiptsToUser($query, $user)
-    {
-        $ids = $this->visibleBranchIds($user);
-        if ($ids === null) {
-            return $query;
-        }
-        if (!$ids) {
-            return $query->whereRaw('1 = 0');
-        }
-
-        return $query->whereIn('branch_id', $ids);
-    }
-
-    private function userCanAccessReceipt($user, ConsignmentReceipt $receipt): bool
-    {
-        $ids = $this->visibleBranchIds($user);
-        if ($ids === null) {
-            return true;
-        }
-
-        return in_array((int) $receipt->branch_id, $ids, true);
-    }
-
-    private function assertBranchAllowed($user, int $branchId): void
-    {
-        $ids = $this->visibleBranchIds($user);
-        if ($ids === null) {
-            return;
-        }
-        if (!in_array($branchId, $ids, true)) {
-            abort(403, 'اجازه دسترسی به این شعبه را ندارید');
-        }
+        BranchAccess::assertCanAccessOperationalConsignmentReceipt($user, (int) $receipt->branch_id);
     }
 
     public function index(Request $request)
@@ -84,6 +53,7 @@ class ConsignmentController extends Controller
                 'id',
                 'receipt_number',
                 'supplier_id',
+                'supplier_account_id',
                 'branch_id',
                 'user_id',
                 'status',
@@ -99,17 +69,16 @@ class ConsignmentController extends Controller
             ])
             ->withCount('items');
 
-        $this->scopeReceiptsToUser($query, $request->user());
+        $this->scopeOperationalReceipts($query, $request->user(), $request);
 
+        if ($request->filled('supplier_account_id')) {
+            $query->where('supplier_account_id', $request->supplier_account_id);
+        }
         if ($request->filled('supplier_id')) {
             $query->where('supplier_id', $request->supplier_id);
         }
-        if ($request->filled('status') && $request->status !== 'all') {
-            $query->where('status', $request->status);
-        }
-        if ($request->filled('branch_id')) {
-            $this->assertBranchAllowed($request->user(), (int) $request->branch_id);
-            $query->where('branch_id', $request->branch_id);
+        if ($request->filled('branch_id') && $request->boolean('aggregate')) {
+            $query->where('branch_id', (int) $request->branch_id);
         }
         if ($request->filled('q')) {
             $q = '%'.$request->string('q').'%';
@@ -119,13 +88,75 @@ class ConsignmentController extends Controller
             });
         }
 
-        return response()->json($query->latest('received_at')->paginate(20));
+        $profiles = [];
+        $profile = function (ConsignmentReceipt $receipt) use (&$profiles): array {
+            return $profiles[$receipt->id] ??= $this->receiptFinancialProfile($receipt);
+        };
+
+        // Receipt.status is a legacy persistence field and cannot distinguish a newly
+        // received (not yet payable) receipt from a sold, unpaid receipt. Filter on the
+        // actual immutable sale/gift payable snapshots instead.
+        $requestedStatus = $request->input('payable_status', $request->input('status'));
+        if ($requestedStatus && $requestedStatus !== 'all') {
+            $candidateIds = (clone $query)
+                ->with('items:id,consignment_receipt_id,quantity_received,quantity_sold,quantity_returned')
+                ->get()
+                ->filter(fn (ConsignmentReceipt $receipt) => $profile($receipt)['payable_status'] === $requestedStatus)
+                ->pluck('id');
+
+            $candidateIds->isEmpty()
+                ? $query->whereRaw('1 = 0')
+                : $query->whereIn('id', $candidateIds->all());
+        }
+
+        $summary = [
+            'receipts_count' => 0,
+            'not_due_count' => 0,
+            'unsettled_count' => 0,
+            'partially_settled_count' => 0,
+            'settled_count' => 0,
+            'currencies' => [
+                'toman' => $this->emptyReceiptMoneySummary(),
+                'dinar' => $this->emptyReceiptMoneySummary(),
+            ],
+        ];
+
+        $summaryReceipts = (clone $query)
+            ->with('items:id,consignment_receipt_id,quantity_received,quantity_sold,quantity_returned')
+            ->get();
+        foreach ($summaryReceipts as $receipt) {
+            $financial = $profile($receipt);
+            $summary['receipts_count']++;
+            $summary[$financial['payable_status'].'_count']++;
+            $currency = $receipt->currency;
+            foreach (['inventory_value', 'payable_generated', 'payable_settled', 'payable_outstanding'] as $field) {
+                $summary['currencies'][$currency][$field] = Money::add(
+                    $summary['currencies'][$currency][$field],
+                    $financial[$field]
+                );
+            }
+        }
+
+        $paginator = $query->latest('received_at')->latest('id')->paginate(20);
+        $paginator->getCollection()->transform(function (ConsignmentReceipt $receipt) use ($profile) {
+            foreach ($profile($receipt) as $key => $value) {
+                $receipt->setAttribute($key, $value);
+            }
+
+            return $receipt;
+        });
+
+        $payload = $paginator->toArray();
+        $payload['summary'] = $summary;
+
+        return response()->json($payload);
     }
 
     public function store(Request $request)
     {
         $validated = $request->validate([
-            'supplier_id'      => 'required|exists:suppliers,id',
+            'supplier_account_id' => 'nullable|exists:supplier_accounts,id',
+            'supplier_id'      => 'required_without:supplier_account_id|nullable|exists:suppliers,id',
             'branch_id'        => 'required|exists:branches,id',
             'currency'         => 'required|in:toman,dinar',
             'received_at'      => 'required|date',
@@ -133,7 +164,7 @@ class ConsignmentController extends Controller
             'items'            => 'required|array|min:1',
             'items.*.book_id'       => 'required|exists:books,id',
             'items.*.quantity'      => 'required|integer|min:1',
-            'items.*.cost_price'    => 'required|numeric|min:0',
+            'items.*.cost_price'    => 'required|numeric|min:0.01',
             'items.*.selling_price' => 'required|numeric|min:0',
             'items.*.price_toman'   => 'nullable|numeric|min:0',
             'items.*.price_dinar'   => 'nullable|numeric|min:0',
@@ -150,7 +181,24 @@ class ConsignmentController extends Controller
             return $denied;
         }
 
-        $this->assertBranchAllowed($request->user(), (int) $validated['branch_id']);
+        BranchAccess::assertCanMutateInBranch($request->user(), (int) $validated['branch_id']);
+        if ($request->boolean('aggregate')) {
+            return response()->json(['message' => 'حالت تجمیعی برای ثبت مجاز نیست', 'error' => 'aggregate_not_allowed'], 422);
+        }
+
+        $resolved = app(\App\Services\Suppliers\SupplierAccountResolver::class)->resolveForMutation(
+            (int) $validated['branch_id'],
+            $validated['supplier_account_id'] ?? null,
+            $validated['supplier_id'] ?? null,
+            true
+        );
+        $validated['supplier_id'] = $resolved['supplier_id'];
+        $validated['supplier_account_id'] = $resolved['account']->id;
+        if (!$validated['supplier_id']) {
+            throw new \App\Exceptions\DomainException('رسید امانی به تأمین‌کننده متعارف نیاز دارد', 422, [
+                'error' => 'supplier_account_unresolved',
+            ]);
+        }
 
         $totalValue = 0;
         foreach ($validated['items'] as $item) {
@@ -159,6 +207,7 @@ class ConsignmentController extends Controller
 
         $receipt = ConsignmentReceipt::create([
             'supplier_id'    => $validated['supplier_id'],
+            'supplier_account_id' => $validated['supplier_account_id'],
             'branch_id'      => $validated['branch_id'],
             'user_id'        => $request->user()->id,
             'receipt_number' => 'CR-' . strtoupper(Str::random(8)),
@@ -168,6 +217,10 @@ class ConsignmentController extends Controller
             'settled_amount' => 0,
             'received_at'    => $validated['received_at'],
             'notes'          => $validated['notes'] ?? null,
+            'payable_basis'  => PayableSnapshot::BASIS_FULL_UNIT_COST,
+            'payable_rate'   => '1.0000',
+            'payable_rule_source' => 'intake',
+            'payable_rule_stamped_at' => now(),
         ]);
 
         foreach ($validated['items'] as $item) {
@@ -200,6 +253,7 @@ class ConsignmentController extends Controller
                 'branch_id' => $validated['branch_id'],
                 'consignment_receipt_item_id' => $receiptItem->id,
                 'supplier_id' => $validated['supplier_id'],
+                'supplier_account_id' => $validated['supplier_account_id'],
                 'ownership_type' => 'consignment',
                 'currency' => $validated['currency'],
                 'unit_cost' => $item['cost_price'],
@@ -226,6 +280,7 @@ class ConsignmentController extends Controller
             [
                 'receipt_number' => $receipt->receipt_number,
                 'supplier_id' => $receipt->supplier_id,
+                'supplier_account_id' => $receipt->supplier_account_id,
                 'total_value' => $receipt->total_value,
                 'currency' => $receipt->currency,
                 'items_count' => count($validated['items']),
@@ -239,29 +294,75 @@ class ConsignmentController extends Controller
 
     public function show(Request $request, ConsignmentReceipt $consignmentReceipt)
     {
-        if (!$this->userCanAccessReceipt($request->user(), $consignmentReceipt)) {
-            abort(403, 'اجازه مشاهده این رسید را ندارید');
-        }
+        $this->assertCanAccessReceipt($request->user(), $consignmentReceipt);
 
         $consignmentReceipt->recalculateFromItems();
 
-        return response()->json($consignmentReceipt->fresh()->load(['items.book', 'supplier', 'branch', 'user']));
+        $receipt = $consignmentReceipt->fresh()->load(['items.book', 'supplier', 'branch', 'user']);
+        foreach ($this->receiptFinancialProfile($receipt) as $key => $value) {
+            $receipt->setAttribute($key, $value);
+        }
+
+        return response()->json($receipt);
+    }
+
+    /**
+     * Presentation values for a receipt. Receiving and transferring stock never
+     * creates supplier debt; only immutable sale/gift allocations do.
+     *
+     * @return array<string, int|string>
+     */
+    private function receiptFinancialProfile(ConsignmentReceipt $receipt): array
+    {
+        $receipt->loadMissing('items');
+        $snapshot = app(SnapshotPayable::class);
+        $generated = $snapshot->receiptGenerated($receipt);
+        $settled = $snapshot->receiptEffectiveSettled($receipt);
+        $outstanding = $snapshot->receiptOutstanding($receipt);
+
+        $status = match (true) {
+            Money::isZero($generated) => 'not_due',
+            Money::cmp($outstanding, '0') > 0 && Money::isZero($settled) => 'unsettled',
+            Money::cmp($outstanding, '0') > 0 => 'partially_settled',
+            default => 'settled',
+        };
+
+        $received = (int) $receipt->items->sum('quantity_received');
+        $sold = (int) $receipt->items->sum('quantity_sold');
+        $returned = (int) $receipt->items->sum('quantity_returned');
+
+        return [
+            'payable_status' => $status,
+            'inventory_value' => Money::of($receipt->total_value),
+            'payable_generated' => $generated,
+            'payable_settled' => $settled,
+            'payable_outstanding' => $outstanding,
+            'quantity_received' => $received,
+            'quantity_sold' => $sold,
+            'quantity_returned' => $returned,
+            'quantity_in_stock' => max(0, $received - $sold - $returned),
+        ];
+    }
+
+    /** @return array<string, string> */
+    private function emptyReceiptMoneySummary(): array
+    {
+        return [
+            'inventory_value' => '0.00',
+            'payable_generated' => '0.00',
+            'payable_settled' => '0.00',
+            'payable_outstanding' => '0.00',
+        ];
     }
 
     /** Manually close a receipt that has no remaining items / nothing left to settle. */
     public function close(Request $request, ConsignmentReceipt $consignmentReceipt)
     {
-        if (!$this->userCanAccessReceipt($request->user(), $consignmentReceipt)) {
-            abort(403, 'اجازه بستن این رسید را ندارید');
-        }
+        $this->assertCanAccessReceipt($request->user(), $consignmentReceipt);
+        BranchAccess::assertCanMutateInBranch($request->user(), (int) $consignmentReceipt->branch_id);
 
         $consignmentReceipt->load('items');
-
-        $soldCost = (float) $consignmentReceipt->items->sum(fn ($i) => $i->quantity_sold * $i->cost_price);
-        $soldOutstanding = max(
-            0,
-            ConsignmentFinance::publisherShare($soldCost) - (float) $consignmentReceipt->settled_amount
-        );
+        $soldOutstanding = (float) app(SupplierPayable::class)->outstanding($consignmentReceipt);
 
         if ($consignmentReceipt->items->isNotEmpty() && $soldOutstanding > 0) {
             return response()->json([
@@ -273,7 +374,7 @@ class ConsignmentController extends Controller
             'status'         => 'settled',
             'settled_amount' => $consignmentReceipt->items->isEmpty()
                 ? 0
-                : ConsignmentFinance::publisherShare($soldCost),
+                : (float) app(SupplierPayable::class)->publisherOwed($consignmentReceipt),
             'total_value'    => $consignmentReceipt->items->isEmpty()
                 ? 0
                 : (float) $consignmentReceipt->items->sum(fn ($i) => $i->quantity_received * $i->cost_price),
@@ -294,161 +395,220 @@ class ConsignmentController extends Controller
         return response()->json($consignmentReceipt->fresh()->load(['supplier', 'branch'])->loadCount('items'));
     }
 
-    /** Sold-based outstanding balance per supplier */
+    /** Sold-based outstanding balance per supplier account (operational) or aggregate report. */
     public function unsettledBySupplier(Request $request)
     {
-        $query = ConsignmentReceipt::with(['items'])
-            ->whereIn('status', ['unsettled', 'partially_settled']);
-        $this->scopeReceiptsToUser($query, $request->user());
-        $receipts = $query->get();
+        $request->validate([
+            'period_start' => 'nullable|date|required_with:period_end',
+            'period_end' => 'nullable|date|after_or_equal:period_start|required_with:period_start',
+        ]);
 
-        $results = [];
+        $periodStart = $request->filled('period_start') ? (string) $request->period_start : null;
+        $periodEnd = $request->filled('period_end') ? (string) $request->period_end : null;
+        $aggregate = $request->boolean('aggregate');
+
+        if ($aggregate) {
+            BranchAccess::assertCanAggregateSupplierAccounts($request->user());
+            $query = ConsignmentReceipt::with(['items', 'supplierAccount', 'supplier'])
+                ->whereIn('status', ['unsettled', 'partially_settled']);
+            if ($request->filled('branch_id')) {
+                $query->where('branch_id', (int) $request->branch_id);
+            }
+            $receipts = $query->get();
+
+            return response()->json([
+                'aggregate' => true,
+                'period_start' => $periodStart,
+                'period_end' => $periodEnd,
+                'rows' => $this->buildOutstandingRows($receipts, $periodStart, $periodEnd),
+            ]);
+        }
+
+        if (!$periodStart || !$periodEnd) {
+            return response()->json([
+                'message' => 'بازه تسویه برای بدهی عملیاتی الزامی است',
+                'error' => 'period_required',
+            ], 422);
+        }
+
+        $branchId = BranchAccess::resolveOperationalBranchId(
+            $request->user(),
+            $request->filled('branch_id') ? (int) $request->branch_id : null
+        );
+
+        $receipts = ConsignmentReceipt::with(['items', 'supplierAccount', 'supplier'])
+            ->whereIn('status', ['unsettled', 'partially_settled'])
+            ->where('branch_id', $branchId)
+            ->get();
+
+        return response()->json([
+            'branch_id' => $branchId,
+            'period_start' => $periodStart,
+            'period_end' => $periodEnd,
+            'rows' => $this->buildOutstandingRows($receipts, $periodStart, $periodEnd),
+        ]);
+    }
+
+    /**
+     * @param  \Illuminate\Support\Collection<int, ConsignmentReceipt>  $receipts
+     * @return list<array<string, mixed>>
+     */
+    private function buildOutstandingRows($receipts, ?string $periodStart = null, ?string $periodEnd = null): array
+    {
+        $period = app(PeriodSettlement::class);
+        $usePeriod = $periodStart && $periodEnd;
+        $bucket = [];
+
         foreach ($receipts as $receipt) {
-            $balance = $this->outstandingSoldBalance($receipt);
-            if ($balance <= 0) {
+            if (!$receipt->supplier_account_id) {
+                throw new DomainException(
+                    'رسید امانی بدون supplier_account_id — داده ناسازگار است',
+                    422,
+                    ['error' => 'supplier_account_integrity', 'receipt_id' => $receipt->id]
+                );
+            }
+
+            if ($usePeriod) {
                 continue;
             }
-            $sid = $receipt->supplier_id;
+
+            $balance = app(SupplierPayable::class)->outstanding($receipt);
+            if (Money::cmp($balance, '0') <= 0) {
+                continue;
+            }
+
             $currency = $receipt->currency;
-            if (!isset($results[$sid])) {
-                $results[$sid] = [];
+            $key = $receipt->supplier_account_id.':'.$receipt->branch_id.':'.$currency;
+            if (!isset($bucket[$key])) {
+                $bucket[$key] = [
+                    'supplier_account_id' => (int) $receipt->supplier_account_id,
+                    'supplier_id' => (int) $receipt->supplier_id,
+                    'branch_id' => (int) $receipt->branch_id,
+                    'display_name' => $receipt->supplierAccount?->display_name
+                        ?? $receipt->supplier?->name
+                        ?? '#'.$receipt->supplier_account_id,
+                    'currency' => $currency,
+                    'balance' => '0.00',
+                    'expected_total' => '0.00',
+                ];
             }
-            $merged = false;
-            foreach ($results[$sid] as $idx => $entry) {
-                if ($entry['currency'] === $currency) {
-                    $results[$sid][$idx]['balance'] += $balance;
-                    $merged = true;
-                    break;
+            $bucket[$key]['balance'] = Money::add($bucket[$key]['balance'], $balance);
+            $bucket[$key]['expected_total'] = $bucket[$key]['balance'];
+        }
+
+        if ($usePeriod) {
+            $accounts = [];
+            foreach ($receipts as $receipt) {
+                if (!$receipt->supplier_account_id) {
+                    throw new DomainException(
+                        'رسید امانی بدون supplier_account_id — داده ناسازگار است',
+                        422,
+                        ['error' => 'supplier_account_integrity', 'receipt_id' => $receipt->id]
+                    );
                 }
+                $key = $receipt->supplier_account_id.':'.$receipt->branch_id.':'.$receipt->currency;
+                $accounts[$key] = $receipt;
             }
-            if (!$merged) {
-                $results[$sid][] = ['currency' => $currency, 'balance' => $balance];
+            foreach ($accounts as $receipt) {
+                $preview = $period->preview(
+                    (int) $receipt->supplier_id,
+                    (string) $receipt->currency,
+                    $periodStart,
+                    $periodEnd,
+                    (int) $receipt->branch_id,
+                    (int) $receipt->supplier_account_id
+                );
+                $balance = $preview['total_payable'];
+                if (Money::cmp($balance, '0') <= 0) {
+                    continue;
+                }
+                $key = $receipt->supplier_account_id.':'.$receipt->branch_id.':'.$receipt->currency;
+                $bucket[$key] = [
+                    'supplier_account_id' => (int) $receipt->supplier_account_id,
+                    'supplier_id' => (int) $receipt->supplier_id,
+                    'branch_id' => (int) $receipt->branch_id,
+                    'display_name' => $receipt->supplierAccount?->display_name
+                        ?? $receipt->supplier?->name
+                        ?? '#'.$receipt->supplier_account_id,
+                    'currency' => $receipt->currency,
+                    'balance' => $balance,
+                    'expected_total' => $balance,
+                    'period_start' => $periodStart,
+                    'period_end' => $periodEnd,
+                ];
             }
         }
 
-        return response()->json($results);
-    }
-
-    /** Gross sold cost (qty × cost) before commission. */
-    private function soldCost(ConsignmentReceipt $receipt): float
-    {
-        $receipt->loadMissing('items');
-        return (float) $receipt->items->sum(fn ($item) => $item->quantity_sold * $item->cost_price);
-    }
-
-    /** Publisher share of sold cost (after store commission). */
-    private function soldValue(ConsignmentReceipt $receipt): float
-    {
-        return ConsignmentFinance::publisherShare($this->soldCost($receipt));
-    }
-
-    private function outstandingSoldBalance(ConsignmentReceipt $receipt): float
-    {
-        return max(0, $this->soldValue($receipt) - (float) $receipt->settled_amount);
+        return array_values($bucket);
     }
 
     /** Settle a supplier */
     public function settle(Request $request)
     {
         $validated = $request->validate([
-            'supplier_id'    => 'required|exists:suppliers,id',
+            'supplier_account_id' => 'nullable|exists:supplier_accounts,id',
+            'supplier_id'    => 'required_without:supplier_account_id|nullable|exists:suppliers,id',
             'branch_id'      => 'nullable|exists:branches,id',
             'period_type'    => 'required|in:monthly,quarterly,custom',
             'period_start'   => 'required|date',
             'period_end'     => 'required|date|after_or_equal:period_start',
-            'amount'         => 'required|numeric|min:0',
+            'amount'         => 'required|numeric|min:0.01',
             'currency'       => 'required|in:toman,dinar',
             'payment_method' => 'required|in:cash,bank_transfer,check',
             'notes'          => 'nullable|string',
             'check_number'   => 'required_if:payment_method,check|nullable|string',
             'bank_name'      => 'nullable|string',
+            'financial_account_id' => 'nullable|exists:financial_accounts,id',
         ]);
 
-        return DB::transaction(function () use ($request, $validated) {
-            $user = $request->user();
-            if (!empty($validated['branch_id'])) {
-                $this->assertBranchAllowed($user, (int) $validated['branch_id']);
-            } elseif (!$this->isAdmin($user) && $user?->branch_id) {
-                $validated['branch_id'] = (int) $user->branch_id;
-            }
+        if ($request->boolean('aggregate')) {
+            return response()->json(['message' => 'حالت تجمیعی برای ثبت مجاز نیست', 'error' => 'aggregate_not_allowed'], 422);
+        }
 
-            $period = app(\App\Services\Settlement\PeriodSettlement::class);
-            $preview = $period->preview(
-                (int) $validated['supplier_id'],
-                $validated['currency'],
-                $validated['period_start'],
-                $validated['period_end'],
-                $validated['branch_id'] ?? null
-            );
+        $settlement = app(SettlementRecorder::class)->create($request->user(), $validated);
 
-            if (\App\Support\Money::cmp($validated['amount'], $preview['total_payable']) > 0) {
-                throw new \App\Exceptions\DomainException('مبلغ تسویه بیشتر از بدهی قابل پرداخت است', 422, [
-                    'max_payable' => $preview['total_payable'],
-                ]);
-            }
+        ActivityLogger::record(
+            'settlements',
+            'settled',
+            "تسویه {$settlement->settlement_number} — {$settlement->amount} {$settlement->currency}",
+            $settlement,
+            [
+                'settlement_number' => $settlement->settlement_number,
+                'supplier_id' => $settlement->supplier_id,
+                'amount' => $settlement->amount,
+                'currency' => $settlement->currency,
+                'payment_method' => $settlement->payment_method,
+            ],
+            $settlement->branch_id ? (int) $settlement->branch_id : null,
+        );
 
-            $settlement = Settlement::create([
-                'supplier_id'       => $validated['supplier_id'],
-                'branch_id'         => $validated['branch_id'] ?? null,
-                'user_id'           => $user->id,
-                'settlement_number' => 'SET-' . strtoupper(Str::random(8)),
-                'period_type'       => $validated['period_type'],
-                'period_start'      => $validated['period_start'],
-                'period_end'        => $validated['period_end'],
-                'amount'            => $validated['amount'],
-                'currency'          => $validated['currency'],
-                'payment_method'    => $validated['payment_method'],
-                'notes'             => $validated['notes'] ?? null,
-                'check_number'      => $validated['check_number'] ?? null,
-                'bank_name'         => $validated['bank_name'] ?? null,
-                'check_status'      => $validated['payment_method'] === 'check' ? 'pending' : null,
-            ]);
-
-            $period->settle(
-                $settlement,
-                $validated['period_start'],
-                $validated['period_end'],
-                (string) $validated['amount'],
-                $preview['total_payable']
-            );
-
-            app(\App\Services\Ledger\LedgerPoster::class)->postSettlement($settlement);
-
-            ActivityLogger::record(
-                'settlements',
-                'settled',
-                "تسویه {$settlement->settlement_number} — {$validated['amount']} {$validated['currency']}",
-                $settlement,
-                [
-                    'settlement_number' => $settlement->settlement_number,
-                    'supplier_id' => $validated['supplier_id'],
-                    'amount' => $validated['amount'],
-                    'currency' => $validated['currency'],
-                    'payment_method' => $validated['payment_method'],
-                ],
-                !empty($validated['branch_id']) ? (int) $validated['branch_id'] : null,
-            );
-
-            return response()->json($settlement->load(['supplier', 'branch', 'allocations']), 201);
-        });
+        return response()->json($settlement, 201);
     }
 
     public function settlements(Request $request)
     {
         $query = Settlement::with(['supplier', 'branch', 'user']);
-        $ids = $this->visibleBranchIds($request->user());
-        if ($ids !== null) {
-            if (!$ids) {
-                $query->whereRaw('1 = 0');
-            } else {
-                $query->where(function ($q) use ($ids) {
-                    $q->whereIn('branch_id', $ids)->orWhereNull('branch_id');
-                });
-            }
+
+        if ($request->boolean('aggregate')) {
+            BranchAccess::assertCanAggregateSupplierAccounts($request->user());
+        } else {
+            $branchId = BranchAccess::resolveOperationalBranchId(
+                $request->user(),
+                $request->filled('branch_id') ? (int) $request->branch_id : null
+            );
+            $query->where('branch_id', $branchId);
+        }
+
+        if ($request->filled('supplier_account_id')) {
+            $query->where('supplier_account_id', (int) $request->supplier_account_id);
         }
         if ($request->has('supplier_id')) {
             $query->where('supplier_id', $request->supplier_id);
         }
+        if ($request->filled('branch_id') && $request->boolean('aggregate')) {
+            $query->where('branch_id', (int) $request->branch_id);
+        }
+
         return response()->json($query->latest()->paginate(20));
     }
 
@@ -456,25 +616,27 @@ class ConsignmentController extends Controller
     public function settlementPreview(Request $request)
     {
         $validated = $request->validate([
-            'supplier_id'  => 'required|exists:suppliers,id',
+            'supplier_account_id' => 'nullable|exists:supplier_accounts,id',
+            'supplier_id'  => 'required_without:supplier_account_id|nullable|exists:suppliers,id',
             'period_start' => 'required|date',
             'period_end'   => 'required|date|after_or_equal:period_start',
             'currency'     => 'nullable|in:toman,dinar',
             'branch_id'    => 'nullable|exists:branches,id',
         ]);
 
-        $user = $request->user();
-        if (!empty($validated['branch_id'])) {
-            $this->assertBranchAllowed($user, (int) $validated['branch_id']);
+        if ($request->boolean('aggregate')) {
+            return response()->json(['message' => 'حالت تجمیعی برای پیش‌نمایش عملیاتی مجاز نیست', 'error' => 'aggregate_not_allowed'], 422);
         }
 
+        $scope = app(\App\Services\Suppliers\SupplierSettlementScope::class)->resolve($request->user(), $validated);
         $currency = $validated['currency'] ?? 'toman';
         $preview = app(\App\Services\Settlement\PeriodSettlement::class)->preview(
-            (int) $validated['supplier_id'],
+            $scope['supplier_id'],
             $currency,
             $validated['period_start'],
             $validated['period_end'],
-            $validated['branch_id'] ?? null
+            $scope['branch_id'],
+            $scope['supplier_account_id']
         );
 
         return response()->json([
@@ -484,75 +646,76 @@ class ConsignmentController extends Controller
             'period_start' => $preview['period_start'],
             'period_end' => $preview['period_end'],
             'currency' => $preview['currency'],
+            'supplier_account_id' => $scope['supplier_account_id'],
+            'branch_id' => $scope['branch_id'],
         ]);
     }
 
-    /** Settle multiple suppliers at once (atomic by default). */
+    /** Settle multiple suppliers at once (atomic). */
     public function settleBulk(Request $request)
     {
         $validated = $request->validate([
             'settlements'                    => 'required|array|min:1',
-            'settlements.*.supplier_id'      => 'required|exists:suppliers,id',
-            'settlements.*.amount'           => 'required|numeric|min:0',
+            'settlements.*.supplier_account_id' => 'nullable|exists:supplier_accounts,id',
+            'settlements.*.supplier_id'      => 'required_without:settlements.*.supplier_account_id|nullable|exists:suppliers,id',
+            'settlements.*.amount'           => 'required|numeric|min:0.01',
+            'settlements.*.expected_total'   => 'nullable|numeric|min:0.01',
             'settlements.*.currency'         => 'required|in:toman,dinar',
+            'settlements.*.branch_id'        => 'nullable|exists:branches,id',
+            'settlements.*.financial_account_id' => 'nullable|exists:financial_accounts,id',
+            'settlements.*.check_number'     => 'nullable|string',
+            'settlements.*.bank_name'        => 'nullable|string',
             'period_type'                    => 'required|in:monthly,quarterly,custom',
             'period_start'                   => 'required|date',
             'period_end'                     => 'required|date|after_or_equal:period_start',
             'payment_method'                 => 'required|in:cash,bank_transfer,check',
             'notes'                          => 'nullable|string',
-            'atomic'                         => 'nullable|boolean',
         ]);
 
-        $atomic = $validated['atomic'] ?? true;
+        $header = [
+            'period_type' => $validated['period_type'],
+            'period_start' => $validated['period_start'],
+            'period_end' => $validated['period_end'],
+            'payment_method' => $validated['payment_method'],
+            'notes' => $validated['notes'] ?? null,
+        ];
 
-        $run = function () use ($request, $validated) {
-            $results = [];
-            foreach ($validated['settlements'] as $settlementData) {
-                $payload = [
-                    'supplier_id'    => $settlementData['supplier_id'],
-                    'period_type'    => $validated['period_type'],
-                    'period_start'   => $validated['period_start'],
-                    'period_end'     => $validated['period_end'],
-                    'amount'         => $settlementData['amount'],
-                    'currency'       => $settlementData['currency'],
-                    'payment_method' => $validated['payment_method'],
-                    'notes'          => $validated['notes'] ?? null,
-                ];
-                if (!$this->isAdmin($request->user()) && $request->user()?->branch_id) {
-                    $payload['branch_id'] = (int) $request->user()->branch_id;
-                }
-                $subRequest = new Request($payload);
-                $subRequest->setUserResolver(fn () => $request->user());
-                $response = $this->settle($subRequest);
-                if ($response->getStatusCode() >= 400) {
-                    throw new \RuntimeException(json_decode($response->getContent(), true)['message'] ?? 'خطا در تسویه گروهی');
-                }
-                $results[] = json_decode($response->getContent(), true);
-            }
-
-            return $results;
-        };
-
-        try {
-            $results = $atomic ? DB::transaction($run) : $run();
-        } catch (\Throwable $e) {
-            return response()->json(['message' => $e->getMessage()], 422);
-        }
+        $created = app(SettlementRecorder::class)->createMany(
+            $request->user(),
+            $header,
+            $validated['settlements']
+        );
 
         ActivityLogger::record(
             'settlements',
             'settled',
-            'تسویه گروهی — '.count($results).' تأمین‌کننده',
+            'تسویه گروهی — '.count($created).' تأمین‌کننده',
             null,
             [
-                'count' => count($results),
+                'count' => count($created),
                 'period_start' => $validated['period_start'],
                 'period_end' => $validated['period_end'],
                 'payment_method' => $validated['payment_method'],
-                'atomic' => $atomic,
             ],
         );
 
-        return response()->json(['settlements' => $results], 201);
+        return response()->json(['settlements' => $created], 201);
+    }
+
+    public function updateSettlementCheck(Request $request, Settlement $settlement)
+    {
+        $validated = $request->validate([
+            'check_status' => 'required|in:pending,cleared,bounced,cancelled',
+            'financial_account_id' => 'nullable|exists:financial_accounts,id',
+        ]);
+
+        $updated = app(SupplierCheckTransition::class)->apply(
+            $settlement,
+            (string) $validated['check_status'],
+            $request->user(),
+            $validated['financial_account_id'] ?? null
+        );
+
+        return response()->json($updated);
     }
 }

@@ -8,7 +8,8 @@ class WarehouseLog extends Model
 {
     protected $fillable = [
         'branch_id', 'book_id', 'user_id', 'direction', 'quantity',
-        'handler_name', 'handler_phone', 'reason', 'related_transfer_id', 'notes', 'log_date'
+        'handler_name', 'handler_phone', 'reason', 'related_transfer_id', 'notes', 'log_date',
+        'stock_lot_id',
     ];
     protected $casts = ['log_date' => 'date'];
 
@@ -16,4 +17,5 @@ class WarehouseLog extends Model
     public function book() { return $this->belongsTo(Book::class); }
     public function user() { return $this->belongsTo(User::class); }
     public function relatedTransfer() { return $this->belongsTo(Transfer::class, 'related_transfer_id'); }
+    public function stockLot() { return $this->belongsTo(StockLot::class); }
 }

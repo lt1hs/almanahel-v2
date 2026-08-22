@@ -61,4 +61,26 @@ final class Money
     {
         return self::cmp($a, '0') === 0;
     }
+
+    public static function roundHalfUp(mixed $value, int $scale = self::SCALE): string
+    {
+        $raw = str_replace(',', '', (string) $value);
+        if (!is_numeric($raw)) {
+            $raw = '0';
+        }
+        $negative = bccomp($raw, '0', $scale + 4) < 0;
+        $abs = $negative ? bcmul($raw, '-1', $scale + 4) : $raw;
+        $half = bcdiv('5', bcpow('10', (string) ($scale + 1), 0), $scale + 1);
+        $rounded = bcadd($abs, $half, $scale);
+
+        return $negative ? bcmul($rounded, '-1', $scale) : $rounded;
+    }
+
+    public static function percentOf(mixed $amount, mixed $percent): string
+    {
+        $product = bcmul(self::of($amount), self::of($percent), 8);
+        $raw = bcdiv($product, '100', 8);
+
+        return self::roundHalfUp($raw);
+    }
 }

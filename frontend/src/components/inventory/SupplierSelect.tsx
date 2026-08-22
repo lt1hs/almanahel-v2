@@ -10,23 +10,29 @@ import { cn } from "@/lib/utils";
 import { motion, AnimatePresence } from "framer-motion";
 import { apiRequest } from "@/lib/api";
 import { useTranslation } from "@/hooks/useTranslation";
+import {
+    parseSupplierAccountRow,
+    supplierAccountsUrl,
+    type SupplierAccountSelection,
+} from "@/lib/supplierAccountSelection";
 
 const SUPPLIER_TYPES = ["publisher", "company", "individual"] as const;
 
 interface SupplierSelectProps {
-    onSelect: (supplier: any) => void;
-    selectedId?: string | number;
+    onSelect: (account: SupplierAccountSelection) => void;
+    selectedAccountId?: string | number;
+    branchId: number | null | undefined;
     compact?: boolean;
 }
 
-export function SupplierSelect({ onSelect, selectedId, compact = false }: SupplierSelectProps) {
+export function SupplierSelect({ onSelect, selectedAccountId, branchId, compact = false }: SupplierSelectProps) {
     const { t } = useTranslation();
     const [search, setSearch] = useState("");
-    const [suppliers, setSuppliers] = useState<any[]>([]);
+    const [accounts, setAccounts] = useState<SupplierAccountSelection[]>([]);
     const [isLoading, setIsLoading] = useState(true);
     const [isSaving, setIsSaving] = useState(false);
     const [isModalOpen, setIsModalOpen] = useState(false);
-    const [newSupplier, setNewSupplier] = useState({ name: "", city: "", type: "publisher", phone: "" });
+    const [newAccount, setNewAccount] = useState({ name: "", city: "", type: "publisher", phone: "" });
 
     const typeLabel = (type: string) => {
         const key = `suppliers.types.${type}`;
@@ -34,50 +40,67 @@ export function SupplierSelect({ onSelect, selectedId, compact = false }: Suppli
         return label === key ? t("suppliers.types.publisher") : label;
     };
 
-    const fetchSuppliers = useCallback(async () => {
+    const fetchAccounts = useCallback(async () => {
+        if (!branchId) {
+            setAccounts([]);
+            setIsLoading(false);
+            return;
+        }
         setIsLoading(true);
         try {
-            const data = await apiRequest("/suppliers");
-            setSuppliers(Array.isArray(data) ? data : []);
+            const data = await apiRequest(supplierAccountsUrl(branchId));
+            const rows = Array.isArray(data) ? data : [];
+            setAccounts(rows.map((row) => parseSupplierAccountRow(row, branchId)));
         } catch {
-            setSuppliers([]);
+            setAccounts([]);
         } finally {
             setIsLoading(false);
         }
-    }, []);
+    }, [branchId]);
 
     useEffect(() => {
-        fetchSuppliers();
-    }, [fetchSuppliers]);
+        fetchAccounts();
+    }, [fetchAccounts]);
 
-    const filteredSuppliers = suppliers.filter((s) =>
-        s.name?.toLowerCase().includes(search.toLowerCase()) ||
-        (s.city || s.address || "").toLowerCase().includes(search.toLowerCase())
-    );
+    const filteredAccounts = accounts.filter((account) => {
+        const q = search.toLowerCase();
+        return account.name.toLowerCase().includes(q);
+    });
 
-    const handleAddSupplier = async () => {
-        if (!newSupplier.name) return;
+    const handleAddAccount = async () => {
+        if (!newAccount.name || !branchId) return;
         setIsSaving(true);
         try {
-            const created = await apiRequest("/suppliers", {
+            const created = await apiRequest("/supplier-accounts", {
                 method: "POST",
                 body: JSON.stringify({
-                    name: newSupplier.name,
-                    phone: newSupplier.phone || null,
-                    address: newSupplier.city || null,
-                    type: newSupplier.type,
+                    branch_id: branchId,
+                    display_name: newAccount.name,
+                    phone: newAccount.phone || null,
+                    address: newAccount.city || null,
+                    city: newAccount.city || null,
+                    type: newAccount.type,
                 }),
             });
-            await fetchSuppliers();
-            onSelect(created);
+            const selection = parseSupplierAccountRow(created, branchId);
+            await fetchAccounts();
+            onSelect(selection);
             setIsModalOpen(false);
-            setNewSupplier({ name: "", city: "", type: "publisher", phone: "" });
+            setNewAccount({ name: "", city: "", type: "publisher", phone: "" });
         } catch (error) {
-            console.error("Failed to create supplier:", error);
+            console.error("Failed to create supplier account:", error);
         } finally {
             setIsSaving(false);
         }
     };
+
+    if (!branchId) {
+        return (
+            <div className={cn("text-center text-ink/30", compact ? "py-4" : "py-8")}>
+                <p className="text-[11px] font-black">{t("inventory.selectBranchFirst")}</p>
+            </div>
+        );
+    }
 
     return (
         <div className={cn(compact ? "space-y-3" : "space-y-6")}>
@@ -110,29 +133,29 @@ export function SupplierSelect({ onSelect, selectedId, compact = false }: Suppli
                     <div className="space-y-4">
                         <Input
                             label={t("suppliers.form.name")}
-                            value={newSupplier.name}
-                            onChange={(e) => setNewSupplier({ ...newSupplier, name: e.target.value })}
+                            value={newAccount.name}
+                            onChange={(e) => setNewAccount({ ...newAccount, name: e.target.value })}
                             className="h-12 bg-ink/[0.02] border-ink/5 focus:bg-white"
                             placeholder={t("suppliers.form.nameExample")}
                         />
                         <Input
                             label={t("suppliers.form.city")}
-                            value={newSupplier.city}
-                            onChange={(e) => setNewSupplier({ ...newSupplier, city: e.target.value })}
+                            value={newAccount.city}
+                            onChange={(e) => setNewAccount({ ...newAccount, city: e.target.value })}
                             className="h-12 bg-ink/[0.02] border-ink/5 focus:bg-white"
                             placeholder={t("suppliers.form.cityExample")}
                         />
                         <Input
                             label={t("suppliers.form.phone")}
-                            value={newSupplier.phone}
-                            onChange={(e) => setNewSupplier({ ...newSupplier, phone: e.target.value })}
+                            value={newAccount.phone}
+                            onChange={(e) => setNewAccount({ ...newAccount, phone: e.target.value })}
                             className="h-12 bg-ink/[0.02] border-ink/5 focus:bg-white"
                         />
                         <div className="space-y-1.5">
                             <label className="text-sm font-medium font-vazirmatn text-ink/70 mr-1">{t("suppliers.form.type")}</label>
                             <select
-                                value={newSupplier.type}
-                                onChange={(e) => setNewSupplier({ ...newSupplier, type: e.target.value })}
+                                value={newAccount.type}
+                                onChange={(e) => setNewAccount({ ...newAccount, type: e.target.value })}
                                 className="w-full h-12 rounded-[7px] border border-ink/10 bg-ink/[0.02] px-4 text-sm font-vazirmatn focus:outline-none focus:ring-2 focus:ring-primary focus:bg-white transition-all appearance-none cursor-pointer"
                             >
                                 {SUPPLIER_TYPES.map((type) => (
@@ -141,8 +164,8 @@ export function SupplierSelect({ onSelect, selectedId, compact = false }: Suppli
                             </select>
                         </div>
                         <Button
-                            onClick={handleAddSupplier}
-                            disabled={!newSupplier.name || isSaving}
+                            onClick={handleAddAccount}
+                            disabled={!newAccount.name || isSaving}
                             className="w-full h-14 bg-primary text-white font-black text-sm rounded-[10px] hover:bg-primary/90 shadow-lg shadow-primary/20 mt-2 transition-all active:scale-[0.98] flex items-center justify-center gap-2"
                         >
                             {isSaving ? <Loader2 className="w-5 h-5 animate-spin" /> : <Check className="w-5 h-5" />}
@@ -158,7 +181,7 @@ export function SupplierSelect({ onSelect, selectedId, compact = false }: Suppli
                         <div key={i} className="h-24 bg-parchment/30 rounded-[10px] animate-pulse" />
                     ))}
                 </div>
-            ) : filteredSuppliers.length === 0 ? (
+            ) : filteredAccounts.length === 0 ? (
                 <div className={cn("text-center text-ink/30", compact ? "py-6" : "py-12")}>
                     <Building2 className="w-8 h-8 mx-auto mb-2 opacity-30" />
                     <p className="text-[11px] font-black">{t("suppliers.notFound")}</p>
@@ -169,25 +192,25 @@ export function SupplierSelect({ onSelect, selectedId, compact = false }: Suppli
                     compact ? "grid-cols-1 max-h-44 overflow-y-auto pe-1" : "grid-cols-1 sm:grid-cols-2"
                 )}>
                     <AnimatePresence mode="popLayout">
-                        {filteredSuppliers.map((supplier, index) => (
+                        {filteredAccounts.map((account, index) => (
                             <motion.div
                                 layout
-                                key={supplier.id}
+                                key={account.accountId}
                                 initial={{ opacity: 0, scale: 0.9 }}
                                 animate={{ opacity: 1, scale: 1 }}
                                 exit={{ opacity: 0, scale: 0.9 }}
                                 transition={{ duration: 0.3, delay: index * 0.05 }}
                             >
                                 <Card
-                                    onClick={() => onSelect(supplier)}
+                                    onClick={() => onSelect(account)}
                                     className={cn(
                                         "cursor-pointer p-5 transition-all active:scale-[0.97] rounded-[10px] border relative overflow-hidden group/card",
-                                        String(selectedId) === String(supplier.id)
+                                        String(selectedAccountId) === String(account.accountId)
                                             ? "border-primary bg-primary/[0.03] shadow-[0_10px_30px_rgba(32,171,176,0.1)] ring-1 ring-primary/20"
                                             : "border-white/80 bg-white/40 hover:border-primary/30 hover:bg-white/60 shadow-sm"
                                     )}
                                 >
-                                    {String(selectedId) === String(supplier.id) && (
+                                    {String(selectedAccountId) === String(account.accountId) && (
                                         <motion.div
                                             layoutId="selected-indicator"
                                             className="absolute top-4 left-4 w-6 h-6 bg-primary text-white rounded-full flex items-center justify-center shadow-lg shadow-primary/20 z-10"
@@ -198,7 +221,7 @@ export function SupplierSelect({ onSelect, selectedId, compact = false }: Suppli
                                     <div className="flex items-center gap-4">
                                         <div className={cn(
                                             "w-12 h-12 rounded-[10px] flex items-center justify-center transition-colors",
-                                            String(selectedId) === String(supplier.id)
+                                            String(selectedAccountId) === String(account.accountId)
                                                 ? "bg-primary/10 text-primary"
                                                 : "bg-ink/5 text-ink/30 group-hover/card:bg-primary/5 group-hover/card:text-primary/60"
                                         )}>
@@ -206,16 +229,11 @@ export function SupplierSelect({ onSelect, selectedId, compact = false }: Suppli
                                         </div>
                                         <div className="min-w-0 flex-1">
                                             <h4 className="font-vazirmatn font-black text-sm text-ink group-hover/card:text-primary transition-colors truncate">
-                                                {supplier.name}
+                                                {account.name}
                                             </h4>
                                             <div className="flex items-center gap-2 mt-1">
-                                                <span className="flex items-center gap-1 text-[10px] text-ink/40 font-bold uppercase tracking-wider">
-                                                    <MapPin className="w-3 h-3 opacity-50" />
-                                                    {supplier.city || supplier.address || "—"}
-                                                </span>
-                                                <span className="w-1 h-1 rounded-full bg-ink/10" />
                                                 <span className="text-[9px] font-black uppercase tracking-tighter text-primary/50">
-                                                    {typeLabel(supplier.type)}
+                                                    {typeLabel("publisher")}
                                                 </span>
                                             </div>
                                         </div>
@@ -229,3 +247,5 @@ export function SupplierSelect({ onSelect, selectedId, compact = false }: Suppli
         </div>
     );
 }
+
+export type { SupplierAccountSelection };
