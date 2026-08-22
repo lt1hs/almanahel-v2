@@ -4,6 +4,7 @@ namespace App\Services\Stock;
 
 use App\Exceptions\DomainException;
 use App\Models\Branch;
+use App\Models\ConsignmentReceipt;
 use App\Models\ConsignmentReceiptItem;
 use App\Models\ConsignmentReturnLotAllocation;
 use App\Models\Gift;
@@ -20,7 +21,6 @@ use App\Models\TransferItemLotSplit;
 use App\Services\Ledger\ConsignmentReturnSplit;
 use App\Services\Settlement\PayableSnapshot;
 use App\Services\Suppliers\SupplierAccountResolver;
-use App\Support\Catalog\CatalogSource;
 use App\Support\Catalog\LotStatus;
 use App\Support\IntakePolicy;
 use App\Support\Money;
@@ -129,14 +129,22 @@ class StockLotService
             throw new DomainException('مقدار ورود کالا باید مثبت باشد');
         }
 
+        $status = $data['status'] ?? LotStatus::AVAILABLE;
+        if (!LotStatus::isValid($status)) {
+            throw new DomainException('وضعیت لات نامعتبر است');
+        }
+
+        $branchId = (int) $data['branch_id'];
+        $bookId = (int) $data['book_id'];
+
         $lot = StockLot::create(array_merge([
-            'book_id' => $data['book_id'],
-            'branch_id' => $data['branch_id'],
+            'book_id' => $bookId,
+            'branch_id' => $branchId,
             'source_branch_id' => $data['source_branch_id'] ?? null,
             'consignment_receipt_item_id' => $data['consignment_receipt_item_id'] ?? null,
             'supplier_id' => $data['supplier_id'] ?? null,
             'supplier_account_id' => $this->stampAccountId(
-                (int) $data['branch_id'],
+                $branchId,
                 isset($data['supplier_id']) ? (int) $data['supplier_id'] : null,
                 $data['supplier_account_id'] ?? null
             ),
@@ -151,21 +159,18 @@ class StockLotService
             'legacy_uncertain' => $data['legacy_uncertain'] ?? false,
             'legacy_inventory_id' => $data['legacy_inventory_id'] ?? null,
             'migration_source' => $data['migration_source'] ?? 'intake',
-            'status' => $data['status'] ?? LotStatus::AVAILABLE,
+            'status' => $status,
         ], $this->intakePayableFields($data)));
 
-        $catalogSource = ($data['migration_source'] ?? '') === 'transfer' || !empty($data['parent_lot_id'])
-            ? CatalogSource::TRANSFERRED
-            : CatalogSource::LOCAL;
-        app(\App\Services\Catalog\BranchCatalogService::class)->ensure(
-            (int) $data['branch_id'],
-            (int) $data['book_id'],
-            $catalogSource,
-            isset($data['supplier_account_id']) ? (int) $data['supplier_account_id'] : null
+        app(\App\Services\Catalog\BranchCatalogService::class)->ensureForIntake(
+            $branchId,
+            $bookId,
+            $data,
+            $lot->supplier_account_id ? (int) $lot->supplier_account_id : null
         );
 
         $this->move($lot, 'intake', $qty, $reference);
-        $this->syncAggregateQuantity((int) $data['branch_id'], (int) $data['book_id']);
+        $this->syncAggregateQuantity($branchId, $bookId);
 
         return $lot;
     }
@@ -223,6 +228,7 @@ class StockLotService
 
         $remaining = $quantity;
         $allocations = [];
+        $receiptIdsToSync = [];
         foreach ($this->fifoLots($branchId, (int) $invoiceItem->book_id, $currency) as $lot) {
             if ($remaining <= 0) {
                 break;
@@ -246,6 +252,12 @@ class StockLotService
             if ($lot->ownership_type === 'consignment' && $lot->consignment_receipt_item_id) {
                 ConsignmentReceiptItem::where('id', $lot->consignment_receipt_item_id)
                     ->increment('quantity_sold', $take);
+                $receiptId = ConsignmentReceiptItem::query()
+                    ->whereKey($lot->consignment_receipt_item_id)
+                    ->value('consignment_receipt_id');
+                if ($receiptId) {
+                    $receiptIdsToSync[(int) $receiptId] = true;
+                }
             }
             $remaining -= $take;
         }
@@ -255,6 +267,16 @@ class StockLotService
         }
 
         $this->syncAggregateQuantity($branchId, (int) $invoiceItem->book_id);
+
+        if ($receiptIdsToSync) {
+            $snapshots = app(\App\Services\Settlement\SnapshotPayable::class);
+            foreach (array_keys($receiptIdsToSync) as $receiptId) {
+                $receipt = ConsignmentReceipt::query()->with('items')->find($receiptId);
+                if ($receipt) {
+                    $snapshots->syncReceipt($receipt);
+                }
+            }
+        }
 
         return $allocations;
     }
@@ -487,6 +509,65 @@ class StockLotService
         return $splits;
     }
 
+    /**
+     * Return exact consignment lots chosen by the server-resolved eligible list.
+     * Client may not invent ownership, cost, currency, or payable effects.
+     *
+     * @param  list<array{stock_lot_id: int, quantity: int}>  $rows
+     * @return list<array{lot: StockLot, quantity: int, cost: string, currency: string}>
+     */
+    public function allocateConsignmentReturnLots(int $branchId, int $supplierAccountId, array $rows, ?Model $reference = null): array
+    {
+        $splits = [];
+        $touchedBooks = [];
+
+        foreach ($rows as $row) {
+            $lotId = (int) $row['stock_lot_id'];
+            $qty = (int) $row['quantity'];
+            if ($qty <= 0) {
+                throw new DomainException('تعداد مرجوعی نامعتبر است', 422);
+            }
+
+            $lot = StockLot::query()->whereKey($lotId)->lockForUpdate()->first();
+            if (!$lot
+                || (int) $lot->branch_id !== $branchId
+                || (int) $lot->supplier_account_id !== $supplierAccountId
+                || $lot->ownership_type !== 'consignment'
+            ) {
+                throw new DomainException('لات امانی قابل مرجوعی یافت نشد', 422, ['stock_lot_id' => $lotId]);
+            }
+            if ((int) $lot->qty_available < $qty) {
+                throw new DomainException('تعداد مرجوعی بیش از موجودی لات است', 422, [
+                    'stock_lot_id' => $lotId,
+                    'available' => (int) $lot->qty_available,
+                ]);
+            }
+
+            $this->lockBookStock($branchId, (int) $lot->book_id);
+            $this->decrementAvailable($lot, $qty);
+            $this->move($lot, 'consignment_return', -$qty, $reference);
+            if ($lot->consignment_receipt_item_id) {
+                ConsignmentReceiptItem::where('id', $lot->consignment_receipt_item_id)
+                    ->increment('quantity_returned', $qty);
+            }
+
+            $splits[] = [
+                'lot' => $lot->fresh(),
+                'quantity' => $qty,
+                'cost' => Money::mul($lot->unit_cost, $qty),
+                'currency' => $lot->currency,
+                'book_id' => (int) $lot->book_id,
+            ];
+            $touchedBooks[(int) $lot->book_id] = true;
+        }
+
+        foreach (array_keys($touchedBooks) as $bookId) {
+            $this->syncAggregateQuantity($branchId, $bookId);
+        }
+
+        return $splits;
+    }
+
     /** @return GiftLotAllocation[] */
     public function allocateGift(Gift $gift): array
     {
@@ -686,7 +767,11 @@ class StockLotService
     private function stampAccountId(int $branchId, ?int $supplierId, mixed $explicit = null): ?int
     {
         if ($explicit) {
-            return (int) $explicit;
+            $accountId = (int) $explicit;
+            app(\App\Services\Catalog\BranchCatalogService::class)
+                ->assertSupplierAccountInBranch($accountId, $branchId);
+
+            return $accountId;
         }
         if (!$supplierId) {
             return null;

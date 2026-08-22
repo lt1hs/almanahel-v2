@@ -87,6 +87,7 @@ function FinancePageContent() {
     const [isSettlementLoading, setIsSettlementLoading] = useState(false);
     const [isConfirming, setIsConfirming] = useState(false);
     const [settlementData, setSettlementData] = useState<any[]>([]);
+    const [settlementBreakdown, setSettlementBreakdown] = useState<any>(null);
     const [settlements, setSettlements] = useState<any[]>([]);
     const [historyLoading, setHistoryLoading] = useState(false);
     const [historyAggregate, setHistoryAggregate] = useState(false);
@@ -344,20 +345,24 @@ function FinancePageContent() {
                 `/consignments/settlement-preview?supplier_account_id=${supplierAccountId}&period_start=${fromDate}&period_end=${toDate}&currency=${currency}${branchQs}`
             );
             const items = (data.items || []).map((item: any) => {
-                const total = Number(item.total || 0);
+                const total = Number(item.open_amount ?? item.total ?? 0);
+                const qty = Number(item.open_qty ?? item.qty_sold ?? 0);
+                const price = Number(item.unit_cost ?? item.cost_price ?? 0);
                 const commission = Number(
-                    item.commission ?? total * Number(data.commission_rate ?? 0.1)
+                    item.commission ?? 0
                 );
+                const bookId = item.book_id != null ? Number(item.book_id) : null;
                 return {
-                    title: item.title,
-                    qty: item.qty_sold,
-                    price: item.cost_price,
+                    title: item.title || (bookId ? `#${bookId}` : "—"),
+                    qty,
+                    price,
                     total,
                     commission,
                     publisherShare: Number(item.publisher_share ?? total - commission),
                 };
             });
             setSettlementData(items);
+            setSettlementBreakdown(data.breakdown || null);
             if (items.length === 0) notify.info("finance.settlement.noData");
         } catch (error) {
             console.error("Calculation failed:", error);
@@ -365,6 +370,7 @@ function FinancePageContent() {
             if (msg) notify.rawError(msg);
             else notify.error("toast.settlementError");
             setSettlementData([]);
+            setSettlementBreakdown(null);
         } finally {
             setIsSettlementLoading(false);
         }
@@ -586,6 +592,7 @@ function FinancePageContent() {
                                 onCalculate={handleCalculateSettlement}
                                 onConfirm={handleConfirmSettlement}
                                 settlementData={settlementData}
+                                breakdown={settlementBreakdown}
                                 isLoading={isSettlementLoading}
                                 isConfirming={isConfirming}
                                 currencySymbol={currencySymbol}

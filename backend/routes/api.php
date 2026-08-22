@@ -105,6 +105,7 @@ Route::middleware(['auth:sanctum', AuditMutations::class])->group(function () {
     // ─── Returns ───────────────────────────────────────────────
     Route::get('/returns/customer',  [ReturnController::class, 'customerReturns']);
     Route::post('/returns/customer', [ReturnController::class, 'createCustomerReturn']);
+    Route::get('/returns/consignment/eligible', [ReturnController::class, 'eligibleConsignmentStock']);
     Route::get('/returns/consignment',  [ReturnController::class, 'consignmentReturns']);
     Route::post('/returns/consignment', [ReturnController::class, 'createConsignmentReturn']);
 

@@ -14,10 +14,11 @@ use App\Models\InvoiceItem;
 use App\Models\StockLot;
 use App\Models\Transfer;
 use App\Models\WarehouseLog;
+use App\Services\Catalog\BranchCatalogService;
+use App\Services\Catalog\CanonicalBookService;
 use App\Support\ActivityLogger;
 use App\Support\Authorization\BranchAccess;
-use App\Support\Catalog\CatalogSource;
-use App\Services\Catalog\BranchCatalogService;
+use App\Support\Catalog\CatalogReadScope;
 use App\Support\Money;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
@@ -30,34 +31,40 @@ class BookController extends Controller
     public function index(Request $request)
     {
         $user = $request->user();
+        $scope = CatalogReadScope::resolve(
+            $user,
+            $request->filled('branch_id') ? (int) $request->branch_id : null,
+            $request->boolean('aggregate')
+        );
         $lite = $request->boolean('lite') || $request->filled('search');
+
+        if ($scope->aggregate) {
+            return response()->json($this->aggregateIndex($request, $lite));
+        }
+
+        $branchId = $scope->branchId;
+        $catalog = app(BranchCatalogService::class);
 
         $query = $lite
             ? Book::query()->select(['id', 'title', 'author', 'isbn', 'iraq_only'])
-            : Book::with(['inventories.branch', 'inventories.supplier']);
+            : Book::query()->with([
+                'inventories' => fn ($q) => $q->where('branch_id', $branchId),
+                'inventories.branch',
+                'inventories.supplier',
+            ]);
 
-        // Iraq-only filtering: hide iraq_only books from unauthorized users
-        if (!\App\Support\Authorization\BranchAccess::canSeeIraqOnlyBooks($user)) {
+        if (!BranchAccess::canSeeIraqOnlyBooks($user)) {
             $query->where('iraq_only', false);
         }
 
-        $catalogBranchId = BranchAccess::resolveCatalogBranchId(
-            $user,
-            $request->filled('branch_id') ? (int) $request->branch_id : null
-        );
-
-        if ($catalogBranchId) {
-            $query->whereIn('id', app(BranchCatalogService::class)->catalogBookIdsQuery($catalogBranchId));
-        } elseif (!BranchAccess::isAdmin($user)) {
-            $query->whereRaw('1 = 0');
-        }
+        $query->whereIn('id', $catalog->catalogBookIdsQuery($branchId));
 
         if ($request->filled('search')) {
             $search = $request->string('search');
             $query->where(function ($q) use ($search) {
                 $q->where('title', 'like', "%{$search}%")
-                  ->orWhere('author', 'like', "%{$search}%")
-                  ->orWhere('isbn', 'like', "%{$search}%");
+                    ->orWhere('author', 'like', "%{$search}%")
+                    ->orWhere('isbn', 'like', "%{$search}%");
             });
         }
 
@@ -69,17 +76,62 @@ class BookController extends Controller
             return response()->json($query->orderBy('title')->limit(50)->get());
         }
 
-        return response()->json($query->get());
+        return response()->json($query->orderBy('title')->get());
     }
 
-    /** Barcode / ISBN exact lookup for POS scanner — branch catalog scoped */
+    /** @return array<string, mixed> */
+    private function aggregateIndex(Request $request, bool $lite): array
+    {
+        $catalog = app(BranchCatalogService::class);
+        $summary = $catalog->aggregateSummaryQuery()->get()->keyBy('book_id');
+
+        $query = Book::query()
+            ->whereIn('id', $summary->keys())
+            ->orderBy('title');
+
+        if (!BranchAccess::canSeeIraqOnlyBooks($request->user())) {
+            $query->where('iraq_only', false);
+        }
+
+        if ($request->filled('search')) {
+            $search = $request->string('search');
+            $query->where(function ($q) use ($search) {
+                $q->where('title', 'like', "%{$search}%")
+                    ->orWhere('author', 'like', "%{$search}%")
+                    ->orWhere('isbn', 'like', "%{$search}%");
+            });
+        }
+
+        if ($request->boolean('iraq_only')) {
+            $query->where('iraq_only', true);
+        }
+
+        $select = $lite
+            ? ['id', 'title', 'author', 'isbn', 'iraq_only']
+            : ['id', 'title', 'author', 'isbn', 'publisher', 'iraq_only', 'low_stock_threshold'];
+
+        $books = $query->select($select)
+            ->when($lite, fn ($q) => $q->limit(50))
+            ->get()
+            ->map(fn (Book $book) => array_merge($book->toArray(), [
+                'active_branch_count' => (int) ($summary[$book->id]->active_branch_count ?? 0),
+            ]));
+
+        return [
+            'aggregate' => true,
+            'books' => $books,
+        ];
+    }
+
     public function byBarcode(Request $request, string $code)
     {
         $user = $request->user();
-        $branchId = BranchAccess::resolveCatalogBranchId(
+        $scope = CatalogReadScope::resolve(
             $user,
-            $request->filled('branch_id') ? (int) $request->branch_id : null
+            $request->filled('branch_id') ? (int) $request->branch_id : null,
+            false
         );
+        $branchId = $scope->branchId;
 
         $book = Book::query()->where('isbn', $code)->first();
         if (!$book) {
@@ -89,13 +141,20 @@ class BookController extends Controller
         BranchAccess::assertIraqBookVisible($user, $book);
         BranchAccess::assertCatalogBookVisible($user, (int) $book->id, $branchId);
 
-        $book->load(['inventories' => fn ($q) => $q->where('branch_id', $branchId), 'inventories.branch', 'inventories.supplier']);
+        $book->load([
+            'inventories' => fn ($q) => $q->where('branch_id', $branchId),
+            'inventories.branch',
+            'inventories.supplier',
+        ]);
 
         return response()->json($book);
     }
 
     public function store(Request $request)
     {
+        $user = $request->user();
+        BranchAccess::assertCanMutateBranchCatalog($user);
+
         $validated = $request->validate([
             'title'               => 'required|string|max:255',
             'author'              => 'nullable|string|max:255',
@@ -116,63 +175,50 @@ class BookController extends Controller
             'branch_id'           => 'nullable|exists:branches,id',
         ]);
 
-        $branchId = isset($validated['branch_id']) ? (int) $validated['branch_id'] : null;
+        $requestedBranchId = $request->filled('branch_id') ? (int) $validated['branch_id'] : null;
         unset($validated['branch_id']);
 
-        if ($branchId) {
-            BranchAccess::assertCanMutateInBranch($request->user(), $branchId);
-        }
+        $branchId = BranchAccess::resolveCatalogMutationBranchId($user, $requestedBranchId);
 
-        $isbn = isset($validated['isbn']) ? trim((string) $validated['isbn']) : null;
-        if ($isbn === '') {
-            $isbn = null;
-            $validated['isbn'] = null;
-        }
+        return DB::transaction(function () use ($validated, $branchId, $user) {
+            [$book, $reused] = app(CanonicalBookService::class)->findOrCreate($validated, $user);
+            $createdNew = !$reused;
 
-        $book = null;
-        $reused = false;
-        if ($isbn) {
-            $book = Book::query()->where('isbn', $isbn)->first();
-            if ($book) {
-                $reused = true;
+            try {
+                $catalogItem = app(BranchCatalogService::class)->ensureForPricing(
+                    $branchId,
+                    (int) $book->id,
+                    null,
+                    $user->id
+                );
+            } catch (\Throwable $e) {
+                if ($createdNew) {
+                    $book->delete();
+                }
+
+                throw $e;
             }
-        }
 
-        if (!$book) {
-            if ($isbn) {
-                $request->validate(['isbn' => 'unique:books,isbn']);
-            }
-            $book = Book::create($validated);
-        }
-
-        $catalogItem = null;
-        if ($branchId) {
-            $catalogItem = app(BranchCatalogService::class)->ensure(
-                $branchId,
-                (int) $book->id,
-                CatalogSource::LOCAL,
-                null,
-                $request->user()?->id
+            ActivityLogger::record(
+                'books',
+                $reused ? 'linked' : 'created',
+                ($reused ? 'پیوند ISBN به کاتالوگ شعبه: ' : 'ایجاد کتاب «')."{$book->title}»",
+                $book,
+                ['isbn' => $book->isbn, 'author' => $book->author, 'branch_id' => $branchId, 'reused_canonical' => $reused],
             );
-        }
 
-        ActivityLogger::record(
-            'books',
-            $reused ? 'linked' : 'created',
-            ($reused ? 'پیوند ISBN به کاتالوگ شعبه: ' : 'ایجاد کتاب «')."{$book->title}»",
-            $book,
-            ['isbn' => $book->isbn, 'author' => $book->author, 'branch_id' => $branchId, 'reused_canonical' => $reused],
-        );
-
-        return response()->json([
-            'book' => $book,
-            'catalog_item' => $catalogItem,
-            'reused_canonical' => $reused,
-        ], $reused ? 200 : 201);
+            return response()->json([
+                'book' => $book,
+                'catalog_item' => $catalogItem,
+                'reused_canonical' => $reused,
+            ], $reused ? 200 : 201);
+        });
     }
 
     public function uploadCover(Request $request)
     {
+        BranchAccess::assertCanMutateCanonicalBook($request->user());
+
         $validated = $request->validate([
             'image' => 'required|image|max:5120',
         ]);
@@ -193,22 +239,34 @@ class BookController extends Controller
         ], 201);
     }
 
-    public function show(Book $book)
+    public function show(Request $request, Book $book)
     {
-        $user = request()->user();
+        $user = $request->user();
         BranchAccess::assertIraqBookVisible($user, $book);
-        if (!BranchAccess::isAdmin($user)) {
-            BranchAccess::assertCatalogBookVisible($user, (int) $book->id);
-        }
 
-        $book->load(['inventories.branch', 'inventories.supplier']);
-        $this->appendCurrentLotCosts($book);
+        $scope = CatalogReadScope::resolve(
+            $user,
+            $request->filled('branch_id') ? (int) $request->branch_id : null,
+            false
+        );
+        $branchId = $scope->branchId;
+
+        BranchAccess::assertCatalogBookVisible($user, (int) $book->id, $branchId);
+
+        $book->load([
+            'inventories' => fn ($q) => $q->where('branch_id', $branchId),
+            'inventories.branch',
+            'inventories.supplier',
+        ]);
+        $this->appendCurrentLotCosts($book, $branchId);
 
         return response()->json($book);
     }
 
     public function update(Request $request, Book $book)
     {
+        BranchAccess::assertCanMutateCanonicalBook($request->user());
+
         $validated = $request->validate([
             'title'               => 'sometimes|required|string|max:255',
             'author'              => 'sometimes|nullable|string|max:255',
@@ -296,8 +354,6 @@ class BookController extends Controller
     }
 
     /**
-     * Reasons a book cannot be hard-deleted (inventory / POS / warehouse history).
-     *
      * @return list<string>
      */
     private function bookDeleteBlockers(Book $book): array
@@ -344,17 +400,18 @@ class BookController extends Controller
             });
     }
 
-    /**
-     * Aggregate inventory rows intentionally do not own historical cost anymore.
-     * Expose the weighted cost of currently available immutable lots for edit/read UI.
-     */
-    private function appendCurrentLotCosts(Book $book): void
+    private function appendCurrentLotCosts(Book $book, ?int $branchId = null): void
     {
-        $lots = StockLot::query()
+        $lotsQuery = StockLot::query()
             ->where('book_id', $book->id)
             ->where('qty_available', '>', 0)
-            ->sellable()
-            ->get(['branch_id', 'currency', 'unit_cost', 'qty_available']);
+            ->sellable();
+
+        if ($branchId) {
+            $lotsQuery->where('branch_id', $branchId);
+        }
+
+        $lots = $lotsQuery->get(['branch_id', 'currency', 'unit_cost', 'qty_available']);
 
         foreach ($book->inventories as $inventory) {
             foreach (['toman', 'dinar'] as $currency) {
@@ -380,37 +437,49 @@ class BookController extends Controller
     public function byBranch(Request $request, $branchId)
     {
         $user = $request->user();
-        $query = Inventory::with(['book', 'supplier'])
-            ->where('branch_id', $branchId);
+        $scope = CatalogReadScope::resolve(
+            $user,
+            (int) $branchId,
+            false
+        );
 
-        if ($user->role !== 'super_admin' && $user->role !== 'admin') {
-            $visibleBranches = $user->iraq_only_visible_branches ?? [];
-            if (!in_array($user->branch_id, $visibleBranches)) {
-                $query->whereHas('book', fn($q) => $q->where('iraq_only', false));
-            }
+        $catalog = app(BranchCatalogService::class);
+        $query = Inventory::with(['book', 'supplier'])
+            ->where('branch_id', $scope->branchId)
+            ->whereIn('book_id', $catalog->catalogBookIdsQuery($scope->branchId));
+
+        if (!BranchAccess::canSeeIraqOnlyBooks($user)) {
+            $query->whereHas('book', fn ($q) => $q->where('iraq_only', false));
         }
 
-        $inventories = $query->get();
-        return response()->json($inventories);
+        return response()->json($query->get());
     }
 
     public function lowStock(Request $request)
     {
         $user = $request->user();
+        $scope = CatalogReadScope::resolve(
+            $user,
+            $request->filled('branch_id') ? (int) $request->branch_id : null,
+            false
+        );
+        $branchId = $scope->branchId;
         $globalThreshold = Cache::get('almanahel.low_stock_threshold', config('almanahel.low_stock_threshold', 5));
 
-        $query = Inventory::with(['book', 'branch'])->whereHas('book');
+        $catalog = app(BranchCatalogService::class);
+        $query = Inventory::with(['book', 'branch'])
+            ->where('branch_id', $branchId)
+            ->whereIn('book_id', $catalog->catalogBookIdsQuery($branchId))
+            ->whereHas('book');
 
-        if ($user->role !== 'super_admin' && $user->role !== 'admin') {
-            $visibleBranches = $user->iraq_only_visible_branches ?? [];
-            if (!in_array($user->branch_id, $visibleBranches)) {
-                $query->whereHas('book', fn ($q) => $q->where('iraq_only', false));
-            }
+        if (!BranchAccess::canSeeIraqOnlyBooks($user)) {
+            $query->whereHas('book', fn ($q) => $q->where('iraq_only', false));
         }
 
         $inventories = $query->get()
             ->filter(function ($inv) use ($globalThreshold) {
                 $threshold = $inv->book->low_stock_threshold ?? $globalThreshold;
+
                 return $inv->quantity <= $threshold;
             })
             ->values();

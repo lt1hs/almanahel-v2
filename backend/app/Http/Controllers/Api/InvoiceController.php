@@ -6,6 +6,7 @@ use App\Exceptions\DomainException;
 use App\Http\Controllers\Controller;
 use App\Models\Check;
 use App\Models\Customer;
+use App\Models\CustomerReturnItem;
 use App\Models\Invoice;
 use App\Models\InvoiceItem;
 use App\Models\Inventory;
@@ -42,21 +43,44 @@ class InvoiceController extends Controller
             $query->where('payment_status', $request->payment_status);
         }
         if ($request->has('date_from')) {
-            $query->whereDate('created_at', '>=', $request->date_from);
+            $query->whereDate('sold_at', '>=', $request->date_from);
         }
         if ($request->has('date_to')) {
-            $query->whereDate('created_at', '<=', $request->date_to);
+            $query->whereDate('sold_at', '<=', $request->date_to);
+        }
+        if ($request->filled('customer_id')) {
+            $query->where('customer_id', (int) $request->customer_id);
         }
         if ($request->has('search')) {
             $search = $request->search;
             $query->where(function ($q) use ($search) {
                 $q->where('invoice_number', 'like', "%{$search}%")
                   ->orWhere('customer_name', 'like', "%{$search}%")
-                  ->orWhere('customer_phone', 'like', "%{$search}%");
+                  ->orWhere('customer_phone', 'like', "%{$search}%")
+                  ->orWhereHas('items.book', function ($bq) use ($search) {
+                      $bq->where('title', 'like', "%{$search}%")
+                        ->orWhere('isbn', 'like', "%{$search}%");
+                  });
             });
         }
 
-        return response()->json($query->latest()->paginate(20));
+        $page = $query->latest('sold_at')->paginate(20);
+        $page->getCollection()->transform(function (Invoice $invoice) {
+            $invoice->setRelation(
+                'items',
+                $invoice->items->map(function ($item) {
+                    $returned = (int) \App\Models\CustomerReturnItem::query()
+                        ->where('invoice_item_id', $item->id)
+                        ->sum('quantity');
+                    $item->setAttribute('quantity_returned', $returned);
+                    $item->setAttribute('returnable_quantity', max(0, (int) $item->quantity - $returned));
+                    return $item;
+                })
+            );
+            return $invoice;
+        });
+
+        return response()->json($page);
     }
 
     public function store(Request $request)

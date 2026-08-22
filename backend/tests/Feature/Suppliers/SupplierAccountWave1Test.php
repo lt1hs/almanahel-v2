@@ -438,6 +438,8 @@ class SupplierAccountWave1Test extends TestCase
         $this->assertSame(20000.0, (float) $previewA['total_payable']);
         foreach ($previewA['items'] as $line) {
             $this->assertSame($accountA->id, $line['supplier_account_id'] ?? null);
+            $this->assertSame($book->id, $line['book_id'] ?? null);
+            $this->assertSame($book->title, $line['title'] ?? null);
         }
     }
 

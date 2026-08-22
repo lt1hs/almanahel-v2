@@ -50,11 +50,16 @@ function returnTotals(ret: any, isCustomer: boolean) {
 }
 
 interface ConsignmentItem {
+    stock_lot_id: number;
     book_id: number;
     title: string;
+    isbn?: string;
+    receipt_number?: string;
     quantity: number;
     maxQty: number;
     cost_price: number;
+    currency?: string;
+    remaining_value?: number;
 }
 
 export default function ReturnsPage() {
@@ -77,6 +82,7 @@ export default function ReturnsPage() {
 
     // Customer return state
     const [invoiceSearch, setInvoiceSearch] = useState("");
+    const [invoiceHits, setInvoiceHits] = useState<any[]>([]);
     const [foundInvoice, setFoundInvoice] = useState<any>(null);
     const [refundMethod, setRefundMethod] = useState<"cash" | "credit">("cash");
     const [reason, setReason] = useState("");
@@ -86,6 +92,10 @@ export default function ReturnsPage() {
     const [creditCustomerLabel, setCreditCustomerLabel] = useState("");
     const [customerQuery, setCustomerQuery] = useState("");
     const [customerHits, setCustomerHits] = useState<Array<{ id: number; name: string; phone?: string | null }>>([]);
+    const [invoiceDateFrom, setInvoiceDateFrom] = useState("");
+    const [invoiceDateTo, setInvoiceDateTo] = useState("");
+    const [eligibleSearch, setEligibleSearch] = useState("");
+    const [supplierStep, setSupplierStep] = useState(1);
 
     // Consignment return state
     const [supplierAccounts, setSupplierAccounts] = useState<Array<{ accountId: number; canonicalSupplierId: number; name: string }>>([]);
@@ -97,6 +107,7 @@ export default function ReturnsPage() {
 
     const resetForm = () => {
         setInvoiceSearch("");
+        setInvoiceHits([]);
         setFoundInvoice(null);
         setRefundMethod("cash");
         setReason("");
@@ -106,6 +117,10 @@ export default function ReturnsPage() {
         setCreditCustomerLabel("");
         setCustomerQuery("");
         setCustomerHits([]);
+        setInvoiceDateFrom("");
+        setInvoiceDateTo("");
+        setEligibleSearch("");
+        setSupplierStep(1);
         setSupplierAccountId("");
         setBranchId(!canPickBranch && userBranchId ? String(userBranchId) : "");
         setConsignmentItems([]);
@@ -194,23 +209,29 @@ export default function ReturnsPage() {
         setConsignmentItems([]);
     };
 
-    const loadConsignmentInventory = async (accountId: string, brId: string) => {
+    const loadConsignmentInventory = async (accountId: string, brId: string, q = "") => {
         if (!accountId || !brId) return;
-        const account = supplierAccounts.find((s) => String(s.accountId) === String(accountId));
-        const canonicalSupplierId = account?.canonicalSupplierId;
-        if (!canonicalSupplierId) return;
         try {
-            const data = await apiRequest(`/warehouse/${brId}/inventory`);
-            const items = (Array.isArray(data) ? data : [])
-                .filter((inv: any) => inv.type === "consignment" && String(inv.supplier_id) === String(canonicalSupplierId) && inv.quantity > 0)
-                .map((inv: any) => ({
-                    book_id: inv.book_id,
-                    title: inv.book?.title || t("distribution.bookFallback"),
-                    quantity: 1,
-                    maxQty: inv.quantity,
-                    cost_price: inv.cost_price_toman || inv.cost_price_dinar || inv.price_toman || 0,
-                }));
+            const params = new URLSearchParams({
+                branch_id: brId,
+                supplier_account_id: accountId,
+            });
+            if (q.trim()) params.set("q", q.trim());
+            const data = await apiRequest(`/returns/consignment/eligible?${params.toString()}`);
+            const items = (Array.isArray(data?.data) ? data.data : []).map((row: any) => ({
+                stock_lot_id: Number(row.stock_lot_id),
+                book_id: Number(row.book_id),
+                title: row.title || t("distribution.bookFallback"),
+                isbn: row.isbn || "",
+                receipt_number: row.receipt_number || "",
+                quantity: 0,
+                maxQty: Number(row.returnable_quantity || 0),
+                cost_price: Number(row.unit_cost || 0),
+                currency: row.currency,
+                remaining_value: Number(row.remaining_inventory_value || 0),
+            }));
             setConsignmentItems(items);
+            if (items.length) setSupplierStep(3);
         } catch {
             setConsignmentItems([]);
         }
@@ -218,31 +239,47 @@ export default function ReturnsPage() {
 
     useEffect(() => {
         if (supplierAccountId && branchId) {
-            loadConsignmentInventory(supplierAccountId, branchId);
+            loadConsignmentInventory(supplierAccountId, branchId, eligibleSearch);
         }
     }, [supplierAccountId, branchId, supplierAccounts]);
 
+    const selectInvoice = (inv: any) => {
+        setFoundInvoice(inv);
+        setInvoiceHits([]);
+        const selected: Record<number, boolean> = {};
+        const qtys: Record<number, number> = {};
+        inv.items?.forEach((i: any) => {
+            const returnable = Number(i.returnable_quantity ?? i.quantity) || 0;
+            if (returnable <= 0) return;
+            selected[i.id] = true;
+            qtys[i.id] = returnable;
+        });
+        setSelectedItems(selected);
+        setReturnQtys(qtys);
+        setCreditCustomerId(inv.customer_id ? Number(inv.customer_id) : null);
+        setCreditCustomerLabel(inv.customer_name || "");
+        setCustomerQuery("");
+        setCustomerHits([]);
+    };
+
     const handleSearchInvoice = async () => {
-        if (!invoiceSearch) return;
         try {
-            const data = await apiRequest(`/invoices?search=${invoiceSearch}`);
-            if (data.data?.length > 0) {
-                const inv = data.data[0];
-                setFoundInvoice(inv);
-                const selected: Record<number, boolean> = {};
-                const qtys: Record<number, number> = {};
-                inv.items?.forEach((i: any) => {
-                    selected[i.id] = true;
-                    qtys[i.id] = Number(i.quantity) || 1;
-                });
-                setSelectedItems(selected);
-                setReturnQtys(qtys);
-                setCreditCustomerId(inv.customer_id ? Number(inv.customer_id) : null);
-                setCreditCustomerLabel(inv.customer_name || "");
-                setCustomerQuery("");
-                setCustomerHits([]);
-            } else {
+            const params = new URLSearchParams();
+            if (invoiceSearch.trim()) params.set("search", invoiceSearch.trim());
+            if (invoiceDateFrom) params.set("date_from", invoiceDateFrom);
+            if (invoiceDateTo) params.set("date_to", invoiceDateTo);
+            if (!canPickBranch && userBranchId) params.set("branch_id", String(userBranchId));
+            const data = await apiRequest(`/invoices?${params.toString()}`);
+            const rows = data.data || [];
+            setInvoiceHits(rows);
+            if (rows.length === 1) {
+                selectInvoice(rows[0]);
+            } else if (rows.length === 0) {
+                setFoundInvoice(null);
                 setError(t("toast.invoiceNotFound"));
+            } else {
+                setFoundInvoice(null);
+                setError(null);
             }
         } catch {
             setError(t("toast.invoiceSearchError"));
@@ -260,13 +297,11 @@ export default function ReturnsPage() {
                 const items = foundInvoice.items
                     .filter((i: any) => selectedItems[i.id] && (Number(returnQtys[i.id]) || 0) > 0)
                     .map((i: any) => {
-                        const maxQty = Number(i.quantity) || 0;
+                        const maxQty = Number(i.returnable_quantity ?? i.quantity) || 0;
                         const qty = Math.max(1, Math.min(maxQty, Number(returnQtys[i.id]) || maxQty));
                         return {
-                            book_id: i.book_id,
                             invoice_item_id: i.id,
                             quantity: qty,
-                            unit_price: i.actual_price || i.unit_price,
                         };
                     });
                 if (items.length === 0) throw new Error(t("toast.minOneItem"));
@@ -298,10 +333,10 @@ export default function ReturnsPage() {
                         supplier_account_id: Number(supplierAccountId),
                         branch_id: Number(lockedBranch),
                         reason: consignmentReason || null,
+                        idempotency_key: `ui-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
                         items: items.map((i) => ({
-                            book_id: i.book_id,
+                            stock_lot_id: i.stock_lot_id,
                             quantity: i.quantity,
-                            cost_price: i.cost_price,
                         })),
                     }),
                 });
@@ -317,21 +352,21 @@ export default function ReturnsPage() {
         }
     };
 
-    const updateConsignmentQty = (bookId: number, delta: number) => {
+    const updateConsignmentQty = (stockLotId: number, delta: number) => {
         setConsignmentItems((prev) =>
             prev.map((item) =>
-                item.book_id === bookId
+                item.stock_lot_id === stockLotId
                     ? { ...item, quantity: Math.max(0, Math.min(item.maxQty, item.quantity + delta)) }
                     : item
             )
         );
     };
 
-    const setConsignmentQtyInput = (bookId: number, raw: string) => {
+    const setConsignmentQtyInput = (stockLotId: number, raw: string) => {
         const digits = parsePriceDigits(raw);
         setConsignmentItems((prev) =>
             prev.map((item) => {
-                if (item.book_id !== bookId) return item;
+                if (item.stock_lot_id !== stockLotId) return item;
                 if (!digits) return { ...item, quantity: 0 };
                 const next = Math.max(0, Math.min(item.maxQty, parseInt(digits, 10) || 0));
                 return { ...item, quantity: next };
@@ -633,21 +668,51 @@ export default function ReturnsPage() {
                                                 <label className="text-[10px] font-black text-ink/40 uppercase tracking-widest">{t("returns.form.searchInvoice")}</label>
                                                 <div className="flex gap-2">
                                                     <input type="text" value={invoiceSearch} onChange={(e) => setInvoiceSearch(e.target.value)}
-                                                        placeholder={t("returns.form.invoicePlaceholder")}
+                                                        placeholder="شماره فاکتور / مشتری / تلفن / عنوان / ISBN"
                                                         className="flex-1 h-10 rounded-xl border border-ink/10 bg-parchment/20 px-3 text-[12px] font-vazirmatn outline-none focus:ring-1 focus:ring-primary" />
                                                     <Button type="button" size="sm" className="h-10 rounded-xl" onClick={handleSearchInvoice}>{t("returns.form.search")}</Button>
                                                 </div>
+                                                <div className="grid grid-cols-2 gap-2">
+                                                    <input type="date" value={invoiceDateFrom} onChange={(e) => setInvoiceDateFrom(e.target.value)}
+                                                        className="h-9 rounded-xl border border-ink/10 bg-white px-2 text-[11px] font-vazirmatn" />
+                                                    <input type="date" value={invoiceDateTo} onChange={(e) => setInvoiceDateTo(e.target.value)}
+                                                        className="h-9 rounded-xl border border-ink/10 bg-white px-2 text-[11px] font-vazirmatn" />
+                                                </div>
                                             </div>
+                                            {invoiceHits.length > 1 && !foundInvoice && (
+                                                <div className="space-y-1.5 max-h-48 overflow-auto">
+                                                    {invoiceHits.map((inv) => (
+                                                        <button
+                                                            key={inv.id}
+                                                            type="button"
+                                                            onClick={() => selectInvoice(inv)}
+                                                            className="w-full text-start p-3 rounded-xl border border-ink/8 bg-white/80 hover:border-primary/30"
+                                                        >
+                                                            <p className="text-[11px] font-black">{inv.invoice_number}</p>
+                                                            <p className="text-[9px] text-ink/40">
+                                                                {inv.customer_name || "—"} · {inv.branch?.name || "—"} · {formatNumber(Number(inv.total || 0))}
+                                                            </p>
+                                                        </button>
+                                                    ))}
+                                                </div>
+                                            )}
                                             {foundInvoice && (
                                                 <div className="p-3 bg-primary/5 border border-primary/15 rounded-xl">
                                                     <div className="flex items-center justify-between mb-2">
-                                                        <p className="text-[11px] font-black">{t("checks.invoice")} {foundInvoice.invoice_number}</p>
+                                                        <div>
+                                                            <p className="text-[11px] font-black">{t("checks.invoice")} {foundInvoice.invoice_number}</p>
+                                                            <p className="text-[9px] text-ink/40 mt-0.5">
+                                                                {foundInvoice.customer_name || "—"} · {foundInvoice.branch?.name || "—"} · {foundInvoice.payment_method}
+                                                            </p>
+                                                        </div>
                                                         <CheckCircle2 className="w-4 h-4 text-primary" />
                                                     </div>
                                                     {foundInvoice.items?.map((item: any) => {
-                                                        const maxQty = Number(item.quantity) || 0;
+                                                        const maxQty = Number(item.returnable_quantity ?? item.quantity) || 0;
+                                                        if (maxQty <= 0) return null;
                                                         const qty = returnQtys[item.id] ?? maxQty;
                                                         const unit = Number(item.actual_price || item.unit_price || 0);
+                                                        const already = Number(item.quantity_returned || 0);
                                                         return (
                                                         <label key={item.id} className="flex items-center justify-between gap-3 py-2 px-2.5 rounded-lg bg-white/70 border border-ink/5 mb-1 cursor-pointer">
                                                             <div className="flex items-center gap-2 min-w-0 flex-1">
@@ -657,7 +722,9 @@ export default function ReturnsPage() {
                                                                 <div className="min-w-0">
                                                                     <span className="text-[11px] font-vazirmatn font-bold block truncate">{item.book?.title}</span>
                                                                     <span className="text-[9px] text-ink/35">
-                                                                        {t("returns.form.maxQtyPrice")} · {formatNumber(maxQty)}
+                                                                        قابل مرجوعی {formatNumber(maxQty)}
+                                                                        {already > 0 ? ` · برگشتی قبلی ${formatNumber(already)}` : ""}
+                                                                        {" · "}{formatNumber(unit)}
                                                                     </span>
                                                                 </div>
                                                             </div>
@@ -774,23 +841,63 @@ export default function ReturnsPage() {
                                             </div>
                                             {consignmentItems.length > 0 ? (
                                                 <div className="space-y-2">
-                                                    <label className="text-[10px] font-black text-ink/40 uppercase tracking-widest">{t("returns.form.consignmentBooks")}</label>
+                                                    <div className="flex items-center justify-between gap-2">
+                                                        <label className="text-[10px] font-black text-ink/40 uppercase tracking-widest">{t("returns.form.consignmentBooks")}</label>
+                                                        <div className="flex gap-1">
+                                                            <input
+                                                                value={eligibleSearch}
+                                                                onChange={(e) => setEligibleSearch(e.target.value)}
+                                                                placeholder="عنوان / ISBN / رسید"
+                                                                className="h-8 w-36 rounded-lg border border-ink/10 px-2 text-[10px] font-vazirmatn"
+                                                            />
+                                                            <Button
+                                                                type="button"
+                                                                size="sm"
+                                                                className="h-8 rounded-lg text-[10px]"
+                                                                onClick={() => loadConsignmentInventory(supplierAccountId, branchId, eligibleSearch)}
+                                                            >
+                                                                {t("returns.form.search")}
+                                                            </Button>
+                                                        </div>
+                                                    </div>
+                                                    <div className="flex gap-2">
+                                                        <button
+                                                            type="button"
+                                                            className="text-[10px] font-black text-primary"
+                                                            onClick={() => setConsignmentItems((prev) => prev.map((i) => ({ ...i, quantity: i.maxQty })))}
+                                                        >
+                                                            انتخاب همه
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            className="text-[10px] font-black text-ink/40"
+                                                            onClick={() => setConsignmentItems((prev) => prev.map((i) => ({ ...i, quantity: 0 })))}
+                                                        >
+                                                            پاک کردن
+                                                        </button>
+                                                    </div>
                                                     {consignmentItems.map((item) => (
-                                                        <div key={item.book_id} className="flex items-center justify-between gap-3 p-3 rounded-xl border border-ink/8 bg-parchment/10">
+                                                        <div key={item.stock_lot_id} className="flex items-center justify-between gap-3 p-3 rounded-xl border border-ink/8 bg-parchment/10">
                                                             <div className="min-w-0">
                                                                 <p className="text-[11px] font-black font-vazirmatn truncate">{item.title}</p>
                                                                 <p className="text-[9px] text-ink/35">
-                                                                    {t("returns.form.maxQtyPrice")} · {formatNumber(item.maxQty)} · {formatNumber(item.cost_price)} {currencySymbol}
+                                                                    {item.receipt_number ? `${item.receipt_number} · ` : ""}
+                                                                    قابل مرجوعی {formatNumber(item.maxQty)} · {formatNumber(item.cost_price)} {currencySymbol}
                                                                 </p>
                                                             </div>
                                                             <QtyStepper
                                                                 value={item.quantity}
                                                                 max={item.maxQty}
-                                                                onDelta={(delta) => updateConsignmentQty(item.book_id, delta)}
-                                                                onInput={(raw) => setConsignmentQtyInput(item.book_id, raw)}
+                                                                onDelta={(delta) => updateConsignmentQty(item.stock_lot_id, delta)}
+                                                                onInput={(raw) => setConsignmentQtyInput(item.stock_lot_id, raw)}
                                                             />
                                                         </div>
                                                     ))}
+                                                    {consignmentItems.some((i) => i.quantity > 0) && (
+                                                        <p className="text-[10px] font-bold text-ink/50">
+                                                            اثر روی بدهی فروش/هدیه: صفر (مرجوعی موجودی فروش‌نرفته)
+                                                        </p>
+                                                    )}
                                                 </div>
                                             ) : supplierAccountId && branchId ? (
                                                 <p className="text-[11px] text-ink/35 text-center py-4">{t("returns.form.noConsignmentBooks")}</p>

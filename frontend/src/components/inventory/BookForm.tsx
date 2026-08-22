@@ -5,9 +5,14 @@ import { Scan, Book as BookIcon, DollarSign, AlertCircle, Info, MapPin, FileText
 import { Input } from "@/components/ui/Input";
 import { cn } from "@/lib/utils";
 import dynamic from "next/dynamic";
-import { apiRequest, apiUpload } from "@/lib/api";
+import { apiRequest, apiUpload, ApiError } from "@/lib/api";
+import {
+    buildBookByBarcodeUrl,
+    isBarcodeNewBookCandidate,
+} from "@/lib/bookCatalogRequests";
 import { useTranslation } from "@/hooks/useTranslation";
 import { useNotify } from "@/hooks/useNotify";
+import { useAuth } from "@/contexts/AuthContext";
 import {
     BOOK_CATEGORIES,
     BRANCH_STOCK_KEYS,
@@ -41,6 +46,8 @@ interface BookFormProps {
     readOnlyCost?: boolean;
     /** Ownership belongs to immutable stock lots after intake. */
     readOnlyOwnership?: boolean;
+    /** Operational branch for barcode catalog lookup (required for scanner). */
+    catalogBranchId?: number | null;
 }
 
 const fieldClass = "h-12 bg-white/40 border-white/60 focus:bg-white rounded-[10px] text-sm";
@@ -56,9 +63,11 @@ export function BookForm({
     readOnlyStock = false,
     readOnlyCost = false,
     readOnlyOwnership = false,
+    catalogBranchId = null,
 }: BookFormProps) {
     const { t, formatNumber } = useTranslation();
     const notify = useNotify();
+    const { user } = useAuth();
     const [isScannerOpen, setIsScannerOpen] = React.useState(false);
     const [isUploadingCover, setIsUploadingCover] = React.useState(false);
     const [categories, setCategories] = useState<string[]>([...BOOK_CATEGORIES]);
@@ -578,8 +587,21 @@ export function BookForm({
                 onClose={() => setIsScannerOpen(false)}
                 onDetected={async (code) => {
                     setIsScannerOpen(false);
+                    if (!catalogBranchId) {
+                        notify.error("inventory.branchRequired");
+                        return;
+                    }
                     try {
-                        const book = await apiRequest(`/books/by-barcode/${encodeURIComponent(code)}`);
+                        const url = buildBookByBarcodeUrl(
+                            code,
+                            { role: user?.role, branch_id: user?.branch_id ?? user?.branch?.id },
+                            catalogBranchId
+                        );
+                        if (!url) {
+                            notify.error("inventory.branchRequired");
+                            return;
+                        }
+                        const book = await apiRequest(url);
                         onChange({
                             ...data,
                             isbn: code,
@@ -588,9 +610,15 @@ export function BookForm({
                             publisher: book.publisher || data.publisher,
                         });
                         notify.success("toast.bookIdentified", { title: book.title });
-                    } catch {
-                        handleChange("isbn", code);
-                        notify.info("toast.barcodeNewBook");
+                    } catch (err) {
+                        const status = err instanceof ApiError ? err.status : 0;
+                        const message = err instanceof Error ? err.message : "";
+                        if (isBarcodeNewBookCandidate(status, message)) {
+                            handleChange("isbn", code);
+                            notify.info("toast.barcodeNewBook");
+                            return;
+                        }
+                        notify.rawError(message || t("toast.barcodeNotFound"));
                     }
                 }}
             />

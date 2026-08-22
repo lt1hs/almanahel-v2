@@ -78,6 +78,8 @@ class BranchCatalogBackfill
             ->select(['branch_id', 'book_id'])
             ->whereNull('superseded_by_inventory_id')
             ->distinct()
+            ->orderBy('branch_id')
+            ->orderBy('book_id')
             ->chunk(500, function ($rows) use ($pairs) {
                 foreach ($rows as $row) {
                     $pairs->push(['branch_id' => (int) $row->branch_id, 'book_id' => (int) $row->book_id]);
@@ -87,6 +89,8 @@ class BranchCatalogBackfill
         Gift::query()
             ->select(['branch_id', 'book_id'])
             ->distinct()
+            ->orderBy('branch_id')
+            ->orderBy('book_id')
             ->chunk(500, function ($rows) use ($pairs) {
                 foreach ($rows as $row) {
                     $pairs->push(['branch_id' => (int) $row->branch_id, 'book_id' => (int) $row->book_id]);
@@ -97,6 +101,8 @@ class BranchCatalogBackfill
             ->join('consignment_receipts', 'consignment_receipts.id', '=', 'consignment_receipt_items.consignment_receipt_id')
             ->select(['consignment_receipts.branch_id', 'consignment_receipt_items.book_id'])
             ->distinct()
+            ->orderBy('consignment_receipts.branch_id')
+            ->orderBy('consignment_receipt_items.book_id')
             ->chunk(500, function ($rows) use ($pairs) {
                 foreach ($rows as $row) {
                     $pairs->push(['branch_id' => (int) $row->branch_id, 'book_id' => (int) $row->book_id]);
@@ -107,6 +113,8 @@ class BranchCatalogBackfill
             ->join('invoices', 'invoices.id', '=', 'invoice_items.invoice_id')
             ->select(['invoices.branch_id', 'invoice_items.book_id'])
             ->distinct()
+            ->orderBy('invoices.branch_id')
+            ->orderBy('invoice_items.book_id')
             ->chunk(500, function ($rows) use ($pairs) {
                 foreach ($rows as $row) {
                     if ($row->branch_id) {

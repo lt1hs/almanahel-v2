@@ -13,7 +13,8 @@ import dynamic from "next/dynamic";
 import { cn } from "@/lib/utils";
 import { useTranslation } from "@/hooks/useTranslation";
 import { useNotify } from "@/hooks/useNotify";
-import { apiRequest } from "@/lib/api";
+import { apiRequest, ApiError } from "@/lib/api";
+import { buildBookByBarcodeUrl, buildBooksListUrl } from "@/lib/bookCatalogRequests";
 import { useAuth } from "@/contexts/AuthContext";
 import { Link } from "@/i18n/routing";
 import { printInvoice, buildInvoicePrintLabels } from "@/lib/printInvoice";
@@ -187,11 +188,13 @@ export default function SalesPage() {
         setLoadError(null);
 
         try {
-            const inventoryEndpoint = branchId
-                ? `/warehouse/${branchId}/inventory`
-                : "/books";
+            if (!branchId) {
+                setLoadError(t("inventory.branchRequired"));
+                setInventory([]);
+                return;
+            }
 
-            const invData = await apiRequest(inventoryEndpoint);
+            const invData = await apiRequest(`/warehouse/${branchId}/inventory`);
 
             const mapped = (invData || [])
                 .map((item: any) => mapInventoryItem(item, isDinar))
@@ -322,9 +325,20 @@ export default function SalesPage() {
         }
 
         try {
-            const book = await apiRequest(
-                `/books/by-barcode/${encodeURIComponent(trimmed)}${branchId ? `?branch_id=${branchId}` : ""}`
+            if (!branchId) {
+                notify.error("inventory.branchRequired");
+                return;
+            }
+            const url = buildBookByBarcodeUrl(
+                trimmed,
+                { role: user?.role, branch_id: user?.branch_id ?? user?.branch?.id },
+                branchId
             );
+            if (!url) {
+                notify.error("inventory.branchRequired");
+                return;
+            }
+            const book = await apiRequest(url);
             const branchInv = branchId
                 ? book.inventories?.find((inv: any) => inv.branch_id === branchId)
                 : book.inventories?.[0];
@@ -344,8 +358,12 @@ export default function SalesPage() {
             addToCart(mapped);
             notify.success("toast.addedToCart", { title: mapped.title });
             setSearch("");
-        } catch {
-            notify.error("toast.barcodeNotFound");
+        } catch (err) {
+            if (err instanceof ApiError && err.status === 404) {
+                notify.error("toast.barcodeNotFound");
+            } else {
+                notify.error("toast.barcodeNotFound");
+            }
         }
     };
 

@@ -14,6 +14,7 @@ import { useTranslation } from "@/hooks/useTranslation";
 import { useAuth } from "@/contexts/AuthContext";
 import { cn } from "@/lib/utils";
 import { apiRequest } from "@/lib/api";
+import { buildBooksListUrl } from "@/lib/bookCatalogRequests";
 
 export interface WarehouseLogFormData {
     book_id: string;
@@ -265,14 +266,22 @@ export function WarehouseLogForm({
     useEffect(() => {
         if (!isIn || isEditMode) return;
         const query = bookSearch.trim();
-        if (query.length < 2) {
+        if (query.length < 2 || !branchId) {
             setSearchBooks([]);
             return;
         }
         const timer = setTimeout(async () => {
             setIsSearchingBooks(true);
             try {
-                const data = await apiRequest(`/books?search=${encodeURIComponent(query)}`);
+                const url = buildBooksListUrl(
+                    { role: user?.role, branch_id: user?.branch_id ?? user?.branch?.id },
+                    { branchId, search: query }
+                );
+                if (!url) {
+                    setSearchBooks([]);
+                    return;
+                }
+                const data = await apiRequest(url);
                 setSearchBooks(Array.isArray(data) ? data.slice(0, 24) : []);
             } catch {
                 setSearchBooks([]);
@@ -281,7 +290,7 @@ export function WarehouseLogForm({
             }
         }, 320);
         return () => clearTimeout(timer);
-    }, [isIn, isEditMode, bookSearch]);
+    }, [isIn, isEditMode, bookSearch, branchId, user?.branch?.id, user?.branch_id, user?.role]);
 
     const selectBook = (bookId: string, title: string) => {
         setForm((f) => ({ ...f, book_id: bookId, quantity: "1" }));

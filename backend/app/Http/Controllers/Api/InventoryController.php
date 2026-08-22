@@ -6,6 +6,8 @@ use App\Http\Controllers\Controller;
 use App\Models\Book;
 use App\Models\Branch;
 use App\Models\Inventory;
+use App\Support\Authorization\BranchAccess;
+use App\Support\Catalog\CatalogReadScope;
 use App\Support\IntakePolicy;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
@@ -128,20 +130,24 @@ class InventoryController extends Controller
         ]);
     }
 
-    /** Stock for one book across all branches */
+    /** Stock for one book across branches — scoped to caller's authorized branch(es). */
     public function bookByBranches(Request $request, Book $book)
     {
         $user = $request->user();
+        BranchAccess::assertIraqBookVisible($user, $book);
 
-        if ($book->iraq_only && !in_array($user->role, ['super_admin', 'admin'], true)) {
-            $visible = $user->iraq_only_visible_branches ?? [];
-            if (!in_array($user->branch_id, $visible)) {
-                return response()->json(['message' => 'دسترسی غیرمجاز'], 403);
-            }
-        }
+        $scope = CatalogReadScope::resolve(
+            $user,
+            $request->filled('branch_id') ? (int) $request->branch_id : null,
+            false
+        );
+        $branchId = $scope->branchId;
+
+        BranchAccess::assertCatalogBookVisible($user, (int) $book->id, $branchId);
 
         $inventories = Inventory::with(['branch', 'supplier'])
             ->where('book_id', $book->id)
+            ->where('branch_id', $branchId)
             ->where('quantity', '>', 0)
             ->get();
 

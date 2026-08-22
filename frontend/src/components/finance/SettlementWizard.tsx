@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import { Calculator, Download, Send, ChevronDown, Building2, BookOpen } from "lucide-react";
+import { Calculator, Download, Send, ChevronDown, Building2, BookOpen, CalendarDays } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/Card";
 import { cn } from "@/lib/utils";
 import { useTranslation } from "@/hooks/useTranslation";
@@ -15,6 +15,41 @@ interface SettlementItem {
     total: number;
     commission: number;
     publisherShare?: number;
+    kind?: "sale" | "gift";
+}
+
+export type SettlementBreakdown = {
+    sales_payable?: string | number;
+    gift_payable?: string | number;
+    return_reversals?: string | number;
+    previously_settled?: string | number;
+    remaining_payable?: string | number;
+};
+
+function toDateInput(d: Date): string {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
+}
+
+function defaultPeriod(): { from: string; to: string } {
+    const to = new Date();
+    const from = new Date(to.getFullYear(), to.getMonth(), 1);
+    return { from: toDateInput(from), to: toDateInput(to) };
+}
+
+function periodPreset(kind: "month" | "90d" | "year"): { from: string; to: string } {
+    const to = new Date();
+    if (kind === "month") {
+        return { from: toDateInput(new Date(to.getFullYear(), to.getMonth(), 1)), to: toDateInput(to) };
+    }
+    if (kind === "90d") {
+        const from = new Date(to);
+        from.setDate(from.getDate() - 89);
+        return { from: toDateInput(from), to: toDateInput(to) };
+    }
+    return { from: toDateInput(new Date(to.getFullYear(), 0, 1)), to: toDateInput(to) };
 }
 
 interface SettlementWizardProps {
@@ -22,6 +57,7 @@ interface SettlementWizardProps {
     onCalculate: (supplierAccountId: number, fromDate: string, toDate: string) => Promise<void>;
     onConfirm?: (supplierAccountId: number, fromDate: string, toDate: string, amount: number) => Promise<void>;
     settlementData: SettlementItem[];
+    breakdown?: SettlementBreakdown | null;
     isLoading?: boolean;
     isConfirming?: boolean;
     initialSupplierAccountId?: number | null;
@@ -29,6 +65,11 @@ interface SettlementWizardProps {
     branchId?: number | null;
     disabled?: boolean;
     sessionKey?: number;
+    /** Optional branch picker embedded in the same filter card */
+    branches?: { id: number; name: string }[];
+    selectedBranchId?: string;
+    onBranchChange?: (branchId: string) => void;
+    showBranchPicker?: boolean;
 }
 
 export function SettlementWizard({
@@ -36,6 +77,7 @@ export function SettlementWizard({
     onCalculate,
     onConfirm,
     settlementData,
+    breakdown = null,
     isLoading,
     isConfirming,
     initialSupplierAccountId,
@@ -43,14 +85,29 @@ export function SettlementWizard({
     branchId,
     disabled = false,
     sessionKey = 0,
+    branches = [],
+    selectedBranchId = "",
+    onBranchChange,
+    showBranchPicker = false,
 }: SettlementWizardProps) {
     const { t, formatNumber } = useTranslation();
     const notify = useNotify();
     const symbol = currencySymbol || t("common.currency.tomanSymbol");
+    const initialDates = defaultPeriod();
     const [selectedSupplier, setSelectedSupplier] = useState<any>(null);
     const [open, setOpen] = useState(false);
-    const [fromDate, setFromDate] = useState("");
-    const [toDate, setToDate] = useState("");
+    const [fromDate, setFromDate] = useState(initialDates.from);
+    const [toDate, setToDate] = useState(initialDates.to);
+    const [settleAmount, setSettleAmount] = useState("");
+    const [activePreset, setActivePreset] = useState<"month" | "90d" | "year" | "custom">("month");
+
+    useEffect(() => {
+        const next = defaultPeriod();
+        setFromDate(next.from);
+        setToDate(next.to);
+        setActivePreset("month");
+        setSettleAmount("");
+    }, [sessionKey]);
 
     useEffect(() => {
         if (!suppliers.length || disabled || !branchId) {
@@ -69,6 +126,17 @@ export function SettlementWizard({
     const totalPayable = settlementData.reduce(
         (acc, item) => acc + (item.publisherShare ?? item.total - item.commission), 0
     );
+
+    useEffect(() => {
+        setSettleAmount("");
+    }, [totalPayable, sessionKey]);
+
+    const applyPreset = (kind: "month" | "90d" | "year") => {
+        const next = periodPreset(kind);
+        setFromDate(next.from);
+        setToDate(next.to);
+        setActivePreset(kind);
+    };
 
     const tableHeaders = [
         t("finance.settlement.table.book"),
@@ -96,107 +164,219 @@ export function SettlementWizard({
         }
     };
 
+    const amountNum = Number(settleAmount);
+    const amountValid =
+        Number.isFinite(amountNum) && amountNum > 0 && amountNum <= totalPayable + 1e-9;
+
+    const confirmAmount = () => {
+        if (!selectedSupplier || !amountValid) return;
+        onConfirm?.(selectedSupplier.id, fromDate, toDate, amountNum);
+    };
+
+    const breakdownRows = [
+        { key: "sales", label: "فروش", value: breakdown?.sales_payable },
+        { key: "gifts", label: "هدایا", value: breakdown?.gift_payable },
+        { key: "reversals", label: "برگشت/تعدیل", value: breakdown?.return_reversals },
+        { key: "settled", label: "تسویه‌شده قبلی", value: breakdown?.previously_settled },
+        { key: "remaining", label: "مانده قابل تسویه", value: breakdown?.remaining_payable ?? totalPayable },
+    ];
+
+    const canCalculate = Boolean(branchId && selectedSupplier && fromDate && toDate && !isLoading && !disabled);
+
     return (
         <div className="space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 p-4 bg-white/50 backdrop-blur-md rounded-2xl border border-white/70 shadow-sm">
-                <div className="space-y-1.5">
-                    <label className="text-[10px] font-black font-vazirmatn text-ink/40 uppercase tracking-wider block">
-                        {t("finance.settlement.supplier")}
-                    </label>
-                    <div className="relative">
-                        <button type="button" onClick={() => setOpen((v) => !v)}
-                            className="w-full h-10 bg-white border border-ink/10 rounded-xl ps-3 pe-9 text-[12px] font-vazirmatn text-ink text-end flex items-center justify-between hover:border-primary/30 transition-colors outline-none focus:ring-2 focus:ring-primary/15 shadow-sm">
-                            <ChevronDown className={cn("w-3.5 h-3.5 text-ink/30 transition-transform duration-200 shrink-0", open && "rotate-180")} />
-                            <span className="truncate">{selectedSupplier?.name || t("finance.settlement.selectSupplier")}</span>
-                        </button>
-                        {open && (
-                            <div className="absolute top-full mt-1.5 inset-x-0 bg-white border border-ink/8 rounded-xl shadow-xl overflow-hidden z-20 max-h-48 overflow-y-auto">
-                                {suppliers.length === 0 ? (
-                                    <p className="px-4 py-3 text-[11px] text-ink/30 text-center">{t("finance.settlement.loadingSuppliers")}</p>
-                                ) : suppliers.map((s) => (
-                                    <button key={s.id} type="button"
-                                        onClick={() => { setSelectedSupplier(s); setOpen(false); }}
-                                        className={cn(
-                                            "w-full px-4 py-2.5 text-end text-[12px] font-vazirmatn transition-colors hover:bg-primary/5 hover:text-primary",
-                                            s.id === selectedSupplier?.id ? "text-primary font-black bg-primary/5" : "text-ink/70"
-                                        )}>
-                                        {s.name}
-                                    </button>
-                                ))}
+            <Card className="border border-white/70 bg-white/70 backdrop-blur-xl rounded-2xl overflow-visible shadow-sm">
+                <CardContent className="p-5 space-y-4">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex items-center gap-2 text-ink/45">
+                            <CalendarDays className="w-3.5 h-3.5" />
+                            <p className="text-[10px] font-black uppercase tracking-widest">بازه تسویه</p>
+                        </div>
+                        <div className="flex flex-wrap gap-1.5">
+                            {(
+                                [
+                                    { key: "month", label: "این ماه" },
+                                    { key: "90d", label: "۹۰ روز" },
+                                    { key: "year", label: "امسال" },
+                                ] as const
+                            ).map((p) => (
+                                <button
+                                    key={p.key}
+                                    type="button"
+                                    disabled={disabled}
+                                    onClick={() => applyPreset(p.key)}
+                                    className={cn(
+                                        "h-7 rounded-lg px-2.5 text-[10px] font-black transition-all",
+                                        activePreset === p.key
+                                            ? "bg-primary text-white shadow-sm"
+                                            : "bg-parchment/50 text-ink/45 hover:bg-parchment hover:text-ink"
+                                    )}
+                                >
+                                    {p.label}
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+
+                    <div
+                        className={cn(
+                            "grid grid-cols-1 gap-3",
+                            showBranchPicker ? "lg:grid-cols-12" : "lg:grid-cols-10"
+                        )}
+                    >
+                        {showBranchPicker && (
+                            <div className="lg:col-span-3 space-y-1.5">
+                                <label className="text-[10px] font-black uppercase tracking-widest text-ink/40 flex items-center gap-1.5">
+                                    <Building2 className="w-3 h-3" />
+                                    {t("distribution.branchFallback")}
+                                </label>
+                                <select
+                                    value={selectedBranchId}
+                                    onChange={(e) => onBranchChange?.(e.target.value)}
+                                    disabled={disabled}
+                                    className="h-11 w-full rounded-xl border border-ink/10 bg-white/90 px-3 text-[12px] font-vazirmatn outline-none focus:border-primary/30 disabled:opacity-40"
+                                >
+                                    <option value="">{t("expenses.form.selectBranch")}</option>
+                                    {branches.map((b) => (
+                                        <option key={b.id} value={b.id}>{b.name}</option>
+                                    ))}
+                                </select>
                             </div>
                         )}
+
+                        <div className={cn("relative space-y-1.5", showBranchPicker ? "lg:col-span-3" : "lg:col-span-3")}>
+                            <label className="text-[10px] font-black uppercase tracking-widest text-ink/40 block">
+                                {t("finance.settlement.selectSupplier")}
+                            </label>
+                            <button
+                                type="button"
+                                disabled={disabled || !branchId}
+                                onClick={() => setOpen((v) => !v)}
+                                className="h-11 w-full rounded-xl border border-ink/10 bg-white/90 px-3 flex items-center justify-between text-[12px] font-black font-vazirmatn disabled:opacity-40"
+                            >
+                                <span className="truncate">{selectedSupplier?.name || t("finance.settlement.selectSupplier")}</span>
+                                <ChevronDown className="w-4 h-4 opacity-40 shrink-0" />
+                            </button>
+                            {open && (
+                                <div className="absolute z-20 mt-1 w-full max-h-56 overflow-auto rounded-xl border border-ink/10 bg-white shadow-xl">
+                                    {suppliers.length === 0 ? (
+                                        <p className="px-3 py-3 text-[11px] text-ink/35">تأمین‌کننده‌ای برای این شعبه نیست</p>
+                                    ) : (
+                                        suppliers.map((s) => (
+                                            <button
+                                                key={s.id}
+                                                type="button"
+                                                className="w-full text-start px-3 py-2.5 text-[12px] font-vazirmatn hover:bg-parchment/40"
+                                                onClick={() => {
+                                                    setSelectedSupplier(s);
+                                                    setOpen(false);
+                                                }}
+                                            >
+                                                {s.name}
+                                            </button>
+                                        ))
+                                    )}
+                                </div>
+                            )}
+                        </div>
+
+                        <div className="lg:col-span-2 space-y-1.5">
+                            <label className="text-[10px] font-black uppercase tracking-widest text-ink/40 block">
+                                {t("finance.settlement.fromDate")}
+                            </label>
+                            <input
+                                type="date"
+                                value={fromDate}
+                                onChange={(e) => {
+                                    setFromDate(e.target.value);
+                                    setActivePreset("custom");
+                                }}
+                                disabled={disabled || !branchId}
+                                className="h-11 w-full rounded-xl border border-ink/10 bg-white/90 px-3 text-[12px] font-vazirmatn outline-none focus:border-primary/30 disabled:opacity-40"
+                            />
+                        </div>
+
+                        <div className="lg:col-span-2 space-y-1.5">
+                            <label className="text-[10px] font-black uppercase tracking-widest text-ink/40 block">
+                                {t("finance.settlement.toDate")}
+                            </label>
+                            <input
+                                type="date"
+                                value={toDate}
+                                onChange={(e) => {
+                                    setToDate(e.target.value);
+                                    setActivePreset("custom");
+                                }}
+                                disabled={disabled || !branchId}
+                                className="h-11 w-full rounded-xl border border-ink/10 bg-white/90 px-3 text-[12px] font-vazirmatn outline-none focus:border-primary/30 disabled:opacity-40"
+                            />
+                        </div>
+
+                        <div className="lg:col-span-2 flex items-end">
+                            <button
+                                type="button"
+                                disabled={!canCalculate}
+                                onClick={() => selectedSupplier && onCalculate(selectedSupplier.id, fromDate, toDate)}
+                                className="h-11 w-full rounded-xl bg-primary text-white text-[12px] font-black font-vazirmatn flex items-center justify-center gap-2 disabled:opacity-40 shadow-sm shadow-primary/20"
+                            >
+                                <Calculator className="w-4 h-4" />
+                                {isLoading ? t("common.loading") : t("finance.settlement.calculate")}
+                            </button>
+                        </div>
                     </div>
-                </div>
 
-                <div className="space-y-1.5">
-                    <label className="text-[10px] font-black font-vazirmatn text-ink/40 uppercase tracking-wider block">
-                        {t("finance.settlement.fromDate")}
-                    </label>
-                    <input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)}
-                        aria-label={t("finance.settlement.fromDate")}
-                        className="w-full h-10 bg-white border border-ink/10 rounded-xl px-3 text-[12px] font-vazirmatn text-ink outline-none focus:ring-2 focus:ring-primary/15 focus:border-primary/30 transition-all shadow-sm" />
-                </div>
-                <div className="space-y-1.5">
-                    <label className="text-[10px] font-black font-vazirmatn text-ink/40 uppercase tracking-wider block">
-                        {t("finance.settlement.toDate")}
-                    </label>
-                    <input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)}
-                        aria-label={t("finance.settlement.toDate")}
-                        className="w-full h-10 bg-white border border-ink/10 rounded-xl px-3 text-[12px] font-vazirmatn text-ink outline-none focus:ring-2 focus:ring-primary/15 focus:border-primary/30 transition-all shadow-sm" />
-                </div>
-
-                <div className="md:col-span-3 pt-1">
-                    <button
-                        type="button"
-                        disabled={disabled || !branchId || !selectedSupplier || !fromDate || !toDate || isLoading}
-                        onClick={() => onCalculate(selectedSupplier.id, fromDate, toDate)}
-                        className="w-full md:w-auto flex items-center justify-center gap-2 h-10 px-6 rounded-xl bg-primary hover:bg-primary/90 disabled:opacity-50 text-white text-[12px] font-black font-vazirmatn shadow-md shadow-primary/20 transition-all active:scale-[0.98]">
-                        <Calculator className={cn("w-4 h-4", isLoading && "animate-spin")} />
-                        {isLoading ? t("finance.settlement.calculating") : t("finance.settlement.calculate")}
-                    </button>
-                </div>
-            </div>
-
-            {selectedSupplier && (
-                <div className="flex items-center gap-3 px-4 py-3 bg-primary/5 border border-primary/15 rounded-xl">
-                    <div className="w-9 h-9 rounded-xl bg-primary/10 border border-primary/10 flex items-center justify-center shrink-0">
-                        <Building2 className="w-4 h-4 text-primary" />
-                    </div>
-                    <div>
-                        <p className="text-[12px] font-black font-vazirmatn text-ink">{selectedSupplier.name}</p>
-                        <p className="text-[9px] text-ink/30 font-bold mt-px">
-                            {t("finance.settlement.supplier")} · SUP-{selectedSupplier.id}
+                    {!branchId && (
+                        <p className="text-[11px] font-bold text-amber-700 bg-amber-50 border border-amber-100 rounded-xl px-3 py-2 flex items-center gap-1.5">
+                            <Building2 className="w-3.5 h-3.5 shrink-0" />
+                            {t("expenses.form.selectBranch")}
                         </p>
-                    </div>
+                    )}
+                </CardContent>
+            </Card>
+
+            {breakdown && settlementData.length > 0 && (
+                <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+                    {breakdownRows.map((row) => (
+                        <Card key={row.key} className="rounded-xl border border-white/70 bg-white/70">
+                            <CardContent className="p-3">
+                                <p className="text-[8px] font-black uppercase tracking-wider text-ink/35 mb-1">{row.label}</p>
+                                <p className="text-[13px] font-black font-vazirmatn tabular-nums text-ink">
+                                    {formatNumber(Number(row.value || 0))}
+                                </p>
+                            </CardContent>
+                        </Card>
+                    ))}
                 </div>
             )}
 
-            <Card className="border border-white/70 bg-white/50 backdrop-blur-md shadow-sm rounded-2xl overflow-hidden hidden md:block min-h-[100px]">
+            <Card className="border border-white/70 bg-white/50 backdrop-blur-md rounded-2xl overflow-hidden hidden md:block">
                 <CardContent className="p-0">
-                    {isLoading ? (
-                        <div className="p-8 space-y-2">
+                    {isLoading && (
+                        <div className="p-8 space-y-3">
                             {Array.from({ length: 3 }).map((_, i) => (
-                                <div key={i} className="h-10 bg-parchment/20 rounded-lg animate-pulse" />
+                                <div key={i} className="h-10 bg-parchment/30 rounded-xl animate-pulse" />
                             ))}
                         </div>
-                    ) : (
-                        <table className="w-full text-end border-collapse">
+                    )}
+                    {!isLoading && settlementData.length > 0 && (
+                        <table className="w-full text-end">
                             <thead>
-                                <tr className="bg-white/40 border-b border-ink/[0.06]">
+                                <tr className="border-b border-ink/5 bg-parchment/20">
                                     {tableHeaders.map((h) => (
-                                        <th key={h} className="px-5 py-3.5 font-black font-vazirmatn text-[10px] text-ink/40 uppercase tracking-wider">
+                                        <th key={h} className="px-5 py-3 text-[9px] font-black uppercase tracking-widest text-ink/30">
                                             {h}
                                         </th>
                                     ))}
                                 </tr>
                             </thead>
-                            <tbody className="divide-y divide-ink/[0.04]">
+                            <tbody>
                                 {settlementData.map((item, i) => (
-                                    <tr key={i} className="hover:bg-white/60 transition-colors duration-150 group">
+                                    <tr key={i} className="border-b border-ink/5 last:border-0">
                                         <td className="px-5 py-3.5">
-                                            <div className="flex items-center justify-end gap-2.5">
-                                                <span className="text-[12.5px] font-black font-vazirmatn text-ink group-hover:text-primary transition-colors">
+                                            <div className="flex items-center justify-end gap-2">
+                                                <span className="text-[12px] font-black font-vazirmatn text-ink">
                                                     {item.title}
+                                                    {item.kind === "gift" ? " (هدیه)" : ""}
                                                 </span>
                                                 <div className="w-7 h-7 rounded-lg bg-parchment/60 border border-ink/5 flex items-center justify-center shrink-0">
                                                     <BookOpen className="w-3.5 h-3.5 text-ink/20" />
@@ -222,7 +402,7 @@ export function SettlementWizard({
                         </table>
                     )}
                     {settlementData.length === 0 && !isLoading && (
-                        <div className="p-10 text-center text-ink/20 font-black uppercase tracking-widest text-[10px]">
+                        <div className="p-10 text-center text-ink/25 font-black text-[11px] font-vazirmatn">
                             {t("finance.settlement.noData")}
                         </div>
                     )}
@@ -257,15 +437,53 @@ export function SettlementWizard({
             <div className="flex flex-col sm:flex-row items-center justify-between gap-5 p-5 text-white rounded-2xl shadow-xl border border-primary/20 relative overflow-hidden bg-gradient-to-br from-[#0b1e1e] via-[#0d2626] to-ink/95">
                 <div className="absolute inset-0 bg-gradient-to-l from-accent/5 via-transparent to-primary/15 pointer-events-none" />
 
-                <div className="relative z-10 text-center sm:text-end">
-                    <p className="text-[10px] font-black font-vazirmatn text-white/40 uppercase tracking-widest mb-2">
-                        {t("finance.settlement.finalPayable")}
-                    </p>
-                    <div className="flex items-end gap-2 justify-center sm:justify-end">
-                        <span className="text-[28px] font-black font-vazirmatn tabular-nums text-primary leading-none">
-                            {formatNumber(totalPayable)}
-                        </span>
-                        <span className="text-[12px] font-black font-vazirmatn text-white/25 mb-1">{symbol}</span>
+                <div className="relative z-10 text-center sm:text-end space-y-3 w-full sm:w-auto">
+                    <div>
+                        <p className="text-[10px] font-black font-vazirmatn text-white/40 uppercase tracking-widest mb-2">
+                            {t("finance.settlement.finalPayable")}
+                        </p>
+                        <div className="flex items-end gap-2 justify-center sm:justify-end">
+                            <span className="text-[28px] font-black font-vazirmatn tabular-nums text-primary leading-none">
+                                {formatNumber(totalPayable)}
+                            </span>
+                            <span className="text-[12px] font-black font-vazirmatn text-white/25 mb-1">{symbol}</span>
+                        </div>
+                    </div>
+                    <div className="text-start sm:text-end space-y-2">
+                        <label className="text-[9px] font-black uppercase tracking-widest text-white/40 block">
+                            مبلغ تسویه (جزئی مجاز)
+                        </label>
+                        <input
+                            type="number"
+                            min={0}
+                            step="0.01"
+                            max={totalPayable || undefined}
+                            value={settleAmount}
+                            onChange={(e) => setSettleAmount(e.target.value)}
+                            disabled={disabled || settlementData.length === 0}
+                            placeholder={totalPayable > 0 ? String(totalPayable) : "0"}
+                            className="h-10 w-full sm:w-48 rounded-xl border border-white/20 bg-white/10 px-3 text-[13px] font-black font-vazirmatn tabular-nums text-white outline-none disabled:opacity-40 placeholder:text-white/25"
+                        />
+                        {totalPayable > 0 && (
+                            <div className="flex gap-2 justify-center sm:justify-end">
+                                <button
+                                    type="button"
+                                    disabled={disabled || settlementData.length === 0}
+                                    onClick={() => setSettleAmount(String(Math.round(totalPayable / 2)))}
+                                    className="text-[9px] font-black text-white/50 hover:text-white underline disabled:opacity-40"
+                                >
+                                    ۵۰٪
+                                </button>
+                                <button
+                                    type="button"
+                                    disabled={disabled || settlementData.length === 0}
+                                    onClick={() => setSettleAmount(String(totalPayable))}
+                                    className="text-[9px] font-black text-white/50 hover:text-white underline disabled:opacity-40"
+                                >
+                                    کل مانده
+                                </button>
+                            </div>
+                        )}
                     </div>
                 </div>
 
@@ -281,8 +499,17 @@ export function SettlementWizard({
                     </button>
                     <button
                         type="button"
-                        disabled={disabled || !branchId || settlementData.length === 0 || !selectedSupplier || !fromDate || !toDate || isConfirming}
-                        onClick={() => onConfirm?.(selectedSupplier.id, fromDate, toDate, totalPayable)}
+                        disabled={
+                            disabled ||
+                            !branchId ||
+                            settlementData.length === 0 ||
+                            !selectedSupplier ||
+                            !fromDate ||
+                            !toDate ||
+                            isConfirming ||
+                            !amountValid
+                        }
+                        onClick={confirmAmount}
                         className="flex-1 sm:flex-none flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-accent hover:bg-accent/90 disabled:opacity-40 text-white shadow-lg shadow-accent/25 text-[11.5px] font-black font-vazirmatn transition-all active:scale-[0.98]"
                     >
                         <Send className="w-4 h-4 shrink-0" />

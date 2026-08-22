@@ -100,7 +100,7 @@ class FinanceBaselineTest extends TestCase
         $this->assertTrue(collect($response->json())->every(fn ($row) => isset($row['currency'])));
     }
 
-    public function test_settlement_preview_items_use_open_qty_not_title(): void
+    public function test_settlement_preview_items_use_open_qty_with_book_title(): void
     {
         $branch = $this->makeBranch();
         $this->actingAsRole('admin', $branch);
@@ -145,7 +145,9 @@ class FinanceBaselineTest extends TestCase
         $this->assertArrayHasKey('open_qty', $line);
         $this->assertArrayHasKey('open_amount', $line);
         $this->assertArrayHasKey('unit_cost', $line);
-        $this->assertArrayNotHasKey('title', $line);
+        $this->assertArrayHasKey('book_id', $line);
+        $this->assertArrayHasKey('title', $line);
+        $this->assertNotSame('', (string) ($line['title'] ?? ''));
         $this->assertArrayNotHasKey('qty_sold', $line);
         $this->assertArrayNotHasKey('publisher_share', $line);
     }

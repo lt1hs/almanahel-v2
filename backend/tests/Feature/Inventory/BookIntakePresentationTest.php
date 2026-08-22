@@ -66,7 +66,7 @@ class BookIntakePresentationTest extends TestCase
         ]);
         $inventory->forceFill(['cost_price_toman' => null])->save();
 
-        $this->getJson('/api/books/'.$book->id)
+        $this->getJson('/api/books/'.$book->id.'?branch_id='.$branch->id)
             ->assertOk()
             ->assertJsonPath('inventories.0.quantity', 3)
             ->assertJsonPath('inventories.0.cost_price_toman', '72500.00');

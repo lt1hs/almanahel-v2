@@ -57,7 +57,27 @@ class GiftController extends Controller
             });
         }
 
-        return response()->json($query->paginate(20));
+        $paginator = $query->paginate(20);
+        $statusService = app(\App\Services\Settlement\GiftSettlementStatus::class);
+        $paginator->getCollection()->transform(function (Gift $gift) use ($statusService) {
+            $profile = $statusService->forGift($gift);
+            $gift->setAttribute('settlement_status', $profile['settlement_status']);
+            $gift->setAttribute('gross_gift_payable', $profile['gross_gift_payable']);
+            $gift->setAttribute('settled_amount', $profile['settled_amount']);
+            $gift->setAttribute('remaining_payable', $profile['remaining_payable']);
+            // Keep accounting_status aligned for legacy filters without requiring a second settle.
+            if ($profile['settlement_status'] === 'settled' && $gift->accounting_status !== 'settled') {
+                $gift->forceFill(['accounting_status' => 'settled'])->save();
+                $gift->accounting_status = 'settled';
+            } elseif (in_array($profile['settlement_status'], ['unsettled', 'partially_settled'], true)
+                && $gift->accounting_status === 'settled') {
+                // Do not force-unsettled a manually marked row mid-list; sync on settle path.
+            }
+
+            return $gift;
+        });
+
+        return response()->json($paginator);
     }
 
     public function store(Request $request)
@@ -184,28 +204,63 @@ class GiftController extends Controller
             'accounting_status' => 'required|in:pending,settled',
         ]);
 
-        if ($gift->accounting_status === $validated['accounting_status']) {
+        $profile = app(\App\Services\Settlement\GiftSettlementStatus::class)->forGift($gift);
+
+        // Owned gifts: manual flag only.
+        if ($profile['settlement_status'] === 'not_applicable') {
+            if ($gift->accounting_status === $validated['accounting_status']) {
+                return response()->json($gift->load(['book', 'branch', 'supplier']));
+            }
+            $gift->update($validated);
+            ActivityLogger::record(
+                'gifts',
+                'status_changed',
+                "وضعیت هدیه #{$gift->id} → {$validated['accounting_status']}",
+                $gift,
+                [
+                    'accounting_status' => $validated['accounting_status'],
+                    'recipient_name' => $gift->recipient_name,
+                    'book_id' => $gift->book_id,
+                ],
+                (int) $gift->branch_id,
+            );
+
             return response()->json($gift->load(['book', 'branch', 'supplier']));
         }
 
-        $gift->update($validated);
-        // Consignment gift payable already recorded via receipt item quantity_sold at gift time.
-        // Do not create synthetic empty settled receipts.
+        // Consignment gifts: settlement allocations are the source of truth.
+        // Manual "settled" is only allowed when remaining payable is already zero.
+        if ($validated['accounting_status'] === 'settled') {
+            if (Money::cmp($profile['remaining_payable'], '0') > 0) {
+                return response()->json([
+                    'message' => 'بدهی امانی این هدیه هنوز باز است. از صفحه تسویه امانی تسویه کنید.',
+                    'error' => 'consignment_gift_payable_open',
+                    'remaining_payable' => $profile['remaining_payable'],
+                    'settlement_status' => $profile['settlement_status'],
+                ], 422);
+            }
+            app(\App\Services\Settlement\GiftSettlementStatus::class)->syncAccountingStatus($gift);
 
-        ActivityLogger::record(
-            'gifts',
-            'status_changed',
-            "وضعیت هدیه #{$gift->id} → {$validated['accounting_status']}",
-            $gift,
-            [
-                'accounting_status' => $validated['accounting_status'],
-                'recipient_name' => $gift->recipient_name,
-                'book_id' => $gift->book_id,
-            ],
-            (int) $gift->branch_id,
-        );
+            return response()->json(
+                $gift->fresh()->load(['book', 'branch', 'supplier'])->setAttribute('settlement_status', 'settled')
+            );
+        }
 
-        return response()->json($gift->load(['book', 'branch', 'supplier']));
+        // Manual pending: only if payable still open.
+        if (Money::isZero($profile['remaining_payable'])) {
+            return response()->json([
+                'message' => 'این هدیه از طریق تسویه امانی پرداخت شده و قابل بازگردانی دستی نیست.',
+                'error' => 'consignment_gift_already_settled',
+                'settlement_status' => $profile['settlement_status'],
+            ], 422);
+        }
+
+        $gift->update(['accounting_status' => 'pending']);
+
+        return response()->json($gift->fresh()->load(['book', 'branch', 'supplier'])->setAttribute(
+            'settlement_status',
+            $profile['settlement_status']
+        ));
     }
 
     /** @param  list<\App\Models\GiftLotAllocation>  $allocs */

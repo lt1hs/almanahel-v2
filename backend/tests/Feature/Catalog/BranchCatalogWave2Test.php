@@ -48,8 +48,8 @@ class BranchCatalogWave2Test extends TestCase
 
     public function test_isbn_reuse_adds_catalog_only_for_creating_branch(): void
     {
-        $a = $this->makeBranch(['name' => 'Branch A']);
-        $b = $this->makeBranch(['name' => 'Branch B', 'city' => 'مشهد']);
+        $a = $this->makeBranch(['name' => 'Branch A', 'city' => 'مشهد']);
+        $b = $this->makeBranch(['name' => 'Branch B', 'city' => 'تهران']);
         $isbn = '9786000000002';
 
         $this->actingAsRole('branch_manager', $a);
@@ -206,7 +206,7 @@ class BranchCatalogWave2Test extends TestCase
 
     public function test_intake_creates_local_catalog_row(): void
     {
-        $branch = $this->makeBranch();
+        $branch = $this->makeBranch(['city' => 'مشهد']);
         $book = $this->makeBook();
         $supplier = $this->makeSupplier();
 
@@ -243,6 +243,7 @@ class BranchCatalogWave2Test extends TestCase
         $this->actingAsRole('admin', $branch);
         $this->getJson('/api/branch-catalog?branch_id='.$branch->id.'&source=legacy_unknown')
             ->assertOk()
+            ->assertJsonPath('aggregate', false)
             ->assertJsonFragment(['book_id' => $book->id, 'source' => CatalogSource::LEGACY_UNKNOWN]);
     }
 

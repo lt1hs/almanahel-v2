@@ -14,6 +14,7 @@ use App\Support\StockMovementLogger;
 use App\Services\Stock\StockLotService;
 use App\Services\Ledger\FinancePostingGateway;
 use App\Support\Authorization\BranchAccess;
+use App\Support\Catalog\CatalogReadScope;
 use App\Support\Money;
 
 class WarehouseController extends Controller
@@ -190,29 +191,17 @@ class WarehouseController extends Controller
     public function inventory(Request $request, $branchId)
     {
         $user = $request->user();
-        if (!in_array($user?->role, ['super_admin', 'admin'], true)) {
-            $allowed = [];
-            if ($user?->branch_id) {
-                $allowed[] = (int) $user->branch_id;
-            }
-            foreach ($user->iraq_only_visible_branches ?? [] as $id) {
-                $allowed[] = (int) $id;
-            }
-            if ($user?->role === 'warehouse_staff') {
-                $allowed = array_merge(
-                    $allowed,
-                    \App\Models\Branch::where('type', 'warehouse')->pluck('id')->map(fn ($id) => (int) $id)->all()
-                );
-            }
-            $allowed = array_values(array_unique(array_filter($allowed)));
-            if (!in_array((int) $branchId, $allowed, true)) {
-                abort(403, 'اجازه دسترسی به موجودی این شعبه را ندارید');
-            }
-        }
+        $scope = CatalogReadScope::resolve(
+            $user,
+            (int) $branchId,
+            false
+        );
 
+        $catalog = app(\App\Services\Catalog\BranchCatalogService::class);
         $query = Inventory::query()
-            ->where('branch_id', $branchId)
-            ->where('quantity', '>', 0);
+            ->where('branch_id', $scope->branchId)
+            ->where('quantity', '>', 0)
+            ->whereIn('book_id', $catalog->catalogBookIdsQuery($scope->branchId));
 
         if ($request->boolean('lite') || $request->filled('search')) {
             $query->select([
@@ -440,6 +429,9 @@ class WarehouseController extends Controller
      */
     public function upsertPricing(Request $request)
     {
+        $user = $request->user();
+        BranchAccess::assertCanMutateBranchCatalog($user);
+
         $validated = $request->validate([
             'branch_id'        => 'required|exists:branches,id',
             'book_id'          => 'required|exists:books,id',
@@ -449,10 +441,31 @@ class WarehouseController extends Controller
             'price_dinar'      => 'nullable|numeric|min:0',
         ]);
 
-        $inventory = app(StockLotService::class)->ensureAggregate(
-            (int) $validated['branch_id'],
-            (int) $validated['book_id']
+        $branchId = BranchAccess::resolveCatalogMutationBranchId(
+            $user,
+            (int) $validated['branch_id']
         );
+        $bookId = (int) $validated['book_id'];
+
+        $book = \App\Models\Book::query()->findOrFail($bookId);
+        BranchAccess::assertIraqBookVisible($user, $book);
+
+        $catalogService = app(\App\Services\Catalog\BranchCatalogService::class);
+        $localSupplierAccountId = null;
+        if (!empty($validated['supplier_id'])) {
+            $localSupplierAccountId = app(\App\Services\Suppliers\SupplierAccountResolver::class)
+                ->ensureForPair($branchId, (int) $validated['supplier_id'])
+                ->id;
+        }
+
+        $catalogService->ensureForPricing(
+            $branchId,
+            $bookId,
+            $localSupplierAccountId,
+            $user->id
+        );
+
+        $inventory = app(StockLotService::class)->ensureAggregate($branchId, $bookId);
 
         $inventory = app(StockLotService::class)->setSellPrices($inventory, $validated);
 

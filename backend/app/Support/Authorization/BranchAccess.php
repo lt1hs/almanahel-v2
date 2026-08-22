@@ -493,6 +493,17 @@ class BranchAccess
             return (int) $user->branch_id;
         }
 
+        if ($user->role === 'warehouse_staff') {
+            if (!$user->branch_id) {
+                self::deny('شعبه انبار مشخص نیست', 422);
+            }
+            if ($requestedBranchId && (int) $requestedBranchId !== (int) $user->branch_id) {
+                self::deny('اجازه عملیات در شعبه دیگر را ندارید');
+            }
+
+            return (int) $user->branch_id;
+        }
+
         self::deny('اجازه عملیات تأمین‌کننده را ندارید');
     }
 
@@ -518,13 +529,12 @@ class BranchAccess
         return (int) $user->branch_id;
     }
 
-    public static function assertCatalogBookVisible(?User $user, int $bookId, ?int $branchId = null): void
+    public static function assertCatalogBookVisible(?User $user, int $bookId, ?int $branchId): void
     {
-        if (self::isAdmin($user)) {
-            return;
+        if ($branchId === null) {
+            self::deny('انتخاب شعبه الزامی است', 422, 'branch_required');
         }
 
-        $branchId = self::resolveCatalogBranchId($user, $branchId);
         $visible = BranchCatalogItem::query()
             ->where('branch_id', $branchId)
             ->where('book_id', $bookId)
@@ -536,6 +546,26 @@ class BranchAccess
         }
     }
 
+    /**
+     * Resolve branch for operational catalog mutation (POST /books, pricing link, etc.).
+     */
+    public static function resolveCatalogMutationBranchId(User $user, ?int $requestedBranchId): int
+    {
+        if (self::isAdmin($user)) {
+            if (!$requestedBranchId) {
+                self::deny('انتخاب شعبه الزامی است', 422, 'branch_required');
+            }
+
+            return (int) $requestedBranchId;
+        }
+
+        if (in_array($user->role, ['branch_manager', 'warehouse_staff'], true)) {
+            return self::resolveOperationalBranchId($user, $requestedBranchId);
+        }
+
+        self::deny('اجازه تغییر کاتالوگ را ندارید');
+    }
+
     public static function assertCanAggregateCatalog(?User $user): void
     {
         if (!self::isAdmin($user)) {
@@ -543,8 +573,52 @@ class BranchAccess
         }
     }
 
-    public static function deny(string $message, int $status = 403): never
+    public static function assertCanReadCatalog(?User $user): void
     {
-        throw new HttpResponseException(response()->json(['message' => $message], $status));
+        if (!$user) {
+            self::deny('احراز هویت نشده', 401);
+        }
+        if (self::isAdmin($user)) {
+            return;
+        }
+        if (in_array($user->role, ['branch_manager', 'accountant', 'warehouse_staff'], true)) {
+            if (!$user->branch_id && $user->role !== 'warehouse_staff') {
+                self::deny('شعبه کاربر مشخص نیست', 422);
+            }
+
+            return;
+        }
+
+        self::deny('دسترسی به کاتالوگ مجاز نیست');
+    }
+
+    public static function assertCanMutateCanonicalBook(?User $user): void
+    {
+        if (!self::isAdmin($user)) {
+            self::deny('ویرایش اطلاعات متعارف کتاب فقط برای مدیر مجاز است');
+        }
+    }
+
+    public static function assertCanMutateBranchCatalog(?User $user): void
+    {
+        if (!$user) {
+            self::deny('احراز هویت نشده', 401);
+        }
+        if ($user->role === 'accountant') {
+            self::deny('حسابدار اجازه تغییر کاتالوگ عملیاتی را ندارد');
+        }
+        if (!in_array($user->role, ['super_admin', 'admin', 'branch_manager', 'warehouse_staff'], true)) {
+            self::deny('اجازه تغییر کاتالوگ را ندارید');
+        }
+    }
+
+    public static function deny(string $message, int $status = 403, ?string $error = null): never
+    {
+        $payload = ['message' => $message];
+        if ($error !== null) {
+            $payload['error'] = $error;
+        }
+
+        throw new HttpResponseException(response()->json($payload, $status));
     }
 }

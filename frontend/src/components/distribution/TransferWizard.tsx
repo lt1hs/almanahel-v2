@@ -9,6 +9,11 @@ import {
 import { Button } from "@/components/ui/Button";
 import { cn } from "@/lib/utils";
 import { apiRequest } from "@/lib/api";
+import {
+    buildBookShowUrl,
+    buildBooksListUrl,
+    buildInventoryBookBranchesUrl,
+} from "@/lib/bookCatalogRequests";
 import { useTranslation } from "@/hooks/useTranslation";
 
 interface Branch {
@@ -51,13 +56,19 @@ export function TransferWizard({
     recentTransfers = [],
 }: TransferWizardProps) {
     const { t, formatNumber } = useTranslation();
+    const initialPosUser = !(isHqRole(userRole) || userRole === "warehouse_staff");
     const [step, setStep] = useState(0);
     const [searchQuery, setSearchQuery] = useState("");
     const [searchResults, setSearchResults] = useState<any[]>([]);
     const [catalogBooks, setCatalogBooks] = useState<any[]>([]);
     const [isLoadingBooks, setIsLoadingBooks] = useState(true);
     const [selectedBook, setSelectedBook] = useState<any>(null);
-    const [fromBranch, setFromBranch] = useState(prefillFrom || "");
+    const [catalogBranchId, setCatalogBranchId] = useState<string>(
+        initialPosUser && userBranchId ? String(userBranchId) : (prefillFrom || "")
+    );
+    const [fromBranch, setFromBranch] = useState(
+        prefillFrom || (initialPosUser && userBranchId ? String(userBranchId) : "")
+    );
     const [toBranch, setToBranch] = useState(prefillTo || "");
     const [transferQty, setTransferQty] = useState("1");
     const [isTransferring, setIsTransferring] = useState(false);
@@ -154,8 +165,22 @@ export function TransferWizard({
 
     useEffect(() => {
         let cancelled = false;
+        if (!catalogBranchId) {
+            setCatalogBooks([]);
+            setIsLoadingBooks(false);
+            return;
+        }
         setIsLoadingBooks(true);
-        apiRequest("/books?lite=1")
+        const url = buildBooksListUrl(
+            { role: userRole ?? undefined, branch_id: userBranchId ?? undefined },
+            { branchId: Number(catalogBranchId), lite: true }
+        );
+        if (!url) {
+            setCatalogBooks([]);
+            setIsLoadingBooks(false);
+            return;
+        }
+        apiRequest(url)
             .then((data) => {
                 if (cancelled) return;
                 setCatalogBooks(Array.isArray(data) ? data : []);
@@ -167,13 +192,19 @@ export function TransferWizard({
                 if (!cancelled) setIsLoadingBooks(false);
             });
         return () => { cancelled = true; };
-    }, []);
+    }, [catalogBranchId, userBranchId, userRole]);
 
     useEffect(() => {
         const bookId = new URLSearchParams(window.location.search).get("book");
-        if (!bookId) return;
+        if (!bookId || !catalogBranchId) return;
         let cancelled = false;
-        apiRequest(`/books/${bookId}`)
+        const url = buildBookShowUrl(
+            bookId,
+            { role: userRole ?? undefined, branch_id: userBranchId ?? undefined },
+            Number(catalogBranchId)
+        );
+        if (!url) return;
+        apiRequest(url)
             .then((book) => {
                 if (cancelled || !book?.id) return;
                 setSelectedBook(book);
@@ -181,11 +212,11 @@ export function TransferWizard({
             })
             .catch(() => {});
         return () => { cancelled = true; };
-    }, []);
+    }, [catalogBranchId, userBranchId, userRole]);
 
     // Load which branches have the selected book in stock
     useEffect(() => {
-        if (!selectedBook?.id) {
+        if (!selectedBook?.id || !catalogBranchId) {
             setStockByBranch({});
             setSourceStock(null);
             return;
@@ -194,7 +225,18 @@ export function TransferWizard({
         let cancelled = false;
         setIsLoadingAvailability(true);
 
-        apiRequest(`/inventory/books/${selectedBook.id}/branches`)
+        const url = buildInventoryBookBranchesUrl(
+            selectedBook.id,
+            { role: userRole ?? undefined, branch_id: userBranchId ?? undefined },
+            Number(catalogBranchId)
+        );
+        if (!url) {
+            setStockByBranch({});
+            setIsLoadingAvailability(false);
+            return;
+        }
+
+        apiRequest(url)
             .then((data) => {
                 if (cancelled) return;
                 const map: Record<string, number> = {};
@@ -217,7 +259,7 @@ export function TransferWizard({
             });
 
         return () => { cancelled = true; };
-    }, [selectedBook?.id]);
+    }, [selectedBook?.id, catalogBranchId, userBranchId, userRole]);
 
     // POS: lock source to own branch when it has stock
     useEffect(() => {
@@ -245,9 +287,17 @@ export function TransferWizard({
 
     useEffect(() => {
         const timer = setTimeout(async () => {
-            if (searchQuery.length > 2 && !selectedBook) {
+            if (searchQuery.length > 2 && !selectedBook && catalogBranchId) {
                 try {
-                    const data = await apiRequest(`/books?search=${encodeURIComponent(searchQuery)}`);
+                    const url = buildBooksListUrl(
+                        { role: userRole ?? undefined, branch_id: userBranchId ?? undefined },
+                        { branchId: Number(catalogBranchId), search: searchQuery }
+                    );
+                    if (!url) {
+                        setSearchResults([]);
+                        return;
+                    }
+                    const data = await apiRequest(url);
                     setSearchResults(Array.isArray(data) ? data : (data.data || []));
                 } catch {
                     setSearchResults([]);
@@ -257,7 +307,7 @@ export function TransferWizard({
             }
         }, 280);
         return () => clearTimeout(timer);
-    }, [searchQuery, selectedBook]);
+    }, [searchQuery, selectedBook, catalogBranchId, userBranchId, userRole]);
 
     const fromName = storeBranches.find((b) => String(b.id) === fromBranch)?.name;
     const toName = storeBranches.find((b) => String(b.id) === toBranch)?.name;
@@ -400,6 +450,26 @@ export function TransferWizard({
                                 </div>
                             ) : (
                                 <>
+                                    {!isPosUser && (
+                                        <div className="max-w-2xl">
+                                            <label className="text-[10px] font-black text-ink/40 block mb-1">
+                                                {t("inventory.selectBranch")}
+                                            </label>
+                                            <select
+                                                className="w-full h-10 rounded-xl border border-ink/10 px-3 text-sm font-bold bg-white"
+                                                value={catalogBranchId}
+                                                onChange={(e) => {
+                                                    setCatalogBranchId(e.target.value);
+                                                    setFromBranch(e.target.value);
+                                                }}
+                                            >
+                                                <option value="">{t("inventory.selectBranch")}</option>
+                                                {storeBranches.map((b) => (
+                                                    <option key={b.id} value={b.id}>{b.name}</option>
+                                                ))}
+                                            </select>
+                                        </div>
+                                    )}
                                     <div className="flex flex-col sm:flex-row sm:items-center gap-3">
                                         <div className="relative flex-1">
                                             <Search className="absolute start-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-ink/25 pointer-events-none" />
@@ -407,6 +477,7 @@ export function TransferWizard({
                                                 placeholder={t("distribution.wizard.searchPlaceholder")}
                                                 value={searchQuery}
                                                 onChange={(e) => setSearchQuery(e.target.value)}
+                                                disabled={!catalogBranchId}
                                                 className="w-full h-11 bg-white border border-ink/8 focus:border-primary/30 rounded-xl ps-9 pe-3 text-[13px] font-vazirmatn outline-none focus:ring-2 focus:ring-primary/15"
                                             />
                                         </div>

@@ -320,6 +320,26 @@ class ConsignmentController extends Controller
         $settled = $snapshot->receiptEffectiveSettled($receipt);
         $outstanding = $snapshot->receiptOutstanding($receipt);
 
+        $salesGenerated = '0.00';
+        $giftGenerated = '0.00';
+        $payableReversals = '0.00';
+        foreach ($snapshot->saleAllocationsForReceipt($receipt) as $alloc) {
+            if ($alloc->publisher_payable !== null) {
+                $salesGenerated = Money::add($salesGenerated, $alloc->publisher_payable);
+            }
+            $payableReversals = Money::add(
+                $payableReversals,
+                $this->saleUnsettledReversed($alloc)
+            );
+        }
+        foreach ($snapshot->giftAllocationsForReceipt($receipt) as $alloc) {
+            if ($alloc->publisher_payable !== null) {
+                $giftGenerated = Money::add($giftGenerated, $alloc->publisher_payable);
+            }
+        }
+
+        $supplierRecoverable = $this->receiptSupplierRecoverable($receipt);
+
         $status = match (true) {
             Money::isZero($generated) => 'not_due',
             Money::cmp($outstanding, '0') > 0 && Money::isZero($settled) => 'unsettled',
@@ -330,18 +350,93 @@ class ConsignmentController extends Controller
         $received = (int) $receipt->items->sum('quantity_received');
         $sold = (int) $receipt->items->sum('quantity_sold');
         $returned = (int) $receipt->items->sum('quantity_returned');
+        $gifted = $this->receiptGiftedQuantity($receipt);
+        // quantity_sold already includes gift consumption; remaining physical unsold excludes returned.
+        $remainingUnsold = max(0, $received - $sold - $returned);
 
         return [
             'payable_status' => $status,
+            'settlement_status' => match ($status) {
+                'not_due' => 'no_debt',
+                'settled' => 'fully_settled',
+                default => $status,
+            },
             'inventory_value' => Money::of($receipt->total_value),
             'payable_generated' => $generated,
+            'gross_sales_payable' => $salesGenerated,
+            'gross_gift_payable' => $giftGenerated,
+            'payable_reversals' => $payableReversals,
             'payable_settled' => $settled,
+            'settled_amount' => $settled,
             'payable_outstanding' => $outstanding,
+            'remaining_payable' => $outstanding,
+            'supplier_recoverable' => $supplierRecoverable,
+            'received_quantity' => $received,
             'quantity_received' => $received,
+            'sold_quantity' => max(0, $sold - $gifted),
             'quantity_sold' => $sold,
+            'gifted_quantity' => $gifted,
+            'customer_returned_quantity' => $this->receiptCustomerReturnedQuantity($receipt),
+            'returned_to_supplier_quantity' => $returned,
             'quantity_returned' => $returned,
-            'quantity_in_stock' => max(0, $received - $sold - $returned),
+            'remaining_unsold_quantity' => $remainingUnsold,
+            'quantity_in_stock' => $remainingUnsold,
+            'currency' => $receipt->currency,
         ];
+    }
+
+    private function saleUnsettledReversed(\App\Models\SaleLotAllocation $alloc): string
+    {
+        $sum = '0.00';
+        foreach (\App\Models\CustomerReturnLotAllocation::query()
+            ->where('sale_lot_allocation_id', $alloc->id)
+            ->get() as $row) {
+            $sum = Money::add($sum, $row->unsettled_payable_reversed ?? 0);
+        }
+
+        return $sum;
+    }
+
+    private function receiptSupplierRecoverable(ConsignmentReceipt $receipt): string
+    {
+        $itemIds = $receipt->items->pluck('id')->all() ?: [0];
+        $saleIds = \App\Models\SaleLotAllocation::query()
+            ->join('stock_lots', 'stock_lots.id', '=', 'sale_lot_allocations.stock_lot_id')
+            ->whereIn('stock_lots.consignment_receipt_item_id', $itemIds)
+            ->pluck('sale_lot_allocations.id');
+
+        $sum = '0.00';
+        foreach (\App\Models\CustomerReturnLotAllocation::query()
+            ->whereIn('sale_lot_allocation_id', $saleIds->all() ?: [0])
+            ->get() as $row) {
+            $sum = Money::add($sum, $row->settled_payable_reversed ?? 0);
+        }
+
+        return $sum;
+    }
+
+    private function receiptGiftedQuantity(ConsignmentReceipt $receipt): int
+    {
+        $itemIds = $receipt->items->pluck('id')->all() ?: [0];
+
+        return (int) \App\Models\GiftLotAllocation::query()
+            ->join('stock_lots', 'stock_lots.id', '=', 'gift_lot_allocations.stock_lot_id')
+            ->where('gift_lot_allocations.ownership_type', 'consignment')
+            ->whereIn('stock_lots.consignment_receipt_item_id', $itemIds)
+            ->sum('gift_lot_allocations.quantity');
+    }
+
+    private function receiptCustomerReturnedQuantity(ConsignmentReceipt $receipt): int
+    {
+        $itemIds = $receipt->items->pluck('id')->all() ?: [0];
+        $saleIds = \App\Models\SaleLotAllocation::query()
+            ->join('stock_lots', 'stock_lots.id', '=', 'sale_lot_allocations.stock_lot_id')
+            ->whereIn('stock_lots.consignment_receipt_item_id', $itemIds)
+            ->pluck('sale_lot_allocations.id');
+
+        return (int) \App\Models\CustomerReturnLotAllocation::query()
+            ->whereIn('sale_lot_allocation_id', $saleIds->all() ?: [0])
+            ->sum('quantity');
     }
 
     /** @return array<string, string> */
@@ -582,7 +677,21 @@ class ConsignmentController extends Controller
             $settlement->branch_id ? (int) $settlement->branch_id : null,
         );
 
-        return response()->json($settlement, 201);
+        $payload = $settlement->fresh()->load(['supplier', 'branch', 'allocations']);
+        $giftLotIds = $payload->allocations->pluck('gift_lot_allocation_id')->filter()->unique()->all();
+        $giftIds = $giftLotIds
+            ? \App\Models\GiftLotAllocation::query()->whereIn('id', $giftLotIds)->pluck('gift_id')->unique()->map(fn ($id) => (int) $id)->values()->all()
+            : [];
+        $payload->setAttribute('invalidation', [
+            'branch_id' => $payload->branch_id ? (int) $payload->branch_id : null,
+            'supplier_account_id' => $payload->supplier_account_id ? (int) $payload->supplier_account_id : null,
+            'currency' => $payload->currency,
+            'consignment_receipt_ids' => $payload->allocations->pluck('consignment_receipt_id')->unique()->filter()->values()->all(),
+            'gift_ids' => $giftIds,
+            'settlement_id' => (int) $payload->id,
+        ]);
+
+        return response()->json($payload, 201);
     }
 
     public function settlements(Request $request)
@@ -641,6 +750,7 @@ class ConsignmentController extends Controller
 
         return response()->json([
             'items' => $preview['lines'],
+            'breakdown' => $preview['breakdown'] ?? null,
             'commission_rate' => $preview['commission_rate'],
             'total_payable' => $preview['total_payable'],
             'period_start' => $preview['period_start'],

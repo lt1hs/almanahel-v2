@@ -24,7 +24,7 @@ Supersedes the 2026-08-15 snapshot for finance remediation. See [FINANCE_REMEDIA
 - `GET /reports/iraq-profit` splits at allocation `origin_scope`; currencies separate
 - `GET /reports/all-branches` has no combined `pending_credit`
 - `GET /reports/top-books` groups by currency and nets returns
-- Settlement preview `items[]`: `kind`, `open_qty`, `open_amount` — not `title` / `qty_sold`
+- Settlement preview `items[]`: `kind`, `open_qty`, `open_amount`, `unit_cost`, plus presentation `book_id` / `title` — not `qty_sold` / `publisher_share`
 - Settlement payable is stamped full unit cost
 - `PUT /credits/{id}` returns **409** if asked to mark paid without a payment (`test_credit_status_endpoint_rejects_paid_without_payment_allocation`)
 - Invoice create uses server list price (hardened)

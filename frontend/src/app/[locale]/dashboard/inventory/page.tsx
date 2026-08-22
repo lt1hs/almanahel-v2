@@ -266,9 +266,13 @@ export default function InventoryPage() {
         try {
             await fetchMeta();
             if (!isAdmin) {
-                const branchId = user?.branch?.id;
-                const endpoint = branchId ? `/warehouse/${branchId}/inventory` : `/books`;
-                const data = await apiRequest(endpoint);
+                const branchId = user?.branch?.id ?? user?.branch_id;
+                if (!branchId) {
+                    setBooks([]);
+                    notifyRef.current.error("inventory.branchRequired");
+                    return;
+                }
+                const data = await apiRequest(`/warehouse/${branchId}/inventory`);
                 const list = Array.isArray(data)
                     ? data.map((row: any) => mapInventoryRow(row, user?.branch))
                     : [];

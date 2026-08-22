@@ -21,8 +21,14 @@ import { useTranslation } from "@/hooks/useTranslation";
 import { useNotify } from "@/hooks/useNotify";
 import { cn } from "@/lib/utils";
 import { apiRequest } from "@/lib/api";
+import { buildBooksListUrl } from "@/lib/bookCatalogRequests";
 import { useAuth } from "@/contexts/AuthContext";
 import { buildConsignmentSettleHref } from "@/lib/consignmentSettlementLink";
+import {
+  persistOperationalBranchId,
+  resolveDefaultOperationalBranchId,
+  shouldLockBranchSelector,
+} from "@/lib/operationalBranch";
 
 type ConsignmentStatus = "not_due" | "unsettled" | "partially_settled" | "settled";
 
@@ -62,6 +68,8 @@ interface ConsignmentReceipt {
   quantity_sold: number;
   quantity_returned: number;
   quantity_in_stock: number;
+  remaining_unsold_quantity?: number;
+  remaining_payable?: string;
   items_count: number;
 }
 
@@ -112,10 +120,13 @@ export default function ConsignmentPage() {
   const isAdmin = user?.role === "admin" || user?.role === "super_admin";
   const userBranchId = user?.branch_id ? Number(user.branch_id) : user?.branch?.id ? Number(user.branch.id) : null;
 
-  const statusLabel = (status: ConsignmentStatus) => {
+  const statusLabel = (status: ConsignmentStatus, opts?: { remainingUnsold?: number }) => {
     if (status === "not_due") return t("consignment.status.notDue");
     if (status === "unsettled") return t("consignment.status.unsettled");
     if (status === "partially_settled") return t("consignment.status.partial");
+    if (status === "settled" && (opts?.remainingUnsold ?? 0) > 0) {
+      return "بدهی تسویه شد";
+    }
     return t("consignment.status.settled");
   };
 
@@ -166,8 +177,15 @@ export default function ConsignmentPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isClosingId, setIsClosingId] = useState<number | null>(null);
   const [adminBranchId, setAdminBranchId] = useState("");
-  const [adminBranches, setAdminBranches] = useState<{ id: number; name: string }[]>([]);
+  const [adminBranches, setAdminBranches] = useState<{ id: number; name: string; type?: string }[]>([]);
+  const [branchReady, setBranchReady] = useState(!isAdmin);
   const formLoadedRef = useRef(false);
+  const fetchGenRef = useRef(0);
+  // Single source for assigned branch — do not redeclare userBranchId below.
+  const operationalBranchId = isAdmin
+    ? (adminBranchId ? Number(adminBranchId) : null)
+    : userBranchId;
+  const branchLocked = shouldLockBranchSelector({ role: user?.role });
 
   const closeReceipt = async (id: number) => {
     setIsClosingId(id);
@@ -204,7 +222,7 @@ export default function ConsignmentPage() {
 
   const fetchReceipts = useCallback(
     async (pageNum = 1, append = false) => {
-      if (isAdmin && !adminBranchId) {
+      if (!operationalBranchId) {
         if (!append) {
           setReceipts([]);
           setSummary(null);
@@ -213,17 +231,19 @@ export default function ConsignmentPage() {
         return;
       }
 
+      const gen = ++fetchGenRef.current;
       if (append) setIsLoadingMore(true);
       else setIsLoading(true);
 
       try {
         const params = new URLSearchParams({ page: String(pageNum) });
-        if (isAdmin && adminBranchId) params.set("branch_id", adminBranchId);
+        params.set("branch_id", String(operationalBranchId));
         if (statusFilter !== "all") params.set("payable_status", statusFilter);
         if (debouncedSearch.trim()) params.set("q", debouncedSearch.trim());
         if (supplierFilter) params.set(supplierFilterField, supplierFilter);
 
         const data = await apiRequest(`/consignments?${params.toString()}`);
+        if (gen !== fetchGenRef.current) return;
         const rows: ConsignmentReceipt[] = data.data || [];
         setReceipts((prev) => (append ? [...prev, ...rows] : rows));
         setPage(data.current_page || pageNum);
@@ -231,34 +251,65 @@ export default function ConsignmentPage() {
         setTotalCount(data.total ?? rows.length);
         setSummary(data.summary ?? null);
       } catch (error) {
+        if (gen !== fetchGenRef.current) return;
         console.error("Failed to fetch consignments:", error);
         if (!append) {
           setReceipts([]);
           setSummary(null);
         }
       } finally {
-        setIsLoading(false);
-        setIsLoadingMore(false);
+        if (gen === fetchGenRef.current) {
+          setIsLoading(false);
+          setIsLoadingMore(false);
+        }
       }
     },
-    [statusFilter, debouncedSearch, supplierFilter, supplierFilterField, isAdmin, adminBranchId]
+    [statusFilter, debouncedSearch, supplierFilter, supplierFilterField, operationalBranchId]
   );
 
   useEffect(() => {
-    if (!isAdmin) return;
+    if (!isAdmin) {
+      setBranchReady(true);
+      return;
+    }
+    let cancelled = false;
     apiRequest("/branches?lite=1")
       .then((data) => {
+        if (cancelled) return;
         const rows = (Array.isArray(data) ? data : []).filter(
           (b: { type?: string }) => b.type === "store" || b.type === "warehouse"
         );
         setAdminBranches(rows);
+        const defaultId = resolveDefaultOperationalBranchId(
+          { role: user?.role, branch_id: userBranchId },
+          { availableBranchIds: rows.map((b: { id: number }) => Number(b.id)) }
+        );
+        if (defaultId) {
+          setAdminBranchId(String(defaultId));
+          persistOperationalBranchId(defaultId);
+        }
+        setBranchReady(true);
       })
-      .catch(console.error);
-  }, [isAdmin]);
+      .catch(() => {
+        if (!cancelled) setBranchReady(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isAdmin, user?.role, userBranchId]);
+
+  const handleAdminBranchChange = (value: string) => {
+    setAdminBranchId(value);
+    setReceipts([]);
+    setSummary(null);
+    setDetail(null);
+    persistOperationalBranchId(value ? Number(value) : null);
+  };
 
   useEffect(() => {
+    if (!branchReady) return;
     fetchReceipts(1, false);
-  }, [fetchReceipts]);
+  }, [fetchReceipts, branchReady]);
 
   const loadFormData = useCallback(async () => {
     if (formLoadedRef.current) {
@@ -331,7 +382,7 @@ export default function ConsignmentPage() {
   };
 
   useEffect(() => {
-    if (!showNewForm) return;
+    if (!showNewForm || !newReceipt.branch_id) return;
     if (debouncedItemSearch.trim().length < 2) {
       setBookResults([]);
       return;
@@ -339,7 +390,16 @@ export default function ConsignmentPage() {
 
     let cancelled = false;
     setIsSearchingBooks(true);
-    apiRequest(`/books?search=${encodeURIComponent(debouncedItemSearch.trim())}&lite=1`)
+    const url = buildBooksListUrl(
+      { role: user?.role, branch_id: user?.branch_id ?? user?.branch?.id },
+      { branchId: Number(newReceipt.branch_id), search: debouncedItemSearch.trim(), lite: true }
+    );
+    if (!url) {
+      setBookResults([]);
+      setIsSearchingBooks(false);
+      return;
+    }
+    apiRequest(url)
       .then((data) => {
         if (!cancelled) setBookResults(Array.isArray(data) ? data : []);
       })
@@ -353,7 +413,7 @@ export default function ConsignmentPage() {
     return () => {
       cancelled = true;
     };
-  }, [debouncedItemSearch, showNewForm]);
+  }, [debouncedItemSearch, showNewForm, newReceipt.branch_id, user?.branch?.id, user?.branch_id, user?.role]);
 
   const openDetails = async (id: number) => {
     setIsLoadingDetail(true);
@@ -514,25 +574,32 @@ export default function ConsignmentPage() {
         </div>
       </div>
 
-      {isAdmin && (
+      {(isAdmin || !branchLocked) && (
         <div className="max-w-xs space-y-1.5">
           <label className="text-[10px] font-black uppercase tracking-widest text-ink/40 flex items-center gap-1.5">
             <Building2 className="h-3 w-3" />
             {t("consignment.form.branch")}
           </label>
           <select
-            value={adminBranchId}
-            onChange={(e) => setAdminBranchId(e.target.value)}
-            className="h-10 w-full rounded-xl border border-white bg-white/70 px-3 text-[12px] font-vazirmatn shadow-sm outline-none focus:border-primary/30"
+            value={adminBranchId || (operationalBranchId ? String(operationalBranchId) : "")}
+            onChange={(e) => handleAdminBranchChange(e.target.value)}
+            disabled={branchLocked}
+            className="h-10 w-full rounded-xl border border-white bg-white/70 px-3 text-[12px] font-vazirmatn shadow-sm outline-none focus:border-primary/30 disabled:opacity-70"
           >
             <option value="">{t("expenses.form.selectBranch")}</option>
-            {adminBranches.map((b) => (
+            {(isAdmin ? adminBranches : adminBranches.length ? adminBranches : [{ id: Number(userBranchId), name: user?.branch?.name || `#${userBranchId}` }]).map((b) => (
               <option key={b.id} value={b.id}>
                 {b.name}
               </option>
             ))}
           </select>
         </div>
+      )}
+
+      {branchReady && !operationalBranchId && (
+        <p className="rounded-xl border border-amber-100 bg-amber-50/80 px-4 py-3 text-center text-[12px] font-bold text-amber-700">
+          {t("expenses.form.selectBranch")}
+        </p>
       )}
 
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
@@ -593,12 +660,18 @@ export default function ConsignmentPage() {
           ))
         ) : (
           receipts.map((receipt) => {
-            const cfg = STATUS_STYLES[receipt.payable_status];
-            const balance = Number(receipt.payable_outstanding);
+            const payableStatus = receipt.payable_status || "not_due";
+            const cfg = STATUS_STYLES[payableStatus] || STATUS_STYLES.not_due;
+            const balance = Number(receipt.remaining_payable ?? receipt.payable_outstanding ?? 0);
+            const generated = Number(receipt.payable_generated || 0);
+            const settled = Number(receipt.payable_settled || 0);
             const pct =
-              Number(receipt.payable_generated) > 0
-                ? (Number(receipt.payable_settled) / Number(receipt.payable_generated)) * 100
+              generated > 0
+                ? Math.min(100, Math.max(0, (settled / generated) * 100))
                 : 0;
+            const remainingUnsold = Number(
+              receipt.remaining_unsold_quantity ?? receipt.quantity_in_stock ?? 0
+            );
             const settleHref = buildConsignmentSettleHref(receipt.id, receipt.supplier_account_id);
             const showDataIntegrityWarning = balance > 0 && (receipt.items_count || 0) > 0 && !settleHref;
 
@@ -625,7 +698,7 @@ export default function ConsignmentPage() {
                           {receipt.supplier?.name || "—"}
                         </span>
                         <Badge className={cn("border text-[8px] font-black", cfg.bg, cfg.color, cfg.border)}>
-                          {statusLabel(receipt.payable_status)}
+                          {statusLabel(payableStatus, { remainingUnsold })}
                         </Badge>
                         <span className="font-mono text-[9px] text-ink/25">{receipt.receipt_number}</span>
                       </div>
@@ -642,21 +715,28 @@ export default function ConsignmentPage() {
                           <FileText className="h-3 w-3" />
                           {tn("plurals.book", receipt.items_count || 0)}
                         </span>
+                        {remainingUnsold > 0 && (
+                          <span className="text-[9px] font-bold text-ink/45">
+                            موجودی امانی باقی: {formatNumber(remainingUnsold)}
+                          </span>
+                        )}
                       </div>
                       <div className="mt-2">
                         <div className="h-1.5 overflow-hidden rounded-full bg-ink/5">
                           <div
                             className={cn(
                               "h-full rounded-full transition-all",
-                              receipt.payable_status === "settled" ? "bg-emerald-400" : "bg-primary"
+                              payableStatus === "settled" ? "bg-emerald-400" : "bg-primary"
                             )}
-                            style={{ width: `${Math.min(100, pct)}%` }}
+                            style={{ width: `${pct}%` }}
                           />
                         </div>
                         <p className="mt-0.5 text-[8px] text-ink/25">
-                          {receipt.payable_status === "not_due"
+                          {payableStatus === "not_due"
                             ? t("consignment.noPayableHint")
-                            : `${pct.toFixed(0)}${t("consignment.settledPercent")}`}
+                            : generated > 0
+                              ? `${pct.toFixed(0)}${t("consignment.settledPercent")} · بدهی ایجادشده ${formatNumber(generated)}`
+                              : t("consignment.noPayableHint")}
                         </p>
                       </div>
                     </div>
@@ -672,6 +752,7 @@ export default function ConsignmentPage() {
                               : t("common.currency.dinarSymbol")}
                           </span>
                         </p>
+                        <p className="text-[8px] text-ink/30 mt-0.5">ارزش موجودی — بدهی نیست</p>
                       </div>
                       <div className="text-end">
                         <p className="text-[8px] uppercase tracking-widest text-rose-400">
@@ -692,7 +773,7 @@ export default function ConsignmentPage() {
                       >
                         {t("common.details")}
                       </Button>
-                      {receipt.payable_status !== "settled" && (receipt.items_count || 0) === 0 && (
+                      {payableStatus !== "settled" && (receipt.items_count || 0) === 0 && (
                         <Button
                           size="sm"
                           variant="outline"
@@ -801,7 +882,11 @@ export default function ConsignmentPage() {
                     </div>
                     <div>
                       <p className="text-ink/35">{t("common.status")}</p>
-                      <p className="font-black text-ink">{statusLabel(detail.payable_status)}</p>
+                      <p className="font-black text-ink">
+                        {statusLabel(detail.payable_status, {
+                          remainingUnsold: Number(detail.remaining_unsold_quantity ?? detail.quantity_in_stock ?? 0),
+                        })}
+                      </p>
                     </div>
                   </div>
 

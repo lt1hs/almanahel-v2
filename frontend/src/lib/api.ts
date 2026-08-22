@@ -1,5 +1,17 @@
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000/api";
 
+export class ApiError extends Error {
+    status: number;
+    body: unknown;
+
+    constructor(message: string, status: number, body?: unknown) {
+        super(message);
+        this.name = "ApiError";
+        this.status = status;
+        this.body = body;
+    }
+}
+
 export async function apiRequest(endpoint: string, options: RequestInit = {}) {
     const token = typeof window !== "undefined" ? localStorage.getItem("al-manahel-token") : null;
     
@@ -19,12 +31,12 @@ export async function apiRequest(endpoint: string, options: RequestInit = {}) {
         localStorage.removeItem("al-manahel-token");
         const locale = window.location.pathname.startsWith("/ar") ? "ar" : "fa";
         window.location.href = `/${locale}/login/`;
-        throw new Error("Unauthorized");
+        throw new ApiError("Unauthorized", 401);
     }
 
     if (!res.ok) {
         const error = await res.json().catch(() => ({ message: "An unknown error occurred" }));
-        throw new Error(error.message || "Request failed");
+        throw new ApiError(error.message || "Request failed", res.status, error);
     }
 
     return res.status !== 204 ? res.json() : null;
@@ -51,7 +63,7 @@ export async function apiUpload(endpoint: string, formData: FormData, method = "
 
     if (!res.ok) {
         const error = await res.json().catch(() => ({ message: "An unknown error occurred" }));
-        throw new Error(error.message || "Request failed");
+        throw new ApiError(error.message || "Request failed", res.status, error);
     }
 
     return res.status !== 204 ? res.json() : null;

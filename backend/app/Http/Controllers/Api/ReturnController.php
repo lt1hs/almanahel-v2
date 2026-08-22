@@ -211,7 +211,37 @@ class ReturnController extends Controller
 
             $invoice = app(InvoiceBalance::class)->refresh($invoice);
 
-            return response()->json($return->fresh()->load(['items.book', 'invoice']), 201);
+            $receiptIds = \App\Models\CustomerReturnLotAllocation::query()
+                ->whereIn(
+                    'customer_return_item_id',
+                    $return->items()->pluck('id')
+                )
+                ->join('sale_lot_allocations', 'sale_lot_allocations.id', '=', 'customer_return_lot_allocations.sale_lot_allocation_id')
+                ->join('stock_lots', 'stock_lots.id', '=', 'sale_lot_allocations.stock_lot_id')
+                ->whereNotNull('stock_lots.consignment_receipt_item_id')
+                ->pluck('stock_lots.consignment_receipt_item_id');
+
+            $receiptIds = \App\Models\ConsignmentReceiptItem::query()
+                ->whereIn('id', $receiptIds->all() ?: [0])
+                ->pluck('consignment_receipt_id')
+                ->unique();
+
+            $snapshots = app(\App\Services\Settlement\SnapshotPayable::class);
+            foreach ($receiptIds as $receiptId) {
+                $receipt = \App\Models\ConsignmentReceipt::query()->find($receiptId);
+                if ($receipt) {
+                    $snapshots->syncReceipt($receipt);
+                }
+            }
+
+            $payload = $return->fresh()->load(['items.book', 'invoice']);
+            $payload->setAttribute('invalidation', [
+                'branch_id' => (int) $invoice->branch_id,
+                'invoice_id' => (int) $invoice->id,
+                'consignment_receipt_ids' => $receiptIds->values()->all(),
+            ]);
+
+            return response()->json($payload, 201);
         });
     }
 
@@ -229,6 +259,89 @@ class ReturnController extends Controller
         return response()->json($query->latest()->paginate(20));
     }
 
+    /**
+     * Eligible unsold consignment stock for supplier return — server-resolved lots only.
+     */
+    public function eligibleConsignmentStock(Request $request)
+    {
+        $validated = $request->validate([
+            'branch_id' => 'required|exists:branches,id',
+            'supplier_account_id' => 'required|exists:supplier_accounts,id',
+            'q' => 'nullable|string|max:120',
+        ]);
+
+        BranchAccess::assertCanMutateInBranch($request->user(), (int) $validated['branch_id']);
+        $account = \App\Models\SupplierAccount::query()->findOrFail($validated['supplier_account_id']);
+        if ((int) $account->branch_id !== (int) $validated['branch_id']) {
+            throw new DomainException('حساب تأمین‌کننده متعلق به این شعبه نیست', 422);
+        }
+
+        $lots = \App\Models\StockLot::query()
+            ->with(['book:id,title,isbn', 'receiptItem.consignmentReceipt:id,receipt_number,received_at,supplier_account_id'])
+            ->where('branch_id', $validated['branch_id'])
+            ->where('supplier_account_id', $validated['supplier_account_id'])
+            ->where('ownership_type', 'consignment')
+            ->where('qty_available', '>', 0)
+            ->sellable()
+            ->orderBy('id')
+            ->get();
+
+        $q = trim((string) ($validated['q'] ?? ''));
+        $rows = [];
+        foreach ($lots as $lot) {
+            $receipt = $lot->receiptItem?->consignmentReceipt;
+            $item = $lot->receiptItem;
+            $title = $lot->book?->title ?? '';
+            $isbn = $lot->book?->isbn ?? '';
+            $receiptNumber = $receipt?->receipt_number ?? '';
+            if ($q !== '') {
+                $hay = mb_strtolower($title.' '.$isbn.' '.$receiptNumber);
+                if (!str_contains($hay, mb_strtolower($q))) {
+                    continue;
+                }
+            }
+
+            $received = (int) ($item?->quantity_received ?? 0);
+            $sold = (int) ($item?->quantity_sold ?? 0);
+            $returned = (int) ($item?->quantity_returned ?? 0);
+            $gifted = 0;
+            if ($item) {
+                $gifted = (int) \App\Models\GiftLotAllocation::query()
+                    ->join('stock_lots', 'stock_lots.id', '=', 'gift_lot_allocations.stock_lot_id')
+                    ->where('stock_lots.consignment_receipt_item_id', $item->id)
+                    ->where('gift_lot_allocations.ownership_type', 'consignment')
+                    ->sum('gift_lot_allocations.quantity');
+            }
+
+            $returnable = (int) $lot->qty_available;
+            $rows[] = [
+                'stock_lot_id' => (int) $lot->id,
+                'consignment_receipt_item_id' => $lot->consignment_receipt_item_id ? (int) $lot->consignment_receipt_item_id : null,
+                'consignment_receipt_id' => $receipt?->id ? (int) $receipt->id : null,
+                'receipt_number' => $receiptNumber,
+                'received_at' => $receipt?->received_at,
+                'book_id' => (int) $lot->book_id,
+                'title' => $title ?: '#'.$lot->book_id,
+                'isbn' => $isbn,
+                'supplier_account_id' => (int) $lot->supplier_account_id,
+                'original_quantity' => $received,
+                'sold_quantity' => max(0, $sold - $gifted),
+                'gifted_quantity' => $gifted,
+                'previously_returned_quantity' => $returned,
+                'returnable_quantity' => $returnable,
+                'unit_cost' => Money::of($lot->unit_cost),
+                'currency' => $lot->currency,
+                'remaining_inventory_value' => Money::mul($lot->unit_cost, $returnable),
+            ];
+        }
+
+        return response()->json([
+            'branch_id' => (int) $validated['branch_id'],
+            'supplier_account_id' => (int) $validated['supplier_account_id'],
+            'data' => $rows,
+        ]);
+    }
+
     public function createConsignmentReturn(Request $request)
     {
         $validated = $request->validate([
@@ -236,8 +349,10 @@ class ReturnController extends Controller
             'supplier_id' => 'required_without:supplier_account_id|nullable|exists:suppliers,id',
             'branch_id'   => 'required|exists:branches,id',
             'reason'      => 'nullable|string',
+            'idempotency_key' => 'nullable|string|max:80',
             'items'       => 'required|array|min:1',
-            'items.*.book_id'    => 'required|exists:books,id',
+            'items.*.book_id'    => 'nullable|exists:books,id',
+            'items.*.stock_lot_id' => 'nullable|exists:stock_lots,id',
             'items.*.quantity'   => 'required|integer|min:1',
             'items.*.cost_price' => 'nullable|numeric|min:0',
         ]);
@@ -260,11 +375,81 @@ class ReturnController extends Controller
             ]);
         }
 
+        if (!empty($validated['idempotency_key'])) {
+            $existing = ConsignmentReturn::query()
+                ->where('branch_id', $validated['branch_id'])
+                ->where('supplier_account_id', $validated['supplier_account_id'])
+                ->where('idempotency_key', $validated['idempotency_key'])
+                ->first();
+            if ($existing) {
+                return response()->json($existing->load(['items.book', 'supplier', 'branch']), 200);
+            }
+        }
+
         return DB::transaction(function () use ($request, $validated) {
             $lotService = app(\App\Services\Stock\StockLotService::class);
             $prepared = [];
+            $receiptIds = [];
 
+            $lotRows = [];
+            $legacyItems = [];
             foreach ($validated['items'] as $item) {
+                if (!empty($item['stock_lot_id'])) {
+                    $lotRows[] = [
+                        'stock_lot_id' => (int) $item['stock_lot_id'],
+                        'quantity' => (int) $item['quantity'],
+                    ];
+                } else {
+                    if (empty($item['book_id'])) {
+                        throw new DomainException('book_id یا stock_lot_id الزامی است', 422);
+                    }
+                    $legacyItems[] = $item;
+                }
+            }
+
+            if ($lotRows) {
+                $splits = $lotService->allocateConsignmentReturnLots(
+                    (int) $validated['branch_id'],
+                    (int) $validated['supplier_account_id'],
+                    $lotRows
+                );
+                $byBook = [];
+                foreach ($splits as $split) {
+                    $bookId = (int) $split['book_id'];
+                    if (!isset($byBook[$bookId])) {
+                        $byBook[$bookId] = [
+                            'book_id' => $bookId,
+                            'quantity' => 0,
+                            'cost' => '0.00',
+                            'currency' => $split['currency'],
+                            'splits' => [],
+                        ];
+                    }
+                    $byBook[$bookId]['quantity'] += (int) $split['quantity'];
+                    $byBook[$bookId]['cost'] = Money::add($byBook[$bookId]['cost'], $split['cost']);
+                    $byBook[$bookId]['splits'][] = $split;
+                    if ($split['lot']->consignment_receipt_item_id) {
+                        $rid = ConsignmentReceiptItem::query()
+                            ->whereKey($split['lot']->consignment_receipt_item_id)
+                            ->value('consignment_receipt_id');
+                        if ($rid) {
+                            $receiptIds[] = (int) $rid;
+                        }
+                    }
+                }
+                foreach ($byBook as $row) {
+                    $prepared[] = [
+                        'book_id' => $row['book_id'],
+                        'quantity' => $row['quantity'],
+                        'cost_price' => $row['quantity'] > 0 ? bcdiv($row['cost'], (string) $row['quantity'], 2) : '0.00',
+                        'splits' => $row['splits'],
+                        'currency' => $row['currency'],
+                        'cost' => $row['cost'],
+                    ];
+                }
+            }
+
+            foreach ($legacyItems as $item) {
                 $inventory = Inventory::where('branch_id', $validated['branch_id'])
                     ->where('book_id', $item['book_id'])
                     ->lockForUpdate()
@@ -284,6 +469,14 @@ class ReturnController extends Controller
                 $currency = $splits[0]['currency'] ?? 'toman';
                 foreach ($splits as $split) {
                     $cost = Money::add($cost, $split['cost']);
+                    if ($split['lot']->consignment_receipt_item_id) {
+                        $rid = ConsignmentReceiptItem::query()
+                            ->whereKey($split['lot']->consignment_receipt_item_id)
+                            ->value('consignment_receipt_id');
+                        if ($rid) {
+                            $receiptIds[] = (int) $rid;
+                        }
+                    }
                 }
                 $prepared[] = [
                     'book_id' => $item['book_id'],
@@ -302,6 +495,7 @@ class ReturnController extends Controller
                 'user_id'       => $request->user()->id,
                 'return_number' => 'CRR-' . strtoupper(Str::random(8)),
                 'reason'        => $validated['reason'] ?? null,
+                'idempotency_key' => $validated['idempotency_key'] ?? null,
             ]);
 
             foreach ($prepared as $item) {
@@ -341,7 +535,30 @@ class ReturnController extends Controller
                 (int) $validated['branch_id'],
             );
 
-            return response()->json($return->load(['items.book', 'supplier', 'branch']), 201);
+            $snapshots = app(\App\Services\Settlement\SnapshotPayable::class);
+            foreach (array_unique($receiptIds) as $receiptId) {
+                $receipt = \App\Models\ConsignmentReceipt::query()->find($receiptId);
+                if ($receipt) {
+                    $snapshots->syncReceipt($receipt);
+                }
+            }
+
+            $payload = $return->fresh()->load(['items.book', 'supplier', 'branch']);
+            $payload->setAttribute('invalidation', [
+                'branch_id' => (int) $validated['branch_id'],
+                'supplier_account_id' => (int) $validated['supplier_account_id'],
+                'consignment_receipt_ids' => array_values(array_unique($receiptIds)),
+            ]);
+            $payload->setAttribute('summary', [
+                'total_books' => collect($prepared)->sum('quantity'),
+                'inventory_value_by_currency' => collect($prepared)
+                    ->groupBy('currency')
+                    ->map(fn ($rows) => Money::of(collect($rows)->reduce(fn ($s, $r) => Money::add($s, $r['cost']), '0.00')))
+                    ->all(),
+                'payable_effect' => '0.00',
+            ]);
+
+            return response()->json($payload, 201);
         });
     }
 

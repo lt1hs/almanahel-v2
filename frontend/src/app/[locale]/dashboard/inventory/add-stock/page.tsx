@@ -11,6 +11,8 @@ import { useSearchParams } from "next/navigation";
 import { useRouter } from "@/i18n/routing";
 import { useTranslation } from "@/hooks/useTranslation";
 import { apiRequest } from "@/lib/api";
+import { buildBookShowUrl } from "@/lib/bookCatalogRequests";
+import { useAuth } from "@/contexts/AuthContext";
 import { collectPriceBands } from "@/lib/bookFormUtils";
 import { useInvalidateNotifications } from "@/hooks/useNotificationInbox";
 
@@ -44,12 +46,16 @@ function mapBook(data: any): AddStockBook {
 
 function AddStockContent() {
     const { t } = useTranslation();
+    const { user } = useAuth();
     const router = useRouter();
     const searchParams = useSearchParams();
     const bookId = searchParams.get("id") || "";
     const branchParam = searchParams.get("branch");
-    const defaultBranchId =
-        branchParam && Number.isFinite(Number(branchParam)) ? Number(branchParam) : "overview";
+    const isAdmin = user?.role === "super_admin" || user?.role === "admin";
+    const operationalBranchId = isAdmin
+        ? (branchParam && Number.isFinite(Number(branchParam)) ? Number(branchParam) : null)
+        : (user?.branch?.id ?? user?.branch_id ?? null);
+    const defaultBranchId = operationalBranchId ?? "overview";
     const invalidateNotifications = useInvalidateNotifications();
 
     const [book, setBook] = useState<AddStockBook | null>(null);
@@ -64,10 +70,21 @@ function AddStockContent() {
             setIsLoading(false);
             return;
         }
+        if (!operationalBranchId) {
+            setError("branch_required");
+            setIsLoading(false);
+            return;
+        }
         setIsLoading(true);
         try {
+            const showUrl = buildBookShowUrl(bookId, { role: user?.role, branch_id: user?.branch_id ?? user?.branch?.id }, operationalBranchId);
+            if (!showUrl) {
+                setError("branch_required");
+                setBook(null);
+                return;
+            }
             const [data, branchList] = await Promise.all([
-                apiRequest(`/books/${bookId}`),
+                apiRequest(showUrl),
                 apiRequest("/branches"),
             ]);
             const mapped = mapBook(data);
@@ -80,7 +97,7 @@ function AddStockContent() {
         } finally {
             setIsLoading(false);
         }
-    }, [bookId]);
+    }, [bookId, operationalBranchId, user?.branch?.id, user?.branch_id, user?.role]);
 
     useEffect(() => {
         void fetchData();

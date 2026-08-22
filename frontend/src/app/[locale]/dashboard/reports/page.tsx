@@ -12,6 +12,8 @@ import { Button } from "@/components/ui/Button";
 import { useTranslation } from "@/hooks/useTranslation";
 import { useRouter } from "@/i18n/routing";
 import { apiRequest } from "@/lib/api";
+import { buildBookLowStockUrl } from "@/lib/bookCatalogRequests";
+import { useAuth } from "@/contexts/AuthContext";
 import { cn } from "@/lib/utils";
 import { RequireRole } from "@/components/auth/RequireRole";
 
@@ -25,6 +27,7 @@ export default function ReportsPage() {
 
 function ReportsPageContent() {
     const { t, formatNumber, isArabic, isDinar } = useTranslation();
+    const { user } = useAuth();
     const router = useRouter();
     const currencySymbol = isDinar ? t("common.currency.dinarSymbol") : t("common.currency.tomanSymbol");
 
@@ -39,12 +42,19 @@ function ReportsPageContent() {
     const fetchReports = useCallback(async () => {
         setIsLoading(true);
         try {
+            const lowStockUrl = user?.branch_id
+                ? buildBookLowStockUrl(
+                    { role: user.role, branch_id: user.branch_id },
+                    Number(user.branch_id)
+                )
+                : null;
+
             const [dash, branchData, books, iraq, stock, dist] = await Promise.all([
                 apiRequest("/reports/dashboard"),
                 apiRequest("/reports/all-branches"),
                 apiRequest(`/reports/top-books?currency=${isDinar ? "dinar" : "toman"}`),
                 apiRequest(`/reports/iraq-profit?currency=${isDinar ? "dinar" : "toman"}`).catch(() => null),
-                apiRequest("/books/low-stock"),
+                lowStockUrl ? apiRequest(lowStockUrl).catch(() => []) : Promise.resolve([]),
                 apiRequest("/reports/distribution-from-qom").catch(() => null),
             ]);
             setDashboard(dash);
@@ -58,7 +68,7 @@ function ReportsPageContent() {
         } finally {
             setIsLoading(false);
         }
-    }, [isDinar]);
+    }, [isDinar, user?.branch_id, user?.role]);
 
     useEffect(() => {
         fetchReports();

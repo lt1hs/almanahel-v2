@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useCallback, useMemo } from "react";
-import { ArrowRight, Building2 } from "lucide-react";
+import { ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Link } from "@/i18n/routing";
 import { useTranslation } from "@/hooks/useTranslation";
@@ -11,6 +11,10 @@ import { useAuth } from "@/contexts/AuthContext";
 import { SettlementWizard } from "@/components/finance/SettlementWizard";
 import { supplierAccountsUrl } from "@/lib/supplierAccountSelection";
 import { cn } from "@/lib/utils";
+import {
+  persistOperationalBranchId,
+  resolveDefaultOperationalBranchId,
+} from "@/lib/operationalBranch";
 
 export default function ConsignmentSettlePage() {
   const { t, isArabic, preferredCurrency } = useTranslation();
@@ -25,6 +29,7 @@ export default function ConsignmentSettlePage() {
   const [selectedBranchId, setSelectedBranchId] = useState("");
   const [suppliers, setSuppliers] = useState<{ id: number; name: string }[]>([]);
   const [settlementData, setSettlementData] = useState<any[]>([]);
+  const [breakdown, setBreakdown] = useState<any>(null);
   const [sessionKey, setSessionKey] = useState(0);
   const [isLoading, setIsLoading] = useState(false);
   const [isConfirming, setIsConfirming] = useState(false);
@@ -50,9 +55,17 @@ export default function ConsignmentSettlePage() {
           (b: { type?: string }) => b.type === "store" || b.type === "warehouse"
         );
         setBranches(rows);
+        const defaultId = resolveDefaultOperationalBranchId(
+          { role: user?.role, branch_id: userBranchId },
+          { availableBranchIds: rows.map((b: { id: number }) => Number(b.id)) }
+        );
+        if (defaultId) {
+          setSelectedBranchId(String(defaultId));
+          persistOperationalBranchId(defaultId);
+        }
       })
       .catch(console.error);
-  }, [requiresBranchPicker]);
+  }, [requiresBranchPicker, user?.role, userBranchId]);
 
   useEffect(() => {
     if (!effectiveBranchId) {
@@ -82,7 +95,9 @@ export default function ConsignmentSettlePage() {
   const handleBranchChange = (value: string) => {
     setSelectedBranchId(value);
     setSettlementData([]);
+    setBreakdown(null);
     setSessionKey((key) => key + 1);
+    persistOperationalBranchId(value ? Number(value) : null);
   };
 
   const handleCalculate = useCallback(
@@ -93,18 +108,25 @@ export default function ConsignmentSettlePage() {
         const data = await apiRequest(
           `/consignments/settlement-preview?supplier_account_id=${supplierAccountId}&period_start=${fromDate}&period_end=${toDate}&currency=${preferredCurrency}&branch_id=${effectiveBranchId}`
         );
+        setBreakdown(data.breakdown || null);
         setSettlementData(
-          (data.items || []).map((item: any) => ({
-            title: item.title || `#${item.book_id ?? ""}`,
-            qty: item.open_qty ?? item.qty_sold,
-            price: item.unit_cost ?? item.cost_price,
-            total: item.open_amount ?? item.total,
-            commission: 0,
-          }))
+          (data.items || []).map((item: any) => {
+            const bookId = item.book_id != null ? Number(item.book_id) : null;
+            return {
+              title: item.title || (bookId ? `#${bookId}` : "—"),
+              qty: Number(item.open_qty ?? item.qty_sold ?? 0),
+              price: Number(item.unit_cost ?? item.cost_price ?? 0),
+              total: Number(item.open_amount ?? item.total ?? 0),
+              commission: 0,
+              publisherShare: Number(item.open_amount ?? item.total ?? 0),
+              kind: item.kind === "gift" ? "gift" : "sale",
+            };
+          })
         );
       } catch (error) {
         console.error("Calculation failed:", error);
         setSettlementData([]);
+        setBreakdown(null);
         notify.error("toast.settlementError");
       } finally {
         setIsLoading(false);
@@ -136,6 +158,7 @@ export default function ConsignmentSettlePage() {
         }),
       });
       setSettlementData([]);
+      setBreakdown(null);
       setSessionKey((key) => key + 1);
       notify.success("toast.settlementSuccess");
     } catch (error) {
@@ -147,66 +170,44 @@ export default function ConsignmentSettlePage() {
   };
 
   return (
-    <div className="space-y-6 pb-10">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex items-center gap-3">
-          <Link href="/dashboard/consignment">
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-9 w-9 rounded-xl border border-ink/5 p-0"
-            >
-              <ArrowRight className={cn("h-4 w-4", isArabic && "rotate-180")} />
-            </Button>
-          </Link>
-          <div>
-            <h1 className="text-xl font-black font-vazirmatn text-ink">
-              {t("consignment.settle.title")}
-            </h1>
-            <p className="mt-0.5 text-[10px] font-bold uppercase tracking-widest text-ink/35">
-              {t("consignment.settle.subtitle")}
-            </p>
-          </div>
+    <div className="space-y-5 pb-10">
+      <div className="flex items-center gap-3">
+        <Link href="/dashboard/consignment">
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-9 w-9 rounded-xl border border-ink/5 p-0"
+          >
+            <ArrowRight className={cn("h-4 w-4", isArabic && "rotate-180")} />
+          </Button>
+        </Link>
+        <div>
+          <h1 className="text-xl font-black font-vazirmatn text-ink">
+            {t("consignment.settle.title")}
+          </h1>
+          <p className="mt-0.5 text-[10px] font-bold uppercase tracking-widest text-ink/35">
+            {t("consignment.settle.subtitle")}
+          </p>
         </div>
       </div>
 
-      {requiresBranchPicker && (
-        <div className="max-w-xs space-y-1.5">
-          <label className="text-[10px] font-black uppercase tracking-widest text-ink/40 flex items-center gap-1.5">
-            <Building2 className="w-3 h-3" />
-            {t("distribution.branchFallback")}
-          </label>
-          <select
-            value={selectedBranchId}
-            onChange={(e) => handleBranchChange(e.target.value)}
-            className="h-10 w-full rounded-xl border border-ink/10 bg-white/70 px-3 text-[12px] font-vazirmatn outline-none"
-          >
-            <option value="">{t("expenses.form.selectBranch")}</option>
-            {branches.map((b) => (
-              <option key={b.id} value={b.id}>{b.name}</option>
-            ))}
-          </select>
-        </div>
-      )}
-
-      {!canUseSettlement ? (
-        <p className="text-[12px] font-black text-ink/35 text-center py-8">
-          {t("expenses.form.selectBranch")}
-        </p>
-      ) : (
-        <SettlementWizard
-          suppliers={suppliers}
-          initialSupplierAccountId={initialSupplierAccountId}
-          onCalculate={handleCalculate}
-          onConfirm={handleConfirm}
-          settlementData={settlementData}
-          isLoading={isLoading}
-          isConfirming={isConfirming}
-          branchId={effectiveBranchId}
-          disabled={!canUseSettlement}
-          sessionKey={sessionKey}
-        />
-      )}
+      <SettlementWizard
+        suppliers={suppliers}
+        initialSupplierAccountId={initialSupplierAccountId}
+        onCalculate={handleCalculate}
+        onConfirm={handleConfirm}
+        settlementData={settlementData}
+        breakdown={breakdown}
+        isLoading={isLoading}
+        isConfirming={isConfirming}
+        branchId={effectiveBranchId}
+        disabled={isAccountant && !userBranchId}
+        sessionKey={sessionKey}
+        showBranchPicker={requiresBranchPicker}
+        branches={branches}
+        selectedBranchId={selectedBranchId}
+        onBranchChange={handleBranchChange}
+      />
     </div>
   );
 }

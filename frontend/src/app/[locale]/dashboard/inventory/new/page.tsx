@@ -18,7 +18,8 @@ import { useNotify } from "@/hooks/useNotify";
 import { notify } from "@/lib/toast";
 import { apiRequest } from "@/lib/api";
 import { addStockIntake, bookPayloadFromForm, defaultBookFormState, syncBookBranchInventories } from "@/lib/bookIntake";
-import { parsePriceDigits, stockKeyForBranch, type BranchStockKey } from "@/lib/bookFormUtils";
+import { buildPostBooksPayload } from "@/lib/bookCatalogRequests";
+import { parsePriceDigits, resolveBranchId, stockKeyForBranch, type BranchStockKey } from "@/lib/bookFormUtils";
 import { useAuth } from "@/contexts/AuthContext";
 import { useInvalidateNotifications } from "@/hooks/useNotificationInbox";
 
@@ -104,6 +105,17 @@ export default function NewInventoryPage() {
         return { [key]: posBranch.name } as Partial<Record<BranchStockKey, string>>;
     }, [isHubIntake, posBranch?.name, posKey]);
 
+    const catalogBranchId = useMemo(() => {
+        if (!isHubIntake) {
+            return user?.branch_id ?? user?.branch?.id ?? null;
+        }
+        for (const key of visibleStockKeys) {
+            const id = resolveBranchId(branches, key);
+            if (id) return id;
+        }
+        return intakeInfo?.default_intake_branch_id ?? null;
+    }, [branches, intakeInfo?.default_intake_branch_id, isHubIntake, user?.branch?.id, user?.branch_id, visibleStockKeys]);
+
     const priceScope = !isHubIntake && posKey === "najaf"
         ? "iraq"
         : !isHubIntake && posKey === "mashhad"
@@ -144,12 +156,31 @@ export default function NewInventoryPage() {
 
         await notify.promise(
             (async () => {
+                const postBranchId = !isHubIntake
+                    ? Number(user?.branch_id)
+                    : (() => {
+                        for (const key of visibleStockKeys) {
+                            const qty = parseInt(parsePriceDigits(formData.book.branchStock?.[key]), 10) || 0;
+                            if (qty > 0) {
+                                const id = resolveBranchId(branches, key);
+                                if (id) return id;
+                            }
+                        }
+                        return intakeInfo?.default_intake_branch_id ?? null;
+                    })();
+
+                const postBody = buildPostBooksPayload(
+                    { role: user?.role, branch_id: user?.branch_id ?? user?.branch?.id },
+                    bookPayloadFromForm(formData.book),
+                    postBranchId
+                );
+                if ("error" in postBody) {
+                    throw new Error("branch_required");
+                }
+
                 const created = await apiRequest("/books", {
                     method: "POST",
-                    body: JSON.stringify({
-                        ...bookPayloadFromForm(formData.book),
-                        branch_id: !isHubIntake && user?.branch_id ? Number(user.branch_id) : undefined,
-                    }),
+                    body: JSON.stringify(postBody.payload),
                 });
                 const bookId = created?.book?.id ?? created?.id;
 
@@ -312,6 +343,7 @@ export default function NewInventoryPage() {
                                                     visibleStockKeys={visibleStockKeys}
                                                     stockFieldLabels={stockFieldLabels}
                                                     priceScope={priceScope}
+                                                    catalogBranchId={catalogBranchId}
                                                 />
                                             </div>
                                         )}

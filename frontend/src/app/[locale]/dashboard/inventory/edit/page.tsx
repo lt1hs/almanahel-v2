@@ -16,6 +16,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { useSearchParams } from "next/navigation";
 import { useRouter } from "@/i18n/routing";
 import { apiRequest } from "@/lib/api";
+import { buildBookShowUrl } from "@/lib/bookCatalogRequests";
 import { bookPayloadFromForm, syncBookBranchInventories } from "@/lib/bookIntake";
 import { cn } from "@/lib/utils";
 import {
@@ -49,30 +50,53 @@ function EditBookContent() {
     const { user } = useAuth();
     const searchParams = useSearchParams();
     const bookId = searchParams.get("id") || "";
+    const branchParam = searchParams.get("branch");
 
     const [book, setBook] = useState<any>(null);
     const [supplier, setSupplier] = useState<SupplierAccountSelection | null>(null);
     const [branches, setBranches] = useState<any[]>([]);
     const [inventories, setInventories] = useState<any[]>([]);
+    const [selectedBranchId, setSelectedBranchId] = useState<number | null>(
+        branchParam && Number.isFinite(Number(branchParam)) ? Number(branchParam) : null
+    );
     const [isLoading, setIsLoading] = useState(true);
     const [isSaving, setIsSaving] = useState(false);
     const [isDeleting, setIsDeleting] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
     const isAdmin = user?.role === "super_admin" || user?.role === "admin";
+    const operationalBranchId = isAdmin
+        ? selectedBranchId
+        : (user?.branch?.id ?? user?.branch_id ?? null);
 
     const fetchBook = useCallback(async () => {
+        if (!operationalBranchId) {
+            setIsLoading(false);
+            setError(t("inventory.branchRequired"));
+            setBook(null);
+            return;
+        }
         setIsLoading(true);
         try {
+            const showUrl = buildBookShowUrl(
+                bookId,
+                { role: user?.role, branch_id: user?.branch_id ?? user?.branch?.id },
+                operationalBranchId
+            );
+            if (!showUrl) {
+                setError(t("inventory.branchRequired"));
+                setBook(null);
+                return;
+            }
             const [data, branchList] = await Promise.all([
-                apiRequest(`/books/${bookId}`),
+                apiRequest(showUrl),
                 apiRequest("/branches"),
             ]);
             const branchRows = Array.isArray(branchList) ? branchList : [];
             setBranches(branchRows);
             setInventories(Array.isArray(data.inventories) ? data.inventories : []);
 
-            const inventory = resolveInventory(data.inventories, user?.branch?.id);
+            const inventory = resolveInventory(data.inventories, operationalBranchId);
             setSupplier(null);
 
             const qomInv = data.inventories?.find((inv: any) => resolveBranchId(branchRows, "qom") === Number(inv.branch_id));
@@ -119,7 +143,13 @@ function EditBookContent() {
         } finally {
             setIsLoading(false);
         }
-    }, [bookId, t, user?.branch?.id]);
+    }, [bookId, operationalBranchId, t, user?.branch?.id, user?.branch_id, user?.role]);
+
+    useEffect(() => {
+        apiRequest("/branches")
+            .then((branchList) => setBranches(Array.isArray(branchList) ? branchList : []))
+            .catch(() => setBranches([]));
+    }, []);
 
     useEffect(() => {
         if (!bookId) {
@@ -128,8 +158,14 @@ function EditBookContent() {
             setBook(null);
             return;
         }
+        if (isAdmin && !selectedBranchId) {
+            setIsLoading(false);
+            setBook(null);
+            setError(null);
+            return;
+        }
         fetchBook();
-    }, [bookId, fetchBook, t]);
+    }, [bookId, fetchBook, isAdmin, selectedBranchId, t]);
 
     const coverPreview = book?.coverImagePreview || resolveBookCoverUrl(book?.coverImage);
     const totalStock = useMemo(
@@ -174,7 +210,9 @@ function EditBookContent() {
 
             await syncBookBranchInventories(
                 book,
-                branches,
+                isAdmin && operationalBranchId
+                    ? branches.filter((b) => Number(b.id) === operationalBranchId)
+                    : branches,
                 supplier,
                 Number(bookId),
                 {
@@ -227,6 +265,23 @@ function EditBookContent() {
     }
 
     if (!book) {
+        if (isAdmin && !selectedBranchId) {
+            return (
+                <div className="max-w-5xl mx-auto py-16 space-y-4">
+                    <p className="text-center text-ink/50 font-black">{t("inventory.branchRequired")}</p>
+                    <select
+                        className="mx-auto block w-full max-w-md h-11 rounded-xl border border-ink/10 px-3 text-sm font-bold"
+                        value=""
+                        onChange={(e) => setSelectedBranchId(Number(e.target.value))}
+                    >
+                        <option value="">{t("inventory.selectBranch")}</option>
+                        {branches.map((b) => (
+                            <option key={b.id} value={b.id}>{b.name}</option>
+                        ))}
+                    </select>
+                </div>
+            );
+        }
         return (
             <div className="text-center py-20">
                 <p className="text-ink/40 font-black">{error || t("toast.bookNotFound")}</p>
@@ -270,6 +325,21 @@ function EditBookContent() {
                     {isSaving ? t("common.saving") : t("common.saveChanges")}
                 </Button>
             </div>
+
+            {isAdmin && (
+                <div className="rounded-xl border border-ink/10 bg-white/70 px-4 py-3">
+                    <label className="text-[10px] font-black text-ink/40 block mb-1">{t("inventory.selectBranch")}</label>
+                    <select
+                        className="w-full h-10 rounded-lg border border-ink/10 px-3 text-sm font-bold"
+                        value={selectedBranchId ?? ""}
+                        onChange={(e) => setSelectedBranchId(Number(e.target.value))}
+                    >
+                        {branches.map((b) => (
+                            <option key={b.id} value={b.id}>{b.name}</option>
+                        ))}
+                    </select>
+                </div>
+            )}
 
             {error && (
                 <div className="px-4 py-3 rounded-xl bg-rose-50 border border-rose-100 text-rose-600 text-[12px] font-vazirmatn flex items-start gap-2">
@@ -391,6 +461,7 @@ function EditBookContent() {
                     readOnlyStock
                     readOnlyCost
                     readOnlyOwnership
+                    catalogBranchId={operationalBranchId}
                 />
             </div>
 

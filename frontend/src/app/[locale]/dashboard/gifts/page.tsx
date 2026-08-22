@@ -27,6 +27,8 @@ interface GiftRow {
   currency: "toman" | "dinar";
   is_consignment: boolean;
   accounting_status: "pending" | "settled";
+  settlement_status?: "not_applicable" | "unsettled" | "partially_settled" | "settled";
+  remaining_payable?: string | number;
   gifted_at: string;
   book?: { id: number; title: string };
   branch?: { id: number; name: string };
@@ -379,7 +381,11 @@ export default function GiftsPage() {
       .filter((g) => g.currency === preferredCurrency)
       .reduce((a, g) => a + Number(g.cost_value || 0), 0);
     const pendingCount = gifts.filter(
-      (g) => g.accounting_status === "pending" && g.is_consignment
+      (g) =>
+        g.is_consignment &&
+        (g.settlement_status === "unsettled" ||
+          g.settlement_status === "partially_settled" ||
+          (!g.settlement_status && g.accounting_status === "pending"))
     ).length;
     return [
       { label: t("gifts.kpi.total"), value: formatNumber(totalCount || gifts.length), color: "text-primary" },
@@ -490,14 +496,19 @@ export default function GiftsPage() {
                       <Badge
                         className={cn(
                           "border text-[8px] font-black",
-                          gift.accounting_status === "pending"
-                            ? "border-amber-100 bg-amber-50 text-amber-600"
-                            : "border-emerald-100 bg-emerald-50 text-emerald-600"
+                          gift.settlement_status === "settled" ||
+                            (!gift.settlement_status && gift.accounting_status === "settled")
+                            ? "border-emerald-100 bg-emerald-50 text-emerald-600"
+                            : gift.settlement_status === "partially_settled"
+                              ? "border-sky-100 bg-sky-50 text-sky-700"
+                              : "border-amber-100 bg-amber-50 text-amber-600"
                         )}
                       >
-                        {gift.accounting_status === "pending"
-                          ? t("gifts.status.pending")
-                          : t("gifts.status.settled")}
+                        {gift.settlement_status === "partially_settled"
+                          ? "تسویه جزئی"
+                          : gift.settlement_status === "settled" || gift.accounting_status === "settled"
+                            ? t("gifts.status.settled")
+                            : t("gifts.status.pending")}
                       </Badge>
                       {gift.is_consignment && (
                         <Badge className="border border-amber-200 bg-amber-50 text-[8px] font-black text-amber-700">
@@ -526,7 +537,10 @@ export default function GiftsPage() {
                         : t("common.currency.tomanSymbol")}
                     </p>
                   </div>
-                  {gift.accounting_status === "pending" && gift.is_consignment && (
+                  {gift.is_consignment &&
+                    gift.settlement_status !== "settled" &&
+                    gift.settlement_status !== "not_applicable" &&
+                    gift.accounting_status === "pending" && (
                     <Button
                       size="sm"
                       className="h-8 shrink-0 rounded-lg bg-emerald-500 px-3 text-[10px] font-bold text-white hover:bg-emerald-600"
