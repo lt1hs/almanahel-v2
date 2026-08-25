@@ -1,5 +1,6 @@
 ﻿"use client";
 
+import { usePageReady } from "@/components/NavigationProgress";
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import {
     Search, Scan, Book, CreditCard, Banknote, TrendingUp, Receipt, X, Plus,
@@ -103,6 +104,7 @@ export default function SalesPage() {
     const [payment, setPayment] = useState<PaymentMethod>("cash");
     const [inventory, setInventory] = useState<SalesBook[]>([]);
     const [isLoading, setIsLoading] = useState(true);
+    usePageReady(!isLoading);
     const [isRefreshing, setIsRefreshing] = useState(false);
     const [loadError, setLoadError] = useState<string | null>(null);
     const [stats, setStats] = useState({ todaySales: 0, invoiceCount: 0 });

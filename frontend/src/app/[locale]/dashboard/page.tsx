@@ -1,5 +1,7 @@
 "use client";
 
+import { usePageReady } from "@/components/NavigationProgress";
+
 import React, { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Variants, motion } from "framer-motion";
@@ -26,6 +28,7 @@ import { useTranslation } from "@/hooks/useTranslation";
 import { useRouter } from "@/i18n/routing";
 import { cn } from "@/lib/utils";
 import { apiRequest } from "@/lib/api";
+import { canAccessRoute } from "@/lib/routeAccess";
 
 const containerVariants: Variants = {
     hidden: { opacity: 0 },
@@ -125,6 +128,7 @@ export default function DashboardPage() {
         refetchOnWindowFocus: true,
         refetchOnMount: "always",
     });
+    usePageReady(!isLoading);
 
     const data = bundle?.stats ?? null;
     const notifications = bundle?.notifications ?? [];
@@ -530,7 +534,7 @@ export default function DashboardPage() {
                                 { label: t("inventory.addBook"), icon: Plus, href: "/dashboard/inventory/new", tone: "text-primary bg-primary/5 border-primary/10" },
                                 { label: t("nav.distribution"), icon: Truck, href: "/dashboard/distribution", tone: "text-sky-600 bg-sky-50 border-sky-100" },
                                 { label: t("nav.inventory"), icon: Package, href: "/dashboard/inventory", tone: "text-amber-600 bg-amber-50 border-amber-100" },
-                            ].map((action) => (
+                            ].filter((action) => canAccessRoute(role, action.href)).map((action) => (
                                 <button
                                     key={action.href}
                                     type="button"

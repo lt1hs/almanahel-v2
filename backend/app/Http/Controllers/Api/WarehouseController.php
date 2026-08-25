@@ -23,7 +23,17 @@ class WarehouseController extends Controller
     {
         $query = WarehouseLog::with(['book', 'user', 'relatedTransfer']);
 
+        $ids = BranchAccess::visibleBranchIds($request->user());
+        if ($ids !== null) {
+            if (!$ids) {
+                $query->whereRaw('1 = 0');
+            } else {
+                $query->whereIn('branch_id', $ids);
+            }
+        }
+
         if ($request->filled('branch_id')) {
+            BranchAccess::assertBranchAllowed($request->user(), (int) $request->branch_id);
             $query->where('branch_id', $request->branch_id);
         }
         if ($request->filled('direction')) {
@@ -52,6 +62,8 @@ class WarehouseController extends Controller
             'notes'             => 'nullable|string',
             'log_date'          => 'required|date',
         ]);
+
+        BranchAccess::assertCanMutateStockInBranch($request->user(), (int) $validated['branch_id']);
 
         if ($validated['direction'] === 'in') {
             $book = \App\Models\Book::find($validated['book_id']);
@@ -111,6 +123,8 @@ class WarehouseController extends Controller
 
     public function updateLog(Request $request, WarehouseLog $warehouseLog)
     {
+        BranchAccess::assertCanMutateStockInBranch($request->user(), (int) $warehouseLog->branch_id);
+
         if ($warehouseLog->related_transfer_id) {
             return response()->json(['message' => 'این تراکنش از انتقال سیستمی است و قابل ویرایش نیست'], 422);
         }
@@ -183,8 +197,10 @@ class WarehouseController extends Controller
         });
     }
 
-    public function show(WarehouseLog $warehouseLog)
+    public function show(Request $request, WarehouseLog $warehouseLog)
     {
+        BranchAccess::assertBranchAllowed($request->user(), (int) $warehouseLog->branch_id);
+
         return response()->json($warehouseLog->load(['book', 'user', 'branch']));
     }
 
@@ -291,6 +307,8 @@ class WarehouseController extends Controller
 
     public function stats(Request $request, $branchId)
     {
+        BranchAccess::assertBranchAllowed($request->user(), (int) $branchId);
+
         $totalIn = WarehouseLog::where('branch_id', $branchId)
             ->where('direction', 'in')->sum('quantity');
         $totalOut = WarehouseLog::where('branch_id', $branchId)

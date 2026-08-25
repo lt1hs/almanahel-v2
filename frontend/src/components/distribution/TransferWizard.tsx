@@ -1,12 +1,13 @@
 "use client";
 
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
     Search, BookOpen, X, ArrowRight, ArrowLeft, ArrowLeftRight, Warehouse, Store,
-    CheckCircle2, RefreshCw, AlertTriangle, Package,
+    CheckCircle2, RefreshCw, AlertTriangle, Package, Building2,
 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
+import { FilterSelect } from "@/components/ui/FilterSelect";
 import { cn } from "@/lib/utils";
 import { apiRequest } from "@/lib/api";
 import {
@@ -45,6 +46,16 @@ function isQomStore(branch: Branch) {
     return branch.type === "store" && (city === "قم" || name.includes("قم"));
 }
 
+function stockMapFromInventories(inventories: any[] | undefined): Record<string, number> {
+    const map: Record<string, number> = {};
+    for (const row of inventories || []) {
+        const branchId = String(row.branch_id ?? row.branch?.id ?? "");
+        const qty = Number(row.quantity) || 0;
+        if (branchId && qty > 0) map[branchId] = qty;
+    }
+    return map;
+}
+
 export function TransferWizard({
     branches,
     userName,
@@ -78,6 +89,7 @@ export function TransferWizard({
     /** branchId → qty for the selected book (only branches with qty > 0) */
     const [stockByBranch, setStockByBranch] = useState<Record<string, number>>({});
     const [isLoadingAvailability, setIsLoadingAvailability] = useState(false);
+    const didAutoRouteRef = useRef(false);
 
     const steps = [
         t("distribution.wizard.stepBook"),
@@ -92,6 +104,20 @@ export function TransferWizard({
         () => branches.filter((b) => b.type === "store" || b.type === "warehouse"),
         [branches]
     );
+
+    useEffect(() => {
+        if (isPosUser) return;
+        if (catalogBranchId) return;
+        const fromPrefill = prefillFrom && storeBranches.some((b) => String(b.id) === String(prefillFrom))
+            ? String(prefillFrom)
+            : "";
+        const qom = storeBranches.find(isQomStore);
+        const warehouse = storeBranches.find((b) => b.type === "warehouse");
+        const next = fromPrefill || (qom ? String(qom.id) : "") || (warehouse ? String(warehouse.id) : "") || (storeBranches[0] ? String(storeBranches[0].id) : "");
+        if (!next) return;
+        setCatalogBranchId(next);
+        setFromBranch((prev) => prev || next);
+    }, [isPosUser, catalogBranchId, prefillFrom, storeBranches]);
 
     /** مبدأ: POS = own store only; admin/warehouse = all with stock (warehouse ok) */
     const fromBranches = useMemo(() => {
@@ -118,6 +144,7 @@ export function TransferWizard({
             const fromMeta = storeBranches.find((b) => String(b.id) === String(prefillFrom));
             if (allowed && !(isPosUser && fromMeta?.type === "warehouse")) {
                 setFromBranch(prefillFrom);
+                if (!isPosUser) setCatalogBranchId((prev) => prev || prefillFrom);
             }
         }
         if (prefillTo) {
@@ -209,6 +236,8 @@ export function TransferWizard({
                 if (cancelled || !book?.id) return;
                 setSelectedBook(book);
                 setSearchQuery(book.title || "");
+                const map = stockMapFromInventories(book.inventories);
+                if (Object.keys(map).length) setStockByBranch(map);
             })
             .catch(() => {});
         return () => { cancelled = true; };
@@ -239,27 +268,33 @@ export function TransferWizard({
         apiRequest(url)
             .then((data) => {
                 if (cancelled) return;
-                const map: Record<string, number> = {};
-                const rows = Array.isArray(data?.inventories) ? data.inventories : [];
-                for (const row of rows) {
-                    const branchId = String(row.branch_id ?? row.branch?.id ?? "");
-                    const qty = Number(row.quantity) || 0;
-                    if (branchId && qty > 0) map[branchId] = qty;
-                }
-                setStockByBranch(map);
-
-                // Drop invalid prefill / previous selection if that branch has no stock
-                setFromBranch((prev) => (prev && map[prev] ? prev : ""));
+                const incoming = stockMapFromInventories(data?.inventories);
+                let merged: Record<string, number> = incoming;
+                setStockByBranch((prev) => {
+                    merged = Object.keys(incoming).length === 0 && Object.keys(prev).length > 0
+                        ? prev
+                        : { ...prev, ...incoming };
+                    return merged;
+                });
+                setFromBranch((prev) => {
+                    if (prev && merged[prev]) return prev;
+                    const warehouse = storeBranches.find((b) => b.type === "warehouse");
+                    if (warehouse && merged[String(warehouse.id)]) return String(warehouse.id);
+                    const first = Object.keys(merged)[0];
+                    return first || "";
+                });
             })
             .catch(() => {
-                if (!cancelled) setStockByBranch({});
+                if (!cancelled) {
+                    setStockByBranch((prev) => (Object.keys(prev).length ? prev : {}));
+                }
             })
             .finally(() => {
                 if (!cancelled) setIsLoadingAvailability(false);
             });
 
         return () => { cancelled = true; };
-    }, [selectedBook?.id, catalogBranchId, userBranchId, userRole]);
+    }, [selectedBook?.id, catalogBranchId, userBranchId, userRole, storeBranches]);
 
     // POS: lock source to own branch when it has stock
     useEffect(() => {
@@ -308,6 +343,16 @@ export function TransferWizard({
         }, 280);
         return () => clearTimeout(timer);
     }, [searchQuery, selectedBook, catalogBranchId, userBranchId, userRole]);
+
+    useEffect(() => {
+        if (didAutoRouteRef.current) return;
+        if (typeof window === "undefined") return;
+        if (!new URLSearchParams(window.location.search).get("book")) return;
+        if (!selectedBook) return;
+        if (isLoadingAvailability) return;
+        didAutoRouteRef.current = true;
+        setStep(1);
+    }, [selectedBook, isLoadingAvailability]);
 
     const fromName = storeBranches.find((b) => String(b.id) === fromBranch)?.name;
     const toName = storeBranches.find((b) => String(b.id) === toBranch)?.name;
@@ -385,7 +430,22 @@ export function TransferWizard({
                     </div>
                 </div>
 
-                <div className="flex items-center gap-1 flex-wrap">
+                <div className="flex items-center gap-2 flex-wrap lg:justify-end">
+                    {!isPosUser && !selectedBook && storeBranches.length > 0 && (
+                        <FilterSelect
+                            className="w-full min-w-[180px] sm:w-[220px]"
+                            value={catalogBranchId}
+                            onChange={(value) => {
+                                setCatalogBranchId(value);
+                                setFromBranch(value);
+                            }}
+                            options={storeBranches.map((b) => ({ value: String(b.id), label: b.name }))}
+                            icon={<Building2 className="h-3.5 w-3.5" />}
+                            defaultValue="__none__"
+                            placeholder={t("inventory.selectBranch")}
+                        />
+                    )}
+                    <div className="flex items-center gap-1 flex-wrap">
                     {steps.map((label, i) => (
                         <React.Fragment key={label}>
                             <button
@@ -417,6 +477,7 @@ export function TransferWizard({
                             )}
                         </React.Fragment>
                     ))}
+                    </div>
                 </div>
             </div>
 
@@ -450,26 +511,6 @@ export function TransferWizard({
                                 </div>
                             ) : (
                                 <>
-                                    {!isPosUser && (
-                                        <div className="max-w-2xl">
-                                            <label className="text-[10px] font-black text-ink/40 block mb-1">
-                                                {t("inventory.selectBranch")}
-                                            </label>
-                                            <select
-                                                className="w-full h-10 rounded-xl border border-ink/10 px-3 text-sm font-bold bg-white"
-                                                value={catalogBranchId}
-                                                onChange={(e) => {
-                                                    setCatalogBranchId(e.target.value);
-                                                    setFromBranch(e.target.value);
-                                                }}
-                                            >
-                                                <option value="">{t("inventory.selectBranch")}</option>
-                                                {storeBranches.map((b) => (
-                                                    <option key={b.id} value={b.id}>{b.name}</option>
-                                                ))}
-                                            </select>
-                                        </div>
-                                    )}
                                     <div className="flex flex-col sm:flex-row sm:items-center gap-3">
                                         <div className="relative flex-1">
                                             <Search className="absolute start-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-ink/25 pointer-events-none" />

@@ -1,0 +1,71 @@
+# cPanel static deploy — Apache + PHP-FPM
+# Copy to: ~/public_html/.htaccess
+#
+# Laravel entry point is ONLY public_html/api/index.php
+
+# ── Fix: stop PHP-FPM from handling .css / .js / fonts (causes 500) ──
+# If your cPanel PHP version is NOT 8.2, change ea-php82 below (e.g. ea-php81).
+<IfModule mime_module>
+  AddHandler application/x-httpd-ea-php82 .php .php8 .phtml
+</IfModule>
+
+<IfModule mod_proxy_fcgi.c>
+  <FilesMatch "\.(css|js|mjs|woff2?|ttf|eot|ico|png|jpe?g|gif|svg|webp|map|json|html|htm|txt)$">
+    SetHandler default-handler
+  </FilesMatch>
+</IfModule>
+
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteBase /
+
+    # Book covers: public_html/storage MUST symlink to the LIVE Laravel disk:
+    #   ln -sfn /home/daralmanahelc/backend/storage/app/public storage
+    # Do NOT force-rewrite into public_html/backend (that tree is stale).
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteCond %{DOCUMENT_ROOT}/backend/storage/app/public/$1 -f
+    RewriteRule ^storage/(.*)$ backend/storage/app/public/$1 [L]
+
+    # Next.js 16 static export soft-nav asks for segmented RSC payloads
+    # (e.g. __next.$d$locale.dashboard.expenses.txt) that export never writes.
+    # Fall back to __next._full.txt in the same folder.
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteRule ^((?:fa|ar)/.*/)__next\.[^/]+\.txt$ $1__next._full.txt [L]
+
+    # Laravel API — /api/login → api/index.php
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteCond %{REQUEST_FILENAME} !-d
+    RewriteRule ^api(?:/(.*))?$ api/index.php [L,QSA]
+    RewriteRule ^_next/ - [L]
+    RewriteRule ^$ /fa/ [R=302,L]
+
+    RewriteCond %{REQUEST_FILENAME} -f [OR]
+    RewriteCond %{REQUEST_FILENAME} -d
+    RewriteRule ^ - [L]
+
+    RewriteRule ^fa/dashboard/inventory/edit/[^/]+/?$ /fa/dashboard/inventory/edit/0/ [L]
+    RewriteRule ^ar/dashboard/inventory/edit/[^/]+/?$ /ar/dashboard/inventory/edit/0/ [L]
+
+    RewriteCond %{REQUEST_URI} ^/(fa|ar)/
+    RewriteCond %{DOCUMENT_ROOT}%{REQUEST_URI}index.html -f
+    RewriteRule ^(.*)$ $1index.html [L]
+</IfModule>
+
+# HTML pages: avoid stale client shells after deploys
+<IfModule mod_headers.c>
+  <FilesMatch "\.(html|txt)$">
+    Header set Cache-Control "no-cache, no-store, must-revalidate"
+    Header set Pragma "no-cache"
+  </FilesMatch>
+
+  <FilesMatch "\.(js|css|woff2|png|jpg|jpeg|webp|svg|ico)$">
+    Header set Cache-Control "public, max-age=31536000, immutable"
+  </FilesMatch>
+</IfModule>
+
+# php -- BEGIN cPanel-generated handler, do not edit
+# Set the “ea-php82” package as the default “PHP” programming language.
+<IfModule mime_module>
+  AddHandler application/x-httpd-ea-php82 .php .php8 .phtml
+</IfModule>
+# php -- END cPanel-generated handler, do not edit

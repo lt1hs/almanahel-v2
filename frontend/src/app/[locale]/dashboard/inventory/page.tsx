@@ -1,5 +1,7 @@
 "use client";
 
+import { usePageReady } from "@/components/NavigationProgress";
+
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
     Plus, Search, Book, ChevronLeft, ChevronRight,
@@ -23,6 +25,7 @@ import {
     priceBandForBranch,
     PriceBandValues,
     resolveBookCoverUrl,
+    resolveBranchId,
 } from "@/lib/bookFormUtils";
 
 const PAGE_SIZE = 25;
@@ -114,10 +117,18 @@ function mapOverviewBook(book: any): BookData {
     };
 }
 
-function addStockPath(bookId: string, branchId: number | "overview") {
+function addStockPath(bookId: string, branchId: number | "overview", fallbackBranchId?: number | null) {
     const q = new URLSearchParams({ id: bookId });
-    if (typeof branchId === "number") q.set("branch", String(branchId));
+    const resolved = typeof branchId === "number" ? branchId : fallbackBranchId;
+    if (typeof resolved === "number" && resolved > 0) q.set("branch", String(resolved));
     return `/dashboard/inventory/add-stock?${q.toString()}`;
+}
+
+function transferPath(bookId: string, branchId: number | "overview", fallbackBranchId?: number | null) {
+    const q = new URLSearchParams({ book: bookId });
+    const resolved = typeof branchId === "number" ? branchId : fallbackBranchId;
+    if (typeof resolved === "number" && resolved > 0) q.set("from", String(resolved));
+    return `/dashboard/distribution?${q.toString()}`;
 }
 
 function mapInventoryRow(item: any, branch?: { name?: string; type?: string; city?: string } | null): BookData {
@@ -209,6 +220,7 @@ export default function InventoryPage() {
     const [categoryFilter, setCategoryFilter] = useState("all");
     const [stockFilter, setStockFilter] = useState<"all" | "low" | "out">("all");
     const [isLoading, setIsLoading] = useState(true);
+    usePageReady(!isLoading);
     const [isRefreshing, setIsRefreshing] = useState(false);
     const [branches, setBranches] = useState<BranchOption[]>([]);
     const [selectedBranchId, setSelectedBranchId] = useState<number | "overview">("overview");
@@ -230,6 +242,13 @@ export default function InventoryPage() {
             return true;
         });
     }, [branches]);
+
+    const fallbackBranchId = useMemo(
+        () => resolveBranchId(uniqueBranches, "qom")
+            ?? resolveBranchId(uniqueBranches, "warehouse")
+            ?? (uniqueBranches[0] ? Number(uniqueBranches[0].id) : null),
+        [uniqueBranches]
+    );
 
     const thresholdFor = useCallback(
         (book: BookData) => book.low_stock_threshold ?? lowStockThreshold,
@@ -471,12 +490,6 @@ export default function InventoryPage() {
                             </span>
                             {t("nav.inventory")}
                         </h1>
-                        <p className="text-[10px] text-ink/35 font-bold mt-1">
-                            {formatNumber(filteredBooks.length)} {t("inventory.items")}
-                            {selectedBranchId !== "overview" && uniqueBranches.find((b) => b.id === selectedBranchId) && (
-                                <> · {uniqueBranches.find((b) => b.id === selectedBranchId)?.name}</>
-                            )}
-                        </p>
                     </div>
                     <div className="flex items-center gap-2 flex-wrap">
                         <button
@@ -717,7 +730,7 @@ export default function InventoryPage() {
                                                             type="button"
                                                             className="p-2 rounded-lg text-ink/30 hover:text-sky-700 hover:bg-sky-50"
                                                             title={t("inventory.addStock")}
-                                                            onClick={() => router.push(addStockPath(book.id, selectedBranchId))}
+                                                            onClick={() => router.push(addStockPath(book.id, selectedBranchId, fallbackBranchId))}
                                                         >
                                                             <PackagePlus className="w-4 h-4" />
                                                         </button>
@@ -726,7 +739,7 @@ export default function InventoryPage() {
                                                         type="button"
                                                         className="p-2 rounded-lg text-ink/30 hover:text-emerald-600 hover:bg-emerald-50"
                                                         title={t("inventory.transfer")}
-                                                        onClick={() => router.push(`/dashboard/distribution?book=${book.id}`)}
+                                                        onClick={() => router.push(transferPath(book.id, selectedBranchId, fallbackBranchId))}
                                                     >
                                                         <Truck className="w-4 h-4" />
                                                     </button>
@@ -987,7 +1000,7 @@ export default function InventoryPage() {
                             <Button
                                 variant="outline"
                                 className="w-full h-11 rounded-xl text-[11px] font-black"
-                                onClick={() => router.push(`/dashboard/distribution?book=${selectedBook.id}`)}
+                                onClick={() => router.push(transferPath(selectedBook.id, selectedBranchId, fallbackBranchId))}
                             >
                                 <Truck className="w-4 h-4 ms-1.5" />
                                 {t("inventory.transfer")}
@@ -996,7 +1009,7 @@ export default function InventoryPage() {
                                 <Button
                                     variant="outline"
                                     className="w-full h-11 rounded-xl text-[11px] font-black"
-                                    onClick={() => router.push(addStockPath(selectedBook.id, selectedBranchId))}
+                                    onClick={() => router.push(addStockPath(selectedBook.id, selectedBranchId, fallbackBranchId))}
                                 >
                                     <PackagePlus className="w-4 h-4 ms-1.5" />
                                     {t("inventory.addStock")}

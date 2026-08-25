@@ -1,5 +1,6 @@
 ﻿"use client";
 
+import { usePageReady } from "@/components/NavigationProgress";
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import {
     AlertTriangle, CheckCircle2, Clock, Search, X,
@@ -62,6 +63,7 @@ export default function ChecksPage() {
         pending_amount_dinar: 0,
     });
     const [isLoading, setIsLoading] = useState(true);
+    usePageReady(!isLoading);
     const [isRefreshing, setIsRefreshing] = useState(false);
     const [updatingId, setUpdatingId] = useState<number | null>(null);
 

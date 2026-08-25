@@ -1,5 +1,7 @@
 "use client";
 
+import { usePageReady } from "@/components/NavigationProgress";
+
 import React, { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -77,6 +79,7 @@ export default function NotificationsPage() {
         refetchOnWindowFocus: true,
         refetchOnMount: "always",
     });
+    usePageReady(!isLoading);
     const isRefreshing = isFetching && !isLoading;
 
     const alertLabel = (type: AlertType) => {

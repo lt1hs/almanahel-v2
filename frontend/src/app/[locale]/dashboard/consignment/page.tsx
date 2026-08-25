@@ -1,5 +1,7 @@
 "use client";
 
+import { usePageReady } from "@/components/NavigationProgress";
+
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   PackageCheck,
@@ -17,6 +19,7 @@ import { Link, useRouter } from "@/i18n/routing";
 import { Card, CardContent } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
+import { FilterSelect } from "@/components/ui/FilterSelect";
 import { useTranslation } from "@/hooks/useTranslation";
 import { useNotify } from "@/hooks/useNotify";
 import { cn } from "@/lib/utils";
@@ -24,10 +27,11 @@ import { apiRequest } from "@/lib/api";
 import { buildBooksListUrl } from "@/lib/bookCatalogRequests";
 import { useAuth } from "@/contexts/AuthContext";
 import { buildConsignmentSettleHref } from "@/lib/consignmentSettlementLink";
+import { resolveBranchId } from "@/lib/bookFormUtils";
 import {
   persistOperationalBranchId,
+  readPersistedOperationalBranchId,
   resolveDefaultOperationalBranchId,
-  shouldLockBranchSelector,
 } from "@/lib/operationalBranch";
 
 type ConsignmentStatus = "not_due" | "unsettled" | "partially_settled" | "settled";
@@ -144,6 +148,7 @@ export default function ConsignmentPage() {
   const [supplierFilter, setSupplierFilter] = useState<string>("");
   const [supplierFilterField, setSupplierFilterField] = useState<"supplier_id" | "supplier_account_id">("supplier_id");
   const [isLoading, setIsLoading] = useState(true);
+  usePageReady(!isLoading);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
 
   const [showNewForm, setShowNewForm] = useState(false);
@@ -185,7 +190,6 @@ export default function ConsignmentPage() {
   const operationalBranchId = isAdmin
     ? (adminBranchId ? Number(adminBranchId) : null)
     : userBranchId;
-  const branchLocked = shouldLockBranchSelector({ role: user?.role });
 
   const closeReceipt = async (id: number) => {
     setIsClosingId(id);
@@ -280,10 +284,24 @@ export default function ConsignmentPage() {
           (b: { type?: string }) => b.type === "store" || b.type === "warehouse"
         );
         setAdminBranches(rows);
-        const defaultId = resolveDefaultOperationalBranchId(
-          { role: user?.role, branch_id: userBranchId },
-          { availableBranchIds: rows.map((b: { id: number }) => Number(b.id)) }
-        );
+        const availableIds = rows.map((b: { id: number }) => Number(b.id));
+        const qomId = resolveBranchId(rows, "qom");
+        const persisted = readPersistedOperationalBranchId();
+        const persistedOk =
+          persisted != null && availableIds.includes(persisted) ? persisted : null;
+        const defaultId =
+          persistedOk ??
+          qomId ??
+          resolveDefaultOperationalBranchId(
+            { role: user?.role, branch_id: userBranchId },
+            {
+              availableBranchIds: availableIds,
+              persistedBranchId: null,
+              centralBranchId: qomId,
+            }
+          ) ??
+          availableIds[0] ??
+          null;
         if (defaultId) {
           setAdminBranchId(String(defaultId));
           persistOperationalBranchId(defaultId);
@@ -299,12 +317,18 @@ export default function ConsignmentPage() {
   }, [isAdmin, user?.role, userBranchId]);
 
   const handleAdminBranchChange = (value: string) => {
+    if (!value) return;
     setAdminBranchId(value);
     setReceipts([]);
     setSummary(null);
     setDetail(null);
-    persistOperationalBranchId(value ? Number(value) : null);
+    persistOperationalBranchId(Number(value));
   };
+
+  const branchSelectOptions = useMemo(
+    () => adminBranches.map((b) => ({ value: String(b.id), label: b.name })),
+    [adminBranches]
+  );
 
   useEffect(() => {
     if (!branchReady) return;
@@ -331,12 +355,17 @@ export default function ConsignmentPage() {
       formLoadedRef.current = true;
       setFormReady(true);
 
+      const qomId = resolveBranchId(branchList, "qom");
       const lockedBranch =
         !isAdmin && userBranchId
           ? String(userBranchId)
-          : branchList[0]
-            ? String(branchList[0].id)
-            : "";
+          : operationalBranchId
+            ? String(operationalBranchId)
+            : qomId
+              ? String(qomId)
+              : branchList[0]
+                ? String(branchList[0].id)
+                : "";
 
       setNewReceipt((prev) => ({
         ...prev,
@@ -350,7 +379,7 @@ export default function ConsignmentPage() {
     } finally {
       setIsLoadingForm(false);
     }
-  }, [notify, preferredCurrency, supplierFilter, userBranchId, isAdmin]);
+  }, [notify, preferredCurrency, supplierFilter, userBranchId, isAdmin, operationalBranchId]);
 
   const loadSupplierAccounts = useCallback(async (branchId: string) => {
     if (!branchId) {
@@ -467,7 +496,13 @@ export default function ConsignmentPage() {
   const resetForm = () => {
     setNewReceipt({
       supplier_account_id: supplierFilter || "",
-      branch_id: user?.branch?.id ? String(user.branch.id) : branches[0] ? String(branches[0].id) : "",
+      branch_id: operationalBranchId
+        ? String(operationalBranchId)
+        : user?.branch?.id
+          ? String(user.branch.id)
+          : branches[0]
+            ? String(branches[0].id)
+            : "",
       received_at: new Date().toISOString().split("T")[0],
       currency: preferredCurrency,
       notes: "",
@@ -551,50 +586,41 @@ export default function ConsignmentPage() {
             {t("consignment.subtitle")}
           </p>
         </div>
-        <div className="flex gap-2">
-          <Link href="/dashboard/consignment/settle">
+        <div className="flex flex-wrap items-center gap-2 sm:justify-end">
+          {isAdmin && branchSelectOptions.length > 0 && (
+            <FilterSelect
+              className="w-full min-w-[200px] sm:w-[240px]"
+              value={adminBranchId || (operationalBranchId ? String(operationalBranchId) : "")}
+              onChange={handleAdminBranchChange}
+              options={branchSelectOptions}
+              icon={<Building2 className="h-3.5 w-3.5" />}
+              defaultValue="__none__"
+              placeholder={t("consignment.form.branch")}
+            />
+          )}
+          <div className="flex gap-2">
+            <Link href="/dashboard/consignment/settle">
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-11 rounded-xl border border-ink/5 px-4 text-[11px] font-bold"
+              >
+                <FileText className="ms-1.5 h-3.5 w-3.5 opacity-50" />
+                {t("finance.settlementTab")}
+              </Button>
+            </Link>
             <Button
-              variant="ghost"
+              variant="primary"
               size="sm"
-              className="h-9 rounded-xl border border-ink/5 px-4 text-[11px] font-bold"
+              className="h-11 rounded-xl px-4 text-[11px] shadow-lg shadow-primary/10"
+              onClick={openNewForm}
             >
-              <FileText className="ms-1.5 h-3.5 w-3.5 opacity-50" />
-              {t("finance.settlementTab")}
+              <Plus className="ms-1.5 h-3.5 w-3.5" />
+              {t("consignment.addReceipt")}
             </Button>
-          </Link>
-          <Button
-            variant="primary"
-            size="sm"
-            className="h-9 rounded-xl px-4 text-[11px] shadow-lg shadow-primary/10"
-            onClick={openNewForm}
-          >
-            <Plus className="ms-1.5 h-3.5 w-3.5" />
-            {t("consignment.addReceipt")}
-          </Button>
+          </div>
         </div>
       </div>
-
-      {(isAdmin || !branchLocked) && (
-        <div className="max-w-xs space-y-1.5">
-          <label className="text-[10px] font-black uppercase tracking-widest text-ink/40 flex items-center gap-1.5">
-            <Building2 className="h-3 w-3" />
-            {t("consignment.form.branch")}
-          </label>
-          <select
-            value={adminBranchId || (operationalBranchId ? String(operationalBranchId) : "")}
-            onChange={(e) => handleAdminBranchChange(e.target.value)}
-            disabled={branchLocked}
-            className="h-10 w-full rounded-xl border border-white bg-white/70 px-3 text-[12px] font-vazirmatn shadow-sm outline-none focus:border-primary/30 disabled:opacity-70"
-          >
-            <option value="">{t("expenses.form.selectBranch")}</option>
-            {(isAdmin ? adminBranches : adminBranches.length ? adminBranches : [{ id: Number(userBranchId), name: user?.branch?.name || `#${userBranchId}` }]).map((b) => (
-              <option key={b.id} value={b.id}>
-                {b.name}
-              </option>
-            ))}
-          </select>
-        </div>
-      )}
 
       {branchReady && !operationalBranchId && (
         <p className="rounded-xl border border-amber-100 bg-amber-50/80 px-4 py-3 text-center text-[12px] font-bold text-amber-700">

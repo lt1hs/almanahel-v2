@@ -1,5 +1,6 @@
 ﻿"use client";
 
+import { usePageReady } from "@/components/NavigationProgress";
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Users,
@@ -22,13 +23,21 @@ import { Badge } from "@/components/ui/Badge";
 import { FilterSelect } from "@/components/ui/FilterSelect";
 import { useTranslation } from "@/hooks/useTranslation";
 import { useNotify } from "@/hooks/useNotify";
-import { apiRequest } from "@/lib/api";
+import { apiRequest, ApiError } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/contexts/AuthContext";
 import { supplierAccountsUrl } from "@/lib/supplierAccountSelection";
 
 type SupplierType = "publisher" | "company" | "individual";
 type SupplierStatus = "active" | "inactive";
+
+interface BranchOption {
+  id: number;
+  name: string;
+  city?: string | null;
+}
+
+type AdminViewMode = "canonical" | "branch";
 
 interface Supplier {
   id: number;
@@ -42,6 +51,7 @@ interface Supplier {
   consignment_receipts_count?: number;
   inventories_count?: number;
   settlements_count?: number;
+  isBranchAccount?: boolean;
 }
 
 const EMPTY_FORM = {
@@ -62,6 +72,7 @@ export default function SuppliersPage() {
 
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  usePageReady(!isLoading);
   const [searchQuery, setSearchQuery] = useState("");
   const [typeFilter, setTypeFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
@@ -71,42 +82,71 @@ export default function SuppliersPage() {
   const [isSaving, setIsSaving] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<Supplier | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [adminViewMode, setAdminViewMode] = useState<AdminViewMode>("canonical");
+  const [adminBranchId, setAdminBranchId] = useState<number | null>(null);
+  const [branches, setBranches] = useState<BranchOption[]>([]);
+
+  const activeBranchId = isAdminCatalog
+    ? adminViewMode === "branch"
+      ? adminBranchId
+      : null
+    : branchId;
+
+  const usingBranchAccounts = isAdminCatalog ? adminViewMode === "branch" : Boolean(branchId);
+
+  useEffect(() => {
+    if (!isAdminCatalog) return;
+    apiRequest("/branches?lite=1")
+      .then((data) => {
+        const list = (Array.isArray(data) ? data : []) as BranchOption[];
+        setBranches(list);
+        setAdminBranchId((current) => current ?? (list[0]?.id != null ? Number(list[0].id) : null));
+      })
+      .catch(() => setBranches([]));
+  }, [isAdminCatalog]);
+
+  const mapBranchAccountRow = (row: Record<string, unknown>): Supplier => ({
+    id: Number(row.id),
+    name: String(row.display_name ?? row.name ?? `#${row.id}`),
+    email: (row.email as string | null | undefined) ?? null,
+    phone: (row.phone as string | null | undefined) ?? null,
+    address: (row.address as string | null | undefined) ?? null,
+    city: (row.city as string | null | undefined) ?? null,
+    type: (row.type as SupplierType | undefined) ?? "publisher",
+    status: (row.status as SupplierStatus | undefined) ?? "active",
+    isBranchAccount: true,
+  });
 
   const fetchSuppliers = useCallback(async () => {
     setIsLoading(true);
     try {
-      if (isAdminCatalog) {
+      if (isAdminCatalog && adminViewMode === "canonical") {
         const data = await apiRequest("/suppliers");
         setSuppliers(Array.isArray(data) ? data : []);
-      } else if (branchId) {
-        const data = await apiRequest(supplierAccountsUrl(branchId));
-        setSuppliers(
-          (Array.isArray(data) ? data : []).map((row: Record<string, unknown>) => ({
-            id: Number(row.id),
-            name: String(row.display_name ?? row.name ?? `#${row.id}`),
-            email: (row.email as string | null | undefined) ?? null,
-            phone: (row.phone as string | null | undefined) ?? null,
-            address: (row.address as string | null | undefined) ?? null,
-            city: (row.city as string | null | undefined) ?? null,
-            type: (row.type as SupplierType | undefined) ?? "publisher",
-            status: (row.status as SupplierStatus | undefined) ?? "active",
-          }))
-        );
+      } else if (activeBranchId) {
+        const data = await apiRequest(supplierAccountsUrl(activeBranchId));
+        setSuppliers((Array.isArray(data) ? data : []).map(mapBranchAccountRow));
       } else {
         setSuppliers([]);
       }
     } catch (error) {
-      console.error("Failed to fetch suppliers:", error);
+      const message = error instanceof ApiError ? error.message : t("suppliers.notFound");
+      notify.rawError(message);
+      setSuppliers([]);
     } finally {
       setIsLoading(false);
     }
-  }, [branchId, isAdminCatalog]);
+  }, [activeBranchId, adminViewMode, isAdminCatalog, notify, t]);
 
   useEffect(() => {
     fetchSuppliers();
   }, [fetchSuppliers]);
 
   const openCreate = () => {
+    if (isAdminCatalog && adminViewMode === "branch" && !activeBranchId) {
+      notify.error("toast.supplierSaveError");
+      return;
+    }
     setEditingSupplier(null);
     setFormData(EMPTY_FORM);
     setShowForm(true);
@@ -134,7 +174,7 @@ export default function SuppliersPage() {
 
     setIsSaving(true);
     try {
-      if (isAdminCatalog) {
+      if (isAdminCatalog && adminViewMode === "canonical") {
         const method = editingSupplier ? "PUT" : "POST";
         const url = editingSupplier ? `/suppliers/${editingSupplier.id}` : "/suppliers";
         await apiRequest(url, {
@@ -148,9 +188,9 @@ export default function SuppliersPage() {
             type: formData.type,
           }),
         });
-      } else if (branchId) {
+      } else if (activeBranchId) {
         const payload = {
-          branch_id: branchId,
+          branch_id: activeBranchId,
           display_name: formData.name.trim(),
           email: formData.email.trim() || null,
           phone: formData.phone.trim() || null,
@@ -179,8 +219,8 @@ export default function SuppliersPage() {
       await fetchSuppliers();
       notify.success(editingSupplier ? "toast.supplierUpdated" : "toast.supplierCreated");
     } catch (error) {
-      console.error("Failed to save supplier:", error);
-      notify.error("toast.supplierSaveError");
+      const message = error instanceof ApiError ? error.message : t("toast.supplierSaveError");
+      notify.rawError(message);
     } finally {
       setIsSaving(false);
     }
@@ -188,6 +228,11 @@ export default function SuppliersPage() {
 
   const handleDelete = async () => {
     if (!pendingDelete) return;
+    if (usingBranchAccounts) {
+      await handleToggleStatus(pendingDelete);
+      setPendingDelete(null);
+      return;
+    }
     setIsDeleting(true);
     try {
       await apiRequest(`/suppliers/${pendingDelete.id}`, { method: "DELETE" });
@@ -209,7 +254,7 @@ export default function SuppliersPage() {
   const handleToggleStatus = async (supplier: Supplier) => {
     const nextStatus: SupplierStatus = supplier.status === "inactive" ? "active" : "inactive";
     try {
-      if (isAdminCatalog) {
+      if (isAdminCatalog && adminViewMode === "canonical") {
         await apiRequest(`/suppliers/${supplier.id}`, {
           method: "PUT",
           body: JSON.stringify({ status: nextStatus }),
@@ -223,8 +268,8 @@ export default function SuppliersPage() {
       await fetchSuppliers();
       notify.success(nextStatus === "active" ? "toast.supplierActivated" : "toast.supplierDeactivated");
     } catch (error) {
-      console.error("Failed to toggle supplier status:", error);
-      notify.error("toast.supplierSaveError");
+      const message = error instanceof ApiError ? error.message : t("toast.supplierSaveError");
+      notify.rawError(message);
     }
   };
 
@@ -292,6 +337,62 @@ export default function SuppliersPage() {
           {t("suppliers.addModalTitle")}
         </Button>
       </div>
+
+      {isAdminCatalog && (
+        <Card className="relative z-20 overflow-visible rounded-2xl border border-white/70 bg-white/70 shadow-sm backdrop-blur-xl">
+          <CardContent className="flex flex-col gap-4 p-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0 flex-1 space-y-3">
+              <div className="inline-flex rounded-2xl bg-ink/[0.04] p-1">
+                <button
+                  type="button"
+                  onClick={() => setAdminViewMode("canonical")}
+                  className={cn(
+                    "flex items-center gap-1.5 rounded-xl px-4 py-2 text-[11px] font-black transition-all",
+                    adminViewMode === "canonical"
+                      ? "bg-white text-primary shadow-sm"
+                      : "text-ink/45 hover:text-ink/70"
+                  )}
+                >
+                  <Users className="h-3.5 w-3.5" />
+                  {t("suppliers.tabCanonical")}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAdminViewMode("branch")}
+                  className={cn(
+                    "flex items-center gap-1.5 rounded-xl px-4 py-2 text-[11px] font-black transition-all",
+                    adminViewMode === "branch"
+                      ? "bg-white text-primary shadow-sm"
+                      : "text-ink/45 hover:text-ink/70"
+                  )}
+                >
+                  <Building2 className="h-3.5 w-3.5" />
+                  {t("suppliers.tabBranchAccounts")}
+                </button>
+              </div>
+              <p className="max-w-xl text-[11px] font-bold leading-5 text-ink/40">
+                {adminViewMode === "branch" ? t("suppliers.branchHint") : t("suppliers.canonicalHint")}
+              </p>
+            </div>
+            {adminViewMode === "branch" && (
+              <div className="w-full shrink-0 sm:w-64">
+                <p className="mb-1.5 text-[9px] font-black uppercase tracking-widest text-ink/30">
+                  {t("suppliers.selectBranch")}
+                </p>
+                <FilterSelect
+                  value={adminBranchId != null ? String(adminBranchId) : ""}
+                  onChange={(value) => setAdminBranchId(value ? Number(value) : null)}
+                  options={branches.map((b) => ({
+                    value: String(b.id),
+                    label: b.city ? `${b.name} · ${b.city}` : b.name,
+                  }))}
+                  className="w-full"
+                />
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       <div className="grid grid-cols-3 gap-3">
         {[
@@ -399,7 +500,7 @@ export default function SuppliersPage() {
                       >
                         <Power className="h-3.5 w-3.5" />
                       </button>
-                      {isAdminCatalog && (
+                      {isAdminCatalog && adminViewMode === "canonical" && (
                       <button
                         type="button"
                         onClick={() => setPendingDelete(supplier)}
@@ -437,22 +538,29 @@ export default function SuppliersPage() {
                   </div>
 
                   <div className="mt-5 flex items-center justify-between border-t border-ink/5 pt-4">
-                    <Badge
-                      variant="outline"
-                      className={cn(
-                        "text-[9px]",
-                        isInactive
-                          ? "border-ink/10 bg-ink/5 text-ink/45"
-                          : "border-emerald-100 bg-emerald-50 text-emerald-600"
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <Badge
+                        variant="outline"
+                        className={cn(
+                          "text-[9px]",
+                          isInactive
+                            ? "border-ink/10 bg-ink/5 text-ink/45"
+                            : "border-emerald-100 bg-emerald-50 text-emerald-600"
+                        )}
+                      >
+                        {isInactive ? t("suppliers.statusInactive") : t("suppliers.statusActive")}
+                      </Badge>
+                      {supplier.isBranchAccount && (
+                        <Badge variant="outline" className="text-[9px] border-primary/20 bg-primary/5 text-primary">
+                          {t("suppliers.branchAccountBadge")}
+                        </Badge>
                       )}
-                    >
-                      {isInactive ? t("suppliers.statusInactive") : t("suppliers.statusActive")}
-                    </Badge>
+                    </div>
                     <Link
                       href={
-                        isAdminCatalog
-                          ? `/dashboard/consignment?supplier_id=${supplier.id}`
-                          : `/dashboard/consignment?supplier_account_id=${supplier.id}`
+                        usingBranchAccounts
+                          ? `/dashboard/consignment?supplier_account_id=${supplier.id}`
+                          : `/dashboard/consignment?supplier_id=${supplier.id}`
                       }
                       className="rounded-lg px-2 py-1 text-[10px] font-bold text-primary transition-colors hover:bg-primary/5"
                     >
@@ -468,31 +576,36 @@ export default function SuppliersPage() {
 
       {showForm && (
         <div
-          className="fixed inset-0 z-[60] flex items-center justify-center bg-ink/30 p-4 backdrop-blur-sm"
+          className="fixed inset-0 z-[60] flex items-center justify-center p-4 sm:p-6"
           onClick={(e) => e.target === e.currentTarget && !isSaving && setShowForm(false)}
         >
-          <div className="w-full max-w-lg overflow-hidden rounded-3xl bg-white shadow-2xl">
-            <form onSubmit={handleSubmit}>
-              <div className="flex items-center justify-between border-b border-ink/5 bg-indigo-50/30 px-6 py-5">
-                <div>
-                  <h2 className="text-[15px] font-black font-vazirmatn text-ink">
+          <div className="absolute inset-0 bg-ink/45 backdrop-blur-[6px]" />
+          <div className="relative w-full max-w-lg overflow-hidden rounded-3xl border border-white/70 bg-white/95 font-ibm-plex-arabic shadow-[0_24px_80px_rgba(13,13,13,0.18)] backdrop-blur-2xl">
+            <div className="pointer-events-none absolute -top-24 -end-16 h-56 w-56 rounded-full bg-primary/10 blur-3xl" />
+            <form onSubmit={handleSubmit} className="relative">
+              <div className="flex items-start justify-between gap-4 border-b border-ink/5 bg-parchment/30 px-5 py-4 sm:px-6">
+                <div className="min-w-0 pt-0.5">
+                  <h2 className="truncate text-[17px] font-bold font-ibm-plex-arabic tracking-tight text-ink">
                     {editingSupplier ? t("suppliers.form.editTitle") : t("suppliers.addModalTitle")}
                   </h2>
-                  <p className="mt-0.5 text-[10px] text-ink/35">{t("suppliers.form.contactDesc")}</p>
+                  <p className="mt-1 text-[11px] font-medium font-ibm-plex-arabic leading-5 text-ink/40">
+                    {t("suppliers.form.contactDesc")}
+                  </p>
                 </div>
                 <button
                   type="button"
                   disabled={isSaving}
                   onClick={() => setShowForm(false)}
-                  className="rounded-xl p-2 hover:bg-ink/5"
+                  className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-ink/5 bg-white/80 text-ink/35 transition-all hover:border-primary/20 hover:bg-white hover:text-primary"
+                  aria-label={t("common.close")}
                 >
-                  <X className="h-4 w-4 text-ink/40" />
+                  <X className="h-4 w-4" />
                 </button>
               </div>
 
-              <div className="max-h-[60vh] space-y-4 overflow-y-auto p-6 scrollbar-hide">
+              <div className="max-h-[min(60vh,560px)] space-y-4 overflow-y-auto px-5 py-5 sm:px-6 scrollbar-hide">
                 <div className="space-y-1.5">
-                  <label className="text-[10px] font-black uppercase tracking-widest text-ink/40">
+                  <label className="text-[11px] font-bold font-ibm-plex-arabic text-ink/45">
                     {t("suppliers.form.name")}
                   </label>
                   <input
@@ -500,82 +613,90 @@ export default function SuppliersPage() {
                     value={formData.name}
                     onChange={(e) => setFormData({ ...formData, name: e.target.value })}
                     placeholder={t("suppliers.form.nameExample")}
-                    className="h-10 w-full rounded-xl border border-ink/10 bg-parchment/20 px-3 text-[12px] font-vazirmatn outline-none focus:ring-1 focus:ring-primary"
+                    className="h-11 w-full rounded-xl border border-ink/8 bg-parchment/25 px-3 text-[12px] font-ibm-plex-arabic outline-none transition-all focus:border-primary/30 focus:bg-white focus:ring-2 focus:ring-primary/10"
                   />
                 </div>
 
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-1.5">
-                    <label className="text-[10px] font-black uppercase tracking-widest text-ink/40">
-                      {t("suppliers.form.type")}
-                    </label>
-                    <select
-                      value={formData.type}
-                      onChange={(e) =>
-                        setFormData({ ...formData, type: e.target.value as SupplierType })
-                      }
-                      className="h-10 w-full rounded-xl border border-ink/10 bg-parchment/20 px-3 text-[12px] font-vazirmatn outline-none focus:ring-1 focus:ring-primary"
-                    >
-                      <option value="publisher">{t("suppliers.types.publisher")}</option>
-                      <option value="company">{t("suppliers.types.company")}</option>
-                      <option value="individual">{t("suppliers.types.individual")}</option>
-                    </select>
+                <div className="space-y-2">
+                  <label className="text-[11px] font-bold font-ibm-plex-arabic text-ink/45">
+                    {t("suppliers.form.type")}
+                  </label>
+                  <div className="grid grid-cols-3 gap-2">
+                    {(["publisher", "company", "individual"] as SupplierType[]).map((type) => {
+                      const selected = formData.type === type;
+                      return (
+                        <button
+                          key={type}
+                          type="button"
+                          onClick={() => setFormData({ ...formData, type })}
+                          className={cn(
+                            "h-10 rounded-xl border text-[12px] font-bold font-ibm-plex-arabic transition-all",
+                            selected
+                              ? "border-primary/30 bg-primary/10 text-primary shadow-sm shadow-primary/10"
+                              : "border-ink/8 bg-white/70 text-ink/50 hover:border-primary/20 hover:text-ink/70"
+                          )}
+                        >
+                          {typeLabel(type)}
+                        </button>
+                      );
+                    })}
                   </div>
+                </div>
+
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                   <div className="space-y-1.5">
-                    <label className="text-[10px] font-black uppercase tracking-widest text-ink/40">
+                    <label className="text-[11px] font-bold font-ibm-plex-arabic text-ink/45">
                       {t("suppliers.form.city")}
                     </label>
                     <input
                       value={formData.city}
                       onChange={(e) => setFormData({ ...formData, city: e.target.value })}
                       placeholder={t("suppliers.form.cityExample")}
-                      className="h-10 w-full rounded-xl border border-ink/10 bg-parchment/20 px-3 text-[12px] font-vazirmatn outline-none focus:ring-1 focus:ring-primary"
+                      className="h-11 w-full rounded-xl border border-ink/8 bg-parchment/25 px-3 text-[12px] font-ibm-plex-arabic outline-none transition-all focus:border-primary/30 focus:bg-white focus:ring-2 focus:ring-primary/10"
                     />
                   </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-1.5">
-                    <label className="text-[10px] font-black uppercase tracking-widest text-ink/40">
+                    <label className="text-[11px] font-bold font-ibm-plex-arabic text-ink/45">
                       {t("common.phone")}
                     </label>
                     <input
                       value={formData.phone}
                       onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
-                      className="h-10 w-full rounded-xl border border-ink/10 bg-parchment/20 px-3 text-left text-[12px] font-vazirmatn tabular-nums outline-none focus:ring-1 focus:ring-primary"
-                    />
-                  </div>
-                  <div className="space-y-1.5">
-                    <label className="text-[10px] font-black uppercase tracking-widest text-ink/40">
-                      {t("common.email")}
-                    </label>
-                    <input
-                      type="email"
-                      value={formData.email}
-                      onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-                      className="h-10 w-full rounded-xl border border-ink/10 bg-parchment/20 px-3 text-[12px] outline-none focus:ring-1 focus:ring-primary"
+                      className="h-11 w-full rounded-xl border border-ink/8 bg-parchment/25 px-3 text-left text-[12px] font-ibm-plex-arabic tabular-nums outline-none transition-all focus:border-primary/30 focus:bg-white focus:ring-2 focus:ring-primary/10"
                     />
                   </div>
                 </div>
 
                 <div className="space-y-1.5">
-                  <label className="text-[10px] font-black uppercase tracking-widest text-ink/40">
+                  <label className="text-[11px] font-bold font-ibm-plex-arabic text-ink/45">
+                    {t("common.email")}
+                  </label>
+                  <input
+                    type="email"
+                    value={formData.email}
+                    onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+                    className="h-11 w-full rounded-xl border border-ink/8 bg-parchment/25 px-3 text-[12px] font-ibm-plex-arabic outline-none transition-all focus:border-primary/30 focus:bg-white focus:ring-2 focus:ring-primary/10"
+                  />
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-[11px] font-bold font-ibm-plex-arabic text-ink/45">
                     {t("common.address")}
                   </label>
                   <textarea
                     rows={2}
                     value={formData.address}
                     onChange={(e) => setFormData({ ...formData, address: e.target.value })}
-                    className="w-full resize-none rounded-xl border border-ink/10 bg-parchment/20 px-3 py-2 text-[12px] font-vazirmatn outline-none focus:ring-1 focus:ring-primary"
+                    className="w-full resize-none rounded-xl border border-ink/8 bg-parchment/25 px-3 py-2.5 text-[12px] font-ibm-plex-arabic outline-none transition-all focus:border-primary/30 focus:bg-white focus:ring-2 focus:ring-primary/10"
                   />
                 </div>
               </div>
 
-              <div className="flex gap-2 border-t border-ink/5 bg-parchment/20 px-6 py-4">
+              <div className="flex gap-2 border-t border-ink/5 bg-parchment/20 px-5 py-4 sm:px-6">
                 <Button
                   type="button"
                   variant="ghost"
-                  className="h-10 flex-1 rounded-xl"
+                  className="h-11 flex-1 rounded-xl text-[12px] font-bold font-ibm-plex-arabic"
                   disabled={isSaving}
                   onClick={() => setShowForm(false)}
                 >
@@ -584,7 +705,7 @@ export default function SuppliersPage() {
                 <Button
                   type="submit"
                   isLoading={isSaving}
-                  className="h-10 flex-1 rounded-xl font-black shadow-lg shadow-primary/15"
+                  className="h-11 flex-[1.4] rounded-xl text-[12px] font-bold font-ibm-plex-arabic shadow-lg shadow-primary/15"
                 >
                   {editingSupplier ? t("common.update") : t("suppliers.submit")}
                 </Button>

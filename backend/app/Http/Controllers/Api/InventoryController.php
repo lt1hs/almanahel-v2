@@ -142,14 +142,21 @@ class InventoryController extends Controller
             false
         );
         $branchId = $scope->branchId;
+        $isAdmin = BranchAccess::isAdmin($user);
 
-        BranchAccess::assertCatalogBookVisible($user, (int) $book->id, $branchId);
+        if (!$isAdmin) {
+            BranchAccess::assertCatalogBookVisible($user, (int) $book->id, $branchId);
+        }
 
-        $inventories = Inventory::with(['branch', 'supplier'])
+        $query = Inventory::with(['branch', 'supplier'])
             ->where('book_id', $book->id)
-            ->where('branch_id', $branchId)
-            ->where('quantity', '>', 0)
-            ->get();
+            ->where('quantity', '>', 0);
+
+        if (!$isAdmin) {
+            $query->where('branch_id', $branchId);
+        }
+
+        $inventories = $query->get();
 
         return response()->json([
             'book'        => $book,

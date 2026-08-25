@@ -207,6 +207,11 @@ export async function addStockIntake(params: {
         });
     }
 
+    const resolvedCost = cost > 0 ? cost : selling;
+    if (resolvedCost <= 0) {
+        throw new Error("price_required");
+    }
+
     return apiRequest("/inventory/purchase", {
         method: "POST",
         body: JSON.stringify({
@@ -214,7 +219,7 @@ export async function addStockIntake(params: {
             book_id: params.bookId,
             quantity: params.quantity,
             currency: params.currency,
-            cost_price: cost,
+            cost_price: resolvedCost,
             selling_price: selling || cost,
             price_toman: priceToman,
             price_dinar: priceDinar,

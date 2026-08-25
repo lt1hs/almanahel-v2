@@ -1,5 +1,7 @@
 "use client";
 
+import { usePageReady } from "@/components/NavigationProgress";
+
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import {
     Wallet, Plus, Trash2, Building2, CalendarDays, X,
@@ -100,6 +102,7 @@ export default function ExpensesPage() {
     const [expenses, setExpenses] = useState<ExpenseRow[]>([]);
     const [branches, setBranches] = useState<BranchRow[]>([]);
     const [isLoading, setIsLoading] = useState(true);
+    usePageReady(!isLoading);
     const [isRefreshing, setIsRefreshing] = useState(false);
     const [isSaving, setIsSaving] = useState(false);
     const [deletingId, setDeletingId] = useState<number | null>(null);

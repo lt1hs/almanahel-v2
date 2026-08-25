@@ -474,6 +474,41 @@ class SupplierAccountWave1Test extends TestCase
         $this->assertSame('current', $toman['current_operational_snapshot']['as_of_label']);
     }
 
+    public function test_iraq_branch_manager_can_create_branch_local_supplier_account(): void
+    {
+        $iraq = $this->makeBranch([
+            'name' => 'Iraq Store',
+            'city' => 'نجف',
+            'country' => 'عراق',
+            'is_iraq_store' => true,
+            'supports_dinar' => true,
+            'supports_toman' => false,
+        ]);
+        $this->actingAsRole('branch_manager', $iraq);
+
+        $response = $this->postJson('/api/supplier-accounts', [
+            'branch_id' => $iraq->id,
+            'display_name' => 'Iraq Publisher',
+            'city' => 'نجف',
+            'type' => 'publisher',
+        ])->assertCreated();
+
+        $this->assertDatabaseHas('supplier_accounts', [
+            'id' => $response->json('id'),
+            'branch_id' => $iraq->id,
+            'display_name' => 'Iraq Publisher',
+        ]);
+        $this->assertDatabaseHas('suppliers', [
+            'id' => $response->json('supplier_id'),
+            'identity_origin' => 'branch_local',
+            'origin_branch_id' => $iraq->id,
+        ]);
+
+        $this->getJson('/api/supplier-accounts?branch_id='.$iraq->id)
+            ->assertOk()
+            ->assertJsonFragment(['display_name' => 'Iraq Publisher']);
+    }
+
     public function test_iraq_visibility_does_not_grant_supplier_account_access(): void
     {
         $a = $this->makeBranch(['name' => 'A']);

@@ -1,5 +1,7 @@
 "use client";
 
+import { usePageReady } from "@/components/NavigationProgress";
+
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { motion, Variants } from "framer-motion";
 import {
@@ -58,6 +60,7 @@ export default function UserManagementPage() {
     const [search, setSearch] = useState("");
     const [roleFilter, setRoleFilter] = useState("all");
     const [isLoading, setIsLoading] = useState(true);
+    usePageReady(!isLoading);
     const [showForm, setShowForm] = useState(false);
     const [editingId, setEditingId] = useState<number | null>(null);
     const [form, setForm] = useState(EMPTY_FORM);

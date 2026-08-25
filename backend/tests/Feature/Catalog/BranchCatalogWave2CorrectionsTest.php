@@ -94,6 +94,27 @@ class BranchCatalogWave2CorrectionsTest extends TestCase
             ->assertForbidden();
     }
 
+    public function test_admin_book_by_branches_includes_warehouse_stock_when_querying_store(): void
+    {
+        $qom = $this->makeBranch(['name' => 'دارالمناهل قم', 'city' => 'قم']);
+        $warehouse = $this->makeBranch([
+            'name' => 'انبار مرکزی',
+            'city' => 'قم',
+            'type' => 'warehouse',
+            'is_central_warehouse' => true,
+        ]);
+        $book = $this->makeBook();
+        $this->makeInventory($warehouse, $book, ['quantity' => 8]);
+
+        $this->actingAsRole('admin', $qom);
+        $payload = $this->getJson('/api/inventory/books/'.$book->id.'/branches?branch_id='.$qom->id)
+            ->assertOk()
+            ->json('inventories');
+
+        $branchIds = collect($payload)->pluck('branch_id')->map(fn ($id) => (int) $id)->all();
+        $this->assertContains((int) $warehouse->id, $branchIds);
+    }
+
     public function test_forged_branch_on_upsert_pricing_is_denied(): void
     {
         $a = $this->makeBranch(['name' => 'A']);
@@ -650,7 +671,7 @@ class BranchCatalogWave2CorrectionsTest extends TestCase
 
     // --- Admin catalog membership enforcement ---
 
-    public function test_admin_show_requires_active_catalog_membership(): void
+    public function test_admin_show_can_open_book_outside_requested_branch_catalog(): void
     {
         $branch = $this->makeBranch(['name' => 'A']);
         $other = $this->makeBranch(['name' => 'B', 'city' => 'مشهد']);
@@ -661,10 +682,52 @@ class BranchCatalogWave2CorrectionsTest extends TestCase
 
         $this->actingAsRole('admin', $branch);
         $this->getJson('/api/books/'.$linked->id.'?branch_id='.$branch->id)->assertOk();
-        $this->getJson('/api/books/'.$unlinked->id.'?branch_id='.$branch->id)->assertStatus(404);
+        $this->getJson('/api/books/'.$unlinked->id.'?branch_id='.$branch->id)->assertOk();
     }
 
-    public function test_admin_show_inactive_catalog_item_returns_404(): void
+    public function test_admin_show_iraq_only_book_with_iran_branch_id_succeeds(): void
+    {
+        $qom = $this->makeBranch(['name' => 'دارالمناهل قم', 'city' => 'قم']);
+        $iraq = $this->makeBranch([
+            'name' => 'دارالمناهل عراق',
+            'city' => 'نجف',
+            'country' => 'عراق',
+            'is_iraq_store' => true,
+        ]);
+        $book = $this->makeBook(['iraq_only' => true, 'title' => 'کتاب عراق']);
+        $this->makeInventory($iraq, $book, ['quantity' => 12]);
+
+        $this->actingAsRole('admin', $qom);
+        $this->getJson('/api/books/'.$book->id.'?branch_id='.$qom->id)
+            ->assertOk()
+            ->assertJsonPath('id', $book->id)
+            ->assertJsonPath('iraq_only', true);
+    }
+
+    public function test_admin_show_returns_inventories_for_all_branches(): void
+    {
+        $qom = $this->makeBranch(['name' => 'دارالمناهل قم', 'city' => 'قم']);
+        $iraq = $this->makeBranch([
+            'name' => 'دارالمناهل عراق',
+            'city' => 'نجف',
+            'country' => 'عراق',
+            'is_iraq_store' => true,
+        ]);
+        $book = $this->makeBook();
+        $this->makeInventory($qom, $book, ['quantity' => 2]);
+        $this->makeInventory($iraq, $book, ['quantity' => 9]);
+
+        $this->actingAsRole('admin', $qom);
+        $payload = $this->getJson('/api/books/'.$book->id.'?branch_id='.$qom->id)
+            ->assertOk()
+            ->json('inventories');
+
+        $branchIds = collect($payload)->pluck('branch_id')->map(fn ($id) => (int) $id)->all();
+        $this->assertContains((int) $qom->id, $branchIds);
+        $this->assertContains((int) $iraq->id, $branchIds);
+    }
+
+    public function test_admin_show_inactive_catalog_item_still_loads_for_edit(): void
     {
         $branch = $this->makeBranch();
         $book = $this->makeBook();
@@ -676,7 +739,23 @@ class BranchCatalogWave2CorrectionsTest extends TestCase
         ]);
 
         $this->actingAsRole('admin', $branch);
-        $this->getJson('/api/books/'.$book->id.'?branch_id='.$branch->id)->assertStatus(404);
+        $this->getJson('/api/books/'.$book->id.'?branch_id='.$branch->id)->assertOk();
+    }
+
+    public function test_branch_manager_show_still_requires_active_catalog_membership(): void
+    {
+        $qom = $this->makeBranch(['name' => 'دارالمناهل قم', 'city' => 'قم']);
+        $iraq = $this->makeBranch([
+            'name' => 'دارالمناهل عراق',
+            'city' => 'نجف',
+            'country' => 'عراق',
+            'is_iraq_store' => true,
+        ]);
+        $book = $this->makeBook();
+        $this->ensureCatalog($iraq, $book);
+
+        $this->actingAsRole('branch_manager', $qom);
+        $this->getJson('/api/books/'.$book->id.'?branch_id='.$qom->id)->assertStatus(404);
     }
 
     public function test_admin_barcode_lookup_requires_active_catalog_membership(): void

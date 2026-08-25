@@ -25,7 +25,7 @@ use Illuminate\Support\Facades\Route;
 use App\Http\Middleware\AuditMutations;
 
 // Public Routes
-Route::post('/login', [AuthController::class, 'login']);
+Route::post('/login', [AuthController::class, 'login'])->middleware('throttle:5,1');
 
 // Protected Routes
 Route::middleware(['auth:sanctum', AuditMutations::class])->group(function () {

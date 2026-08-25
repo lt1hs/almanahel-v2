@@ -2,7 +2,10 @@
 
 return [
     'low_stock_threshold' => (int) env('ALMANAHEL_LOW_STOCK_THRESHOLD', 5),
-    'toman_to_dinar_rate' => (float) env('ALMANAHEL_TOMAN_TO_DINAR_RATE', 50),
+    /** How many toman equal 1000 Iraqi dinar (market quote). */
+    'toman_per_1000_dinar' => (float) env('ALMANAHEL_TOMAN_PER_1000_DINAR', 120000),
+    /** @deprecated Alias of toman_per_1000_dinar for older env keys. */
+    'toman_to_dinar_rate' => (float) env('ALMANAHEL_TOMAN_TO_DINAR_RATE', env('ALMANAHEL_TOMAN_PER_1000_DINAR', 120000)),
     /** Store share of consignment sold cost; publisher is owed (1 − rate). Live HTTP still uses this until T9. */
     'consignment_commission_rate' => (float) env('ALMANAHEL_CONSIGNMENT_COMMISSION_RATE', 0.1),
     'finance_ledger_reports_enabled' => (bool) env('FINANCE_LEDGER_REPORTS_ENABLED', true),

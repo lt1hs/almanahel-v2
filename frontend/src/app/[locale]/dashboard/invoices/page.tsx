@@ -1,5 +1,7 @@
 "use client";
 
+import { usePageReady } from "@/components/NavigationProgress";
+
 import React, { useState, useEffect, useCallback, Suspense } from "react";
 import {
     ArrowRight, Receipt, Store, User, Phone, CalendarDays,
@@ -43,6 +45,7 @@ function InvoiceDetailContent() {
 
     const [invoice, setInvoice] = useState<any>(null);
     const [isLoading, setIsLoading] = useState(true);
+    usePageReady(!isLoading);
     const [error, setError] = useState<string | null>(null);
     const [isPrinting, setIsPrinting] = useState(false);
     const didAutoPrint = React.useRef(false);
@@ -52,9 +55,6 @@ function InvoiceDetailContent() {
 
     const fetchInvoice = useCallback(async () => {
         if (!invoiceId) {
-            setIsLoading(false);
-            setError(t("sales.invoiceDetail.notFound"));
-            setInvoice(null);
             return;
         }
         setIsLoading(true);
@@ -72,8 +72,12 @@ function InvoiceDetailContent() {
     }, [invoiceId, t]);
 
     useEffect(() => {
+        if (!invoiceId) {
+            router.replace("/dashboard/sales");
+            return;
+        }
         fetchInvoice();
-    }, [fetchInvoice]);
+    }, [invoiceId, fetchInvoice, router]);
 
     const handlePrint = useCallback((inv = invoice) => {
         if (!inv) return;
@@ -127,6 +131,15 @@ function InvoiceDetailContent() {
         : invoice?.payment_method === "credit"
             ? ShoppingBag
             : Banknote;
+
+    if (!invoiceId) {
+        return (
+            <div className="space-y-4 max-w-3xl mx-auto">
+                <div className="h-10 w-48 bg-parchment/30 rounded-xl animate-pulse" />
+                <div className="h-40 bg-parchment/20 rounded-2xl animate-pulse" />
+            </div>
+        );
+    }
 
     if (isLoading) {
         return (

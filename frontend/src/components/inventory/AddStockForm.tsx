@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
-import { AlertCircle, Info, PackagePlus } from "lucide-react";
+import { AlertCircle, Building2, Info, PackagePlus } from "lucide-react";
 import { Input } from "@/components/ui/Input";
 import { Button } from "@/components/ui/Button";
 import { FilterSelect } from "@/components/ui/FilterSelect";
@@ -246,11 +246,13 @@ export function AddStockForm({
                         {t("inventory.stockByBranch")}
                     </p>
                     <FilterSelect
+                        className="w-full sm:max-w-sm"
                         value={branchId}
                         onChange={setBranchId}
                         options={eligibleBranches.map((b) => ({ value: String(b.id), label: b.name }))}
-                        placeholder={t("inventory.form.branchStockTitle")}
-                        defaultValue=""
+                        placeholder={t("inventory.selectBranch")}
+                        icon={<Building2 className="h-3.5 w-3.5" />}
+                        defaultValue="__none__"
                     />
                 </div>
 

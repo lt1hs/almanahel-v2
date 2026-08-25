@@ -14,6 +14,7 @@ class NotificationController extends Controller
 {
     public function index(Request $request, AlertInbox $inbox)
     {
+        $inbox->purgePricingOnlyLowStockAlerts();
         $inbox->sync();
         $userId = (int) $request->user()->id;
         $query = $this->scoped($request);
@@ -46,6 +47,7 @@ class NotificationController extends Controller
 
     public function unreadCount(Request $request, AlertInbox $inbox)
     {
+        $inbox->purgePricingOnlyLowStockAlerts();
         $inbox->sync();
         $userId = (int) $request->user()->id;
 

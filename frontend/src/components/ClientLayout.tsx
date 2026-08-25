@@ -2,6 +2,7 @@
 
 import { LanguageProvider, useLanguage, type Language } from "@/contexts/LanguageContext";
 import { LocaleSync } from "@/components/LocaleSync";
+import { NavigationProgressProvider } from "@/components/NavigationProgress";
 import { useEffect } from "react";
 
 function LanguageHandler({ children }: { children: React.ReactNode }) {
@@ -31,7 +32,9 @@ export default function ClientLayout({
   return (
     <LanguageProvider initialLocale={initialLocale}>
       <LocaleSync locale={initialLocale}>
-        <LanguageHandler>{children}</LanguageHandler>
+        <LanguageHandler>
+          <NavigationProgressProvider>{children}</NavigationProgressProvider>
+        </LanguageHandler>
       </LocaleSync>
     </LanguageProvider>
   );

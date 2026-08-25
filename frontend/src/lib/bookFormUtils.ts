@@ -295,7 +295,9 @@ export function resolveBookCoverUrl(path?: string | null): string | null {
     const api = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000/api";
     const origin = api.replace(/\/api\/?$/, "");
     const clean = path.replace(/^\/storage\//, "").replace(/^storage\//, "");
-    return `${origin}/storage/${clean}`;
+    // Prefer explicit storage origin when API and public disk are split (cPanel).
+    const storageBase = (process.env.NEXT_PUBLIC_STORAGE_URL || `${origin}/storage`).replace(/\/$/, "");
+    return `${storageBase}/${clean}`;
 }
 
 export function parseDecimalInput(value: string): string {

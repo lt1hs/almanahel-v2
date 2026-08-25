@@ -1,5 +1,7 @@
 "use client";
 
+import { usePageReady } from "@/components/NavigationProgress";
+
 import React, { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { AlertTriangle, Loader2 } from "lucide-react";
 import { useSearchParams } from "next/navigation";
@@ -47,6 +49,7 @@ function WarehouseLogPageContent() {
     const [inventory, setInventory] = useState<any[]>([]);
     const [editLog, setEditLog] = useState<WarehouseLogRecord | null>(null);
     const [isLoading, setIsLoading] = useState(true);
+    usePageReady(!isLoading);
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [error, setError] = useState<string | null>(null);
 

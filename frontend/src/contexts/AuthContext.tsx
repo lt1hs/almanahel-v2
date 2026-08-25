@@ -14,6 +14,7 @@ import {
   persistLocalePreference,
   type AppLocale,
 } from "@/lib/userLocale";
+import { PAGE_READY_TIMEOUT_MS } from "@/lib/pageReady";
 
 export type UserRole =
   | "super_admin"
@@ -33,6 +34,11 @@ interface User {
     city: string;
     type: string;
     country?: string;
+    is_iraq_store?: boolean | null;
+    is_central_warehouse?: boolean | null;
+    is_intake_hub?: boolean | null;
+    supports_dinar?: boolean | null;
+    supports_toman?: boolean | null;
   } | null;
   iraq_only_visible_branches?: number[];
 }
@@ -42,6 +48,7 @@ interface AuthContextType {
   login: (email: string, password: string) => Promise<void>;
   logout: () => void;
   isLoading: boolean;
+  sessionExpired: boolean;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -61,6 +68,7 @@ function getLocaleFromPath(): AppLocale {
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [sessionExpired, setSessionExpired] = useState(false);
   const router = useRouter();
 
   useEffect(() => {
@@ -71,62 +79,83 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
 
     let cancelled = false;
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), PAGE_READY_TIMEOUT_MS);
+
     fetch(`${API_BASE}/user`, {
       headers: {
         Authorization: `Bearer ${token}`,
         Accept: "application/json",
       },
+      signal: controller.signal,
     })
-      .then((res) => (res.ok ? res.json() : Promise.reject()))
+      .then((res) => {
+        if (!res.ok) {
+          const error = new Error("auth") as Error & { status: number };
+          error.status = res.status;
+          throw error;
+        }
+        return res.json();
+      })
       .then((data) => {
         if (!cancelled) setUser(data);
       })
-      .catch(() => {
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        const name = err && typeof err === "object" && "name" in err ? String(err.name) : "";
+        const status =
+          err && typeof err === "object" && "status" in err
+            ? Number((err as { status: number }).status)
+            : undefined;
+        if (name === "AbortError" || status === undefined || Number.isNaN(status)) {
+          return;
+        }
         localStorage.removeItem("al-manahel-token");
+        setUser(null);
+        setSessionExpired(true);
       })
       .finally(() => {
+        window.clearTimeout(timeoutId);
         if (!cancelled) setIsLoading(false);
       });
 
     return () => {
       cancelled = true;
+      controller.abort();
+      window.clearTimeout(timeoutId);
     };
   }, []);
 
   const login = useCallback(
     async (email: string, password: string) => {
-      setIsLoading(true);
-      try {
-        const res = await fetch(`${API_BASE}/login`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Accept: "application/json",
-          },
-          body: JSON.stringify({ email, password }),
-        });
+      const res = await fetch(`${API_BASE}/login`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+        body: JSON.stringify({ email, password }),
+      });
 
-        if (!res.ok) {
-          const err = await res.json().catch(() => ({}));
-          const msg =
-            err?.errors?.email?.[0] ??
-            err?.message ??
-            INVALID_CREDENTIALS[getLocaleFromPath()];
-          throw new Error(msg);
-        }
-
-        const data = await res.json();
-        localStorage.setItem("al-manahel-token", data.token);
-        setUser(data.user);
-
-        const locale: AppLocale = isIraqAccount(data.user)
-          ? "ar"
-          : getLocaleFromPath();
-        persistLocalePreference(locale);
-        router.push("/dashboard", { locale });
-      } finally {
-        setIsLoading(false);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        const msg =
+          err?.errors?.email?.[0] ??
+          err?.message ??
+          INVALID_CREDENTIALS[getLocaleFromPath()];
+        throw new Error(msg);
       }
+
+      const data = await res.json();
+      localStorage.setItem("al-manahel-token", data.token);
+      setSessionExpired(false);
+      setUser(data.user);
+
+      const locale: AppLocale = isIraqAccount(data.user)
+        ? "ar"
+        : getLocaleFromPath();
+      persistLocalePreference(locale);
+      router.push("/dashboard", { locale });
     },
     [router]
   );
@@ -141,13 +170,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
     localStorage.removeItem("al-manahel-token");
     const locale = getLocaleFromPath();
+    setSessionExpired(false);
     setUser(null);
     router.push("/login", { locale });
   }, [router]);
 
   const value = useMemo(
-    () => ({ user, login, logout, isLoading }),
-    [user, login, logout, isLoading]
+    () => ({ user, login, logout, isLoading, sessionExpired }),
+    [user, login, logout, isLoading, sessionExpired]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

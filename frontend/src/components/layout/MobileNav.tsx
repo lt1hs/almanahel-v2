@@ -11,13 +11,13 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTranslation } from "@/hooks/useTranslation";
-import { useAuth, type UserRole } from "@/contexts/AuthContext";
+import { useAuth } from "@/contexts/AuthContext";
+import { canAccessRoute } from "@/lib/routeAccess";
 
 const MOBILE_ITEMS: {
     titleKey: string;
     href: string;
     icon: React.ElementType;
-    roles?: UserRole[];
 }[] = [
     { titleKey: "nav.dashboard", href: "/dashboard", icon: LayoutDashboard },
     { titleKey: "nav.inventory", href: "/dashboard/inventory", icon: Library },
@@ -26,7 +26,6 @@ const MOBILE_ITEMS: {
         titleKey: "nav.sales",
         href: "/dashboard/sales",
         icon: Wallet,
-        roles: ["super_admin", "admin", "branch_manager"],
     },
 ];
 
@@ -35,9 +34,7 @@ export function MobileNav() {
     const { t } = useTranslation();
     const { user } = useAuth();
 
-    const items = MOBILE_ITEMS.filter(
-        (item) => !item.roles || (user && item.roles.includes(user.role))
-    );
+    const items = MOBILE_ITEMS.filter((item) => canAccessRoute(user?.role, item.href));
 
     return (
         <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-ink border-t border-parchment/10 h-16 flex items-center justify-around px-4 z-50">

@@ -1,5 +1,7 @@
 "use client";
 
+import { usePageReady } from "@/components/NavigationProgress";
+
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import {
     Building2, Plus, UserCog, Globe, AlertOctagon, RefreshCw,
@@ -94,6 +96,7 @@ function AdminPageContent() {
     const [lowStockThreshold, setLowStockThreshold] = useState(5);
     const [savedThreshold, setSavedThreshold] = useState(5);
     const [isLoading, setIsLoading] = useState(true);
+    usePageReady(!isLoading);
     const [isRefreshing, setIsRefreshing] = useState(false);
     const [isSavingThreshold, setIsSavingThreshold] = useState(false);
     const [isSavingBranch, setIsSavingBranch] = useState(false);

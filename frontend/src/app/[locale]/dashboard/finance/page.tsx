@@ -1,5 +1,7 @@
 "use client";
 
+import { usePageReady } from "@/components/NavigationProgress";
+
 import React, { useEffect, useState, useCallback } from "react";
 import dynamic from "next/dynamic";
 import { SettlementWizard } from "@/components/finance/SettlementWizard";
@@ -83,6 +85,7 @@ function FinancePageContent() {
     const [settlementBranches, setSettlementBranches] = useState<{ id: number; name: string }[]>([]);
     const [settlementSessionKey, setSettlementSessionKey] = useState(0);
     const [isLoading, setIsLoading] = useState(true);
+    usePageReady(!isLoading);
     const [isRefreshing, setIsRefreshing] = useState(false);
     const [isSettlementLoading, setIsSettlementLoading] = useState(false);
     const [isConfirming, setIsConfirming] = useState(false);

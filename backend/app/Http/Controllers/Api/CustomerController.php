@@ -53,6 +53,7 @@ class CustomerController extends Controller
             'branch_id' => 'nullable|exists:branches,id',
             'notes' => 'nullable|string',
         ]);
+        BranchAccess::assertCanMutateFinance($request->user());
         if (!empty($validated['branch_id'])) {
             BranchAccess::assertBranchAllowed($request->user(), (int) $validated['branch_id']);
         }
@@ -84,6 +85,7 @@ class CustomerController extends Controller
 
     public function update(Request $request, Customer $customer)
     {
+        BranchAccess::assertCanMutateFinance($request->user());
         $this->assertVisible($request, $customer);
         if ($customer->archived_at) {
             throw new DomainException('مشتری بایگانی‌شده قابل ویرایش نیست');
@@ -114,6 +116,7 @@ class CustomerController extends Controller
 
     public function destroy(Request $request, Customer $customer)
     {
+        BranchAccess::assertCanMutateFinance($request->user());
         $this->assertVisible($request, $customer);
         if ($customer->invoices()->exists() || $customer->payments()->exists()) {
             $customer->update(['archived_at' => now()]);
@@ -148,6 +151,7 @@ class CustomerController extends Controller
 
     public function pay(Request $request, Customer $customer)
     {
+        BranchAccess::assertCanMutateFinance($request->user());
         $this->assertVisible($request, $customer);
         $validated = $request->validate([
             'invoice_id' => 'required|exists:invoices,id',

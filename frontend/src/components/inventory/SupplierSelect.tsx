@@ -8,8 +8,9 @@ import { Card } from "@/components/ui/Card";
 import { Modal } from "@/components/ui/Modal";
 import { cn } from "@/lib/utils";
 import { motion, AnimatePresence } from "framer-motion";
-import { apiRequest } from "@/lib/api";
+import { apiRequest, ApiError } from "@/lib/api";
 import { useTranslation } from "@/hooks/useTranslation";
+import { useNotify } from "@/hooks/useNotify";
 import {
     parseSupplierAccountRow,
     supplierAccountsUrl,
@@ -27,6 +28,7 @@ interface SupplierSelectProps {
 
 export function SupplierSelect({ onSelect, selectedAccountId, branchId, compact = false }: SupplierSelectProps) {
     const { t } = useTranslation();
+    const notify = useNotify();
     const [search, setSearch] = useState("");
     const [accounts, setAccounts] = useState<SupplierAccountSelection[]>([]);
     const [isLoading, setIsLoading] = useState(true);
@@ -88,7 +90,8 @@ export function SupplierSelect({ onSelect, selectedAccountId, branchId, compact 
             setIsModalOpen(false);
             setNewAccount({ name: "", city: "", type: "publisher", phone: "" });
         } catch (error) {
-            console.error("Failed to create supplier account:", error);
+            const message = error instanceof ApiError ? error.message : t("toast.supplierSaveError");
+            notify.rawError(message);
         } finally {
             setIsSaving(false);
         }
@@ -129,48 +132,81 @@ export function SupplierSelect({ onSelect, selectedAccountId, branchId, compact 
                     {t("suppliers.add")}
                 </Button>
 
-                <Modal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} title={t("suppliers.addModalTitle")}>
-                    <div className="space-y-4">
+                <Modal
+                    isOpen={isModalOpen}
+                    onClose={() => setIsModalOpen(false)}
+                    title={t("suppliers.addModalTitle")}
+                    description={t("suppliers.form.contactDesc")}
+                >
+                    <div className="space-y-4 font-ibm-plex-arabic">
                         <Input
                             label={t("suppliers.form.name")}
                             value={newAccount.name}
                             onChange={(e) => setNewAccount({ ...newAccount, name: e.target.value })}
-                            className="h-12 bg-ink/[0.02] border-ink/5 focus:bg-white"
+                            className="h-11 rounded-xl border-ink/8 bg-parchment/25 font-ibm-plex-arabic focus:bg-white"
                             placeholder={t("suppliers.form.nameExample")}
                         />
-                        <Input
-                            label={t("suppliers.form.city")}
-                            value={newAccount.city}
-                            onChange={(e) => setNewAccount({ ...newAccount, city: e.target.value })}
-                            className="h-12 bg-ink/[0.02] border-ink/5 focus:bg-white"
-                            placeholder={t("suppliers.form.cityExample")}
-                        />
-                        <Input
-                            label={t("suppliers.form.phone")}
-                            value={newAccount.phone}
-                            onChange={(e) => setNewAccount({ ...newAccount, phone: e.target.value })}
-                            className="h-12 bg-ink/[0.02] border-ink/5 focus:bg-white"
-                        />
-                        <div className="space-y-1.5">
-                            <label className="text-sm font-medium font-vazirmatn text-ink/70 mr-1">{t("suppliers.form.type")}</label>
-                            <select
-                                value={newAccount.type}
-                                onChange={(e) => setNewAccount({ ...newAccount, type: e.target.value })}
-                                className="w-full h-12 rounded-[7px] border border-ink/10 bg-ink/[0.02] px-4 text-sm font-vazirmatn focus:outline-none focus:ring-2 focus:ring-primary focus:bg-white transition-all appearance-none cursor-pointer"
-                            >
-                                {SUPPLIER_TYPES.map((type) => (
-                                    <option key={type} value={type}>{typeLabel(type)}</option>
-                                ))}
-                            </select>
+
+                        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                            <Input
+                                label={t("suppliers.form.city")}
+                                value={newAccount.city}
+                                onChange={(e) => setNewAccount({ ...newAccount, city: e.target.value })}
+                                className="h-11 rounded-xl border-ink/8 bg-parchment/25 font-ibm-plex-arabic focus:bg-white"
+                                placeholder={t("suppliers.form.cityExample")}
+                            />
+                            <Input
+                                label={t("suppliers.form.phone")}
+                                value={newAccount.phone}
+                                onChange={(e) => setNewAccount({ ...newAccount, phone: e.target.value })}
+                                className="h-11 rounded-xl border-ink/8 bg-parchment/25 font-ibm-plex-arabic focus:bg-white"
+                            />
                         </div>
-                        <Button
-                            onClick={handleAddAccount}
-                            disabled={!newAccount.name || isSaving}
-                            className="w-full h-14 bg-primary text-white font-black text-sm rounded-[10px] hover:bg-primary/90 shadow-lg shadow-primary/20 mt-2 transition-all active:scale-[0.98] flex items-center justify-center gap-2"
-                        >
-                            {isSaving ? <Loader2 className="w-5 h-5 animate-spin" /> : <Check className="w-5 h-5" />}
-                            {t("suppliers.submit")}
-                        </Button>
+
+                        <div className="space-y-2">
+                            <label className="text-[11px] font-bold font-ibm-plex-arabic text-ink/45">
+                                {t("suppliers.form.type")}
+                            </label>
+                            <div className="grid grid-cols-3 gap-2">
+                                {SUPPLIER_TYPES.map((type) => {
+                                    const selected = newAccount.type === type;
+                                    return (
+                                        <button
+                                            key={type}
+                                            type="button"
+                                            onClick={() => setNewAccount({ ...newAccount, type })}
+                                            className={cn(
+                                                "h-10 rounded-xl border text-[12px] font-bold font-ibm-plex-arabic transition-all",
+                                                selected
+                                                    ? "border-primary/30 bg-primary/10 text-primary shadow-sm shadow-primary/10"
+                                                    : "border-ink/8 bg-white/70 text-ink/50 hover:border-primary/20 hover:text-ink/70"
+                                            )}
+                                        >
+                                            {typeLabel(type)}
+                                        </button>
+                                    );
+                                })}
+                            </div>
+                        </div>
+
+                        <div className="flex gap-2 border-t border-ink/5 pt-4">
+                            <Button
+                                type="button"
+                                variant="ghost"
+                                onClick={() => setIsModalOpen(false)}
+                                className="h-11 flex-1 rounded-xl text-[12px] font-bold font-ibm-plex-arabic"
+                            >
+                                {t("common.cancel")}
+                            </Button>
+                            <Button
+                                onClick={handleAddAccount}
+                                disabled={!newAccount.name || isSaving}
+                                className="h-11 flex-[1.4] gap-2 rounded-xl text-[12px] font-bold font-ibm-plex-arabic shadow-lg shadow-primary/15"
+                            >
+                                {isSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+                                {t("suppliers.submit")}
+                            </Button>
+                        </div>
                     </div>
                 </Modal>
             </div>

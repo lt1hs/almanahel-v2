@@ -137,6 +137,18 @@ class SupplierAccountResolver
         });
     }
 
+    /**
+     * @param  int[]  $branchIds
+     */
+    public function ensureAccountsForBranches(int $supplierId, array $branchIds): void
+    {
+        foreach (array_values(array_unique(array_map('intval', $branchIds))) as $branchId) {
+            if ($branchId > 0) {
+                $this->ensureForPair($branchId, $supplierId);
+            }
+        }
+    }
+
     public function assertUniquePair(int $branchId, ?int $supplierId, ?int $ignoreId, ?string $localCode = null): void
     {
         if ($supplierId) {

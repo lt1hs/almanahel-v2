@@ -1,6 +1,8 @@
 "use client";
 
-import React, { Suspense, useCallback, useEffect, useState } from "react";
+import { usePageReady } from "@/components/NavigationProgress";
+
+import React, { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import { ArrowRight, PackagePlus } from "lucide-react";
 import { Button } from "@/components/ui/Button";
@@ -13,7 +15,7 @@ import { useTranslation } from "@/hooks/useTranslation";
 import { apiRequest } from "@/lib/api";
 import { buildBookShowUrl } from "@/lib/bookCatalogRequests";
 import { useAuth } from "@/contexts/AuthContext";
-import { collectPriceBands } from "@/lib/bookFormUtils";
+import { collectPriceBands, resolveBranchId } from "@/lib/bookFormUtils";
 import { useInvalidateNotifications } from "@/hooks/useNotificationInbox";
 
 export const dynamic = "force-static";
@@ -51,18 +53,23 @@ function AddStockContent() {
     const searchParams = useSearchParams();
     const bookId = searchParams.get("id") || "";
     const branchParam = searchParams.get("branch");
+    const branchParamId = branchParam && Number.isFinite(Number(branchParam)) ? Number(branchParam) : null;
     const isAdmin = user?.role === "super_admin" || user?.role === "admin";
-    const operationalBranchId = isAdmin
-        ? (branchParam && Number.isFinite(Number(branchParam)) ? Number(branchParam) : null)
-        : (user?.branch?.id ?? user?.branch_id ?? null);
-    const defaultBranchId = operationalBranchId ?? "overview";
     const invalidateNotifications = useInvalidateNotifications();
 
     const [book, setBook] = useState<AddStockBook | null>(null);
     const [branches, setBranches] = useState<any[]>([]);
+    const [branchesReady, setBranchesReady] = useState(false);
     const [supplier, setSupplier] = useState<SupplierAccountSelection | null>(null);
     const [isLoading, setIsLoading] = useState(true);
+    usePageReady(!isLoading);
     const [error, setError] = useState<string | null>(null);
+
+    const qomBranchId = useMemo(() => resolveBranchId(branches, "qom"), [branches]);
+    const operationalBranchId = isAdmin
+        ? (branchParamId ?? qomBranchId ?? (branches[0] ? Number(branches[0].id) : null))
+        : (user?.branch?.id ?? user?.branch_id ?? null);
+    const defaultBranchId = operationalBranchId ?? "overview";
 
     const fetchData = useCallback(async () => {
         if (!bookId) {
@@ -70,6 +77,7 @@ function AddStockContent() {
             setIsLoading(false);
             return;
         }
+        if (isAdmin && !branchesReady) return;
         if (!operationalBranchId) {
             setError("branch_required");
             setIsLoading(false);
@@ -97,7 +105,14 @@ function AddStockContent() {
         } finally {
             setIsLoading(false);
         }
-    }, [bookId, operationalBranchId, user?.branch?.id, user?.branch_id, user?.role]);
+    }, [bookId, branchesReady, isAdmin, operationalBranchId, user?.branch?.id, user?.branch_id, user?.role]);
+
+    useEffect(() => {
+        apiRequest("/branches")
+            .then((list) => setBranches(Array.isArray(list) ? list : []))
+            .catch(() => setBranches([]))
+            .finally(() => setBranchesReady(true));
+    }, []);
 
     useEffect(() => {
         void fetchData();

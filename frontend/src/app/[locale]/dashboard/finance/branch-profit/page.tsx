@@ -1,5 +1,7 @@
 "use client";
 
+import { usePageReady } from "@/components/NavigationProgress";
+
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import {
     Building2, TrendingUp, TrendingDown, Gift, Wallet,
@@ -107,6 +109,7 @@ export default function BranchProfitPage() {
     const [currency, setCurrency] = useState<Currency>(preferredCurrency);
     const [branches, setBranches] = useState<BranchProfitRow[]>([]);
     const [isLoading, setIsLoading] = useState(true);
+    usePageReady(!isLoading);
     const [isRefreshing, setIsRefreshing] = useState(false);
     const [search, setSearch] = useState("");
     const [period, setPeriod] = useState<PeriodKey>("thisMonth");

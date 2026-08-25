@@ -478,6 +478,9 @@
       "costPriceToman": "سعر الشراء / التكلفة (تومان)",
       "costPriceDinar": "سعر الشراء (دينار عراقي)",
       "costPriceHint": "فارغ = نفس سعر البيع",
+      "costDinarAutoHint": "محسوب من سعر الصرف — قابل للتعديل يدوياً",
+      "costDinarManualHint": "تعديل يدوي — أعد الحساب لمطابقة التومان",
+      "recalculateDinar": "إعادة الحساب",
       "iraqExclusive": "حصري لفروع العراق",
       "allBranches": "عرض في جميع الفروع"
     },

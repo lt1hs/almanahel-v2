@@ -25,15 +25,15 @@ import {
     Activity,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { useAuth, UserRole } from "@/contexts/AuthContext";
+import { useAuth } from "@/contexts/AuthContext";
 import { useTranslation } from "@/hooks/useTranslation";
 import { useLocaleSwitch } from "@/hooks/useLocaleSwitch";
+import { canAccessRoute } from "@/lib/routeAccess";
 
 interface NavItem {
     titleKey: string;
     href: string;
     icon: React.ElementType;
-    roles?: UserRole[];
     color: string;
 }
 
@@ -53,35 +53,35 @@ const NAV_GROUPS: NavGroup[] = [
         titleKey: "nav.groups.stock",
         items: [
             { titleKey: "nav.inventory", href: "/dashboard/inventory", icon: Library, color: "text-amber-500" },
-            { titleKey: "nav.warehouse", href: "/dashboard/warehouse", icon: Warehouse, color: "text-sky-500", roles: ["super_admin", "admin", "warehouse_staff"] },
+            { titleKey: "nav.warehouse", href: "/dashboard/warehouse", icon: Warehouse, color: "text-sky-500" },
             { titleKey: "nav.distribution", href: "/dashboard/distribution", icon: Truck, color: "text-emerald-500" },
         ],
     },
     {
         titleKey: "nav.groups.consignment",
         items: [
-            { titleKey: "nav.consignment", href: "/dashboard/consignment", icon: PackageCheck, color: "text-violet-500", roles: ["super_admin", "admin", "branch_manager"] },
-            { titleKey: "nav.gifts", href: "/dashboard/gifts", icon: Gift, color: "text-rose-400", roles: ["super_admin", "admin", "branch_manager"] },
+            { titleKey: "nav.consignment", href: "/dashboard/consignment", icon: PackageCheck, color: "text-violet-500" },
+            { titleKey: "nav.gifts", href: "/dashboard/gifts", icon: Gift, color: "text-rose-400" },
             { titleKey: "nav.returns", href: "/dashboard/returns", icon: RotateCcw, color: "text-indigo-500" },
         ],
     },
     {
         titleKey: "nav.groups.financial",
         items: [
-            { titleKey: "nav.sales", href: "/dashboard/sales", icon: Wallet, roles: ["super_admin", "admin", "branch_manager"], color: "text-rose-500" },
-            { titleKey: "nav.checks", href: "/dashboard/checks", icon: CreditCard, roles: ["super_admin", "admin", "branch_manager"], color: "text-teal-500" },
-            { titleKey: "nav.credits", href: "/dashboard/credits", icon: HandCoins, roles: ["super_admin", "admin", "branch_manager"], color: "text-violet-500" },
-            { titleKey: "nav.finance", href: "/dashboard/finance", icon: BarChart3, roles: ["super_admin", "admin", "branch_manager"], color: "text-indigo-500" },
-            { titleKey: "nav.expenses", href: "/dashboard/expenses", icon: Wallet, roles: ["super_admin", "admin", "branch_manager"], color: "text-orange-500" },
-            { titleKey: "nav.branchProfit", href: "/dashboard/finance/branch-profit", icon: BarChart3, roles: ["super_admin", "admin"], color: "text-cyan-500" },
+            { titleKey: "nav.sales", href: "/dashboard/sales", icon: Wallet, color: "text-rose-500" },
+            { titleKey: "nav.checks", href: "/dashboard/checks", icon: CreditCard, color: "text-teal-500" },
+            { titleKey: "nav.credits", href: "/dashboard/credits", icon: HandCoins, color: "text-violet-500" },
+            { titleKey: "nav.finance", href: "/dashboard/finance", icon: BarChart3, color: "text-indigo-500" },
+            { titleKey: "nav.expenses", href: "/dashboard/expenses", icon: Wallet, color: "text-orange-500" },
+            { titleKey: "nav.branchProfit", href: "/dashboard/finance/branch-profit", icon: BarChart3, color: "text-cyan-500" },
         ],
     },
     {
         titleKey: "nav.groups.system",
         items: [
-            { titleKey: "nav.suppliers", href: "/dashboard/suppliers", icon: Users, roles: ["super_admin", "admin", "branch_manager"], color: "text-amber-600" },
-            { titleKey: "nav.admin", href: "/dashboard/admin", icon: Settings, roles: ["super_admin", "admin"], color: "text-slate-500" },
-            { titleKey: "nav.activityLog", href: "/dashboard/admin/activity", icon: Activity, roles: ["super_admin", "admin"], color: "text-teal-600" },
+            { titleKey: "nav.suppliers", href: "/dashboard/suppliers", icon: Users, color: "text-amber-600" },
+            { titleKey: "nav.admin", href: "/dashboard/admin", icon: Settings, color: "text-slate-500" },
+            { titleKey: "nav.activityLog", href: "/dashboard/admin/activity", icon: Activity, color: "text-teal-600" },
         ],
     },
 ];
@@ -197,7 +197,7 @@ export function Sidebar() {
     }, [isCollapsed]);
 
     const filterItems = (items: NavItem[]) =>
-        items.filter((item) => !item.roles || (user && item.roles.includes(user.role)));
+        items.filter((item) => canAccessRoute(user?.role, item.href));
 
     const glowProps = prefersReduced
         ? {}
@@ -230,18 +230,18 @@ export function Sidebar() {
             {/* Logo */}
             <div
                 className={cn(
-                    "h-[60px] flex items-center shrink-0 relative z-10 border-b border-ink/[0.04] transition-all",
+                    "h-[60px] flex items-center shrink-0 relative z-10 border-b border-ink/[0.04] transition-all overflow-visible",
                     isCollapsed ? "justify-center px-0" : "px-5"
                 )}
             >
                 <Link
                     href="/dashboard"
-                    className={cn("flex items-center gap-3 group/logo", isCollapsed ? "justify-center" : "w-full overflow-hidden")}
+                    className={cn("flex items-center gap-3 group/logo min-w-0", isCollapsed ? "justify-center" : "w-full")}
                 >
-                    <div className="w-9 h-9 relative shrink-0">
+                    <div className="w-10 h-10 relative shrink-0 overflow-visible">
                         <div className="absolute inset-0 bg-primary/15 rounded-xl blur-lg opacity-0 group-hover/logo:opacity-100 transition-opacity duration-500" />
-                        <div className="relative w-full h-full bg-gradient-to-br from-white to-white/90 rounded-xl flex items-center justify-center border border-white shadow-sm transition-transform duration-300 group-hover/logo:scale-105">
-                            <Image src="/logo-3.svg" alt="Logo" width={18} height={18} className="w-5 h-5 object-contain" />
+                        <div className="relative w-full h-full bg-gradient-to-br from-white to-white/90 rounded-xl flex items-center justify-center border border-white shadow-sm transition-transform duration-300 group-hover/logo:scale-105 p-2 overflow-visible">
+                            <Image src="/logo-3.svg" alt="Logo" width={24} height={24} className="w-full h-full object-contain" />
                         </div>
                     </div>
 
@@ -253,7 +253,7 @@ export function Sidebar() {
                                 animate={{ opacity: 1, width: "auto" }}
                                 exit={{ opacity: 0, width: 0 }}
                                 transition={{ duration: 0.2, ease: "easeOut" as const }}
-                                className="flex flex-col overflow-hidden"
+                                className="flex flex-col overflow-hidden min-w-0 flex-1"
                             >
                                 <span className="font-vazirmatn font-black text-[13.5px] tracking-tight text-ink leading-none whitespace-nowrap">
                                     {t("common.appName")}

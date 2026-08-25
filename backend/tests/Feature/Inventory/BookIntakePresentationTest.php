@@ -97,4 +97,73 @@ class BookIntakePresentationTest extends TestCase
             ->assertJsonPath('books.0.volume_count', 2)
             ->assertJsonPath('books.0.description', 'توضیح کامل');
     }
+
+    public function test_post_books_links_supplier_account_to_catalog(): void
+    {
+        $branch = $this->makeBranch(['city' => 'قم', 'is_intake_hub' => true]);
+        $this->actingAsRole('branch_manager', $branch);
+
+        $account = $this->postJson('/api/supplier-accounts', [
+            'branch_id' => $branch->id,
+            'display_name' => 'Inline Supplier',
+            'type' => 'publisher',
+        ])->assertCreated();
+
+        $response = $this->postJson('/api/books', [
+            'title' => 'Linked Title',
+            'branch_id' => $branch->id,
+            'supplier_account_id' => $account->json('id'),
+        ])->assertCreated();
+
+        $this->assertDatabaseHas('branch_catalog_items', [
+            'branch_id' => $branch->id,
+            'book_id' => $response->json('book.id'),
+            'local_supplier_account_id' => $account->json('id'),
+        ]);
+    }
+
+    public function test_iraq_branch_manager_intake_appears_in_warehouse_inventory(): void
+    {
+        $iraq = $this->makeBranch([
+            'name' => 'Iraq Store',
+            'city' => 'نجف',
+            'country' => 'عراق',
+            'is_iraq_store' => true,
+            'supports_dinar' => true,
+            'supports_toman' => false,
+        ]);
+        $this->actingAsRole('branch_manager', $iraq);
+
+        $account = $this->postJson('/api/supplier-accounts', [
+            'branch_id' => $iraq->id,
+            'display_name' => 'Iraq Supplier',
+            'type' => 'publisher',
+        ])->assertCreated();
+
+        $book = $this->postJson('/api/books', [
+            'title' => 'Iraq Visible Book',
+            'branch_id' => $iraq->id,
+            'supplier_account_id' => $account->json('id'),
+        ])->assertCreated();
+
+        $bookId = (int) $book->json('book.id');
+
+        $this->postJson('/api/inventory/purchase', [
+            'branch_id' => $iraq->id,
+            'book_id' => $bookId,
+            'quantity' => 4,
+            'currency' => 'dinar',
+            'cost_price' => 1000,
+            'selling_price' => 1500,
+            'supplier_account_id' => $account->json('id'),
+        ])->assertCreated();
+
+        $inventory = $this->getJson('/api/warehouse/'.$iraq->id.'/inventory')
+            ->assertOk()
+            ->json();
+
+        $this->assertNotEmpty($inventory);
+        $this->assertSame($bookId, (int) ($inventory[0]['book']['id'] ?? 0));
+        $this->assertSame('Iraq Visible Book', $inventory[0]['book']['title'] ?? null);
+    }
 }

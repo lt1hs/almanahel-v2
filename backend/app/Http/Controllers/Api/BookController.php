@@ -173,14 +173,20 @@ class BookController extends Controller
             'iraq_only'           => 'boolean',
             'low_stock_threshold' => 'nullable|integer|min:1',
             'branch_id'           => 'nullable|exists:branches,id',
+            'supplier_account_id' => 'nullable|exists:supplier_accounts,id',
         ]);
 
         $requestedBranchId = $request->filled('branch_id') ? (int) $validated['branch_id'] : null;
-        unset($validated['branch_id']);
+        $supplierAccountId = isset($validated['supplier_account_id']) ? (int) $validated['supplier_account_id'] : null;
+        unset($validated['branch_id'], $validated['supplier_account_id']);
 
         $branchId = BranchAccess::resolveCatalogMutationBranchId($user, $requestedBranchId);
 
-        return DB::transaction(function () use ($validated, $branchId, $user) {
+        if ($supplierAccountId !== null) {
+            app(BranchCatalogService::class)->assertSupplierAccountInBranch($supplierAccountId, $branchId);
+        }
+
+        return DB::transaction(function () use ($validated, $branchId, $user, $supplierAccountId) {
             [$book, $reused] = app(CanonicalBookService::class)->findOrCreate($validated, $user);
             $createdNew = !$reused;
 
@@ -188,7 +194,7 @@ class BookController extends Controller
                 $catalogItem = app(BranchCatalogService::class)->ensureForPricing(
                     $branchId,
                     (int) $book->id,
-                    null,
+                    $supplierAccountId,
                     $user->id
                 );
             } catch (\Throwable $e) {
@@ -217,13 +223,32 @@ class BookController extends Controller
 
     public function uploadCover(Request $request)
     {
-        BranchAccess::assertCanMutateCanonicalBook($request->user());
+        BranchAccess::assertCanMutateBranchCatalog($request->user());
 
         $validated = $request->validate([
-            'image' => 'required|image|max:5120',
+            'image' => 'required|file|mimes:jpeg,jpg,png,webp,gif|max:5120',
+        ], [
+            'image.required' => 'فایل تصویر انتخاب نشده است.',
+            'image.file'     => 'فایل ارسالی معتبر نیست. محدودیت upload_max_filesize سرور را بررسی کنید.',
+            'image.mimes'    => 'فرمت تصویر باید JPG، PNG، WEBP یا GIF باشد.',
+            'image.max'      => 'حداکثر حجم تصویر ۵ مگابایت است.',
         ]);
 
+        $disk = Storage::disk('public');
+        if (!$disk->exists('books/covers')) {
+            $disk->makeDirectory('books/covers');
+        }
+
         $path = $validated['image']->store('books/covers', 'public');
+        if (!$path) {
+            Log::error('books.upload_cover.store_failed', [
+                'user_id' => $request->user()?->id,
+            ]);
+
+            return response()->json([
+                'message' => 'ذخیره تصویر ناموفق بود. دسترسی پوشه storage/app/public را بررسی کنید.',
+            ], 500);
+        }
 
         ActivityLogger::record(
             'books',
@@ -235,7 +260,7 @@ class BookController extends Controller
 
         return response()->json([
             'path' => $path,
-            'url'  => Storage::disk('public')->url($path),
+            'url'  => $disk->url($path),
         ], 201);
     }
 
@@ -251,10 +276,14 @@ class BookController extends Controller
         );
         $branchId = $scope->branchId;
 
-        BranchAccess::assertCatalogBookVisible($user, (int) $book->id, $branchId);
+        if (!BranchAccess::isAdmin($user)) {
+            BranchAccess::assertCatalogBookVisible($user, (int) $book->id, $branchId);
+        }
 
         $book->load([
-            'inventories' => fn ($q) => $q->where('branch_id', $branchId),
+            'inventories' => fn ($q) => BranchAccess::isAdmin($user)
+                ? $q
+                : $q->where('branch_id', $branchId),
             'inventories.branch',
             'inventories.supplier',
         ]);

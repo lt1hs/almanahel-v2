@@ -1,5 +1,7 @@
 "use client";
 
+import { usePageReady } from "@/components/NavigationProgress";
+
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
     Activity, ArrowRight, Download, Filter, RefreshCw, Search, X, Calendar,
@@ -116,6 +118,7 @@ export default function ActivityLogPage() {
     const [total, setTotal] = useState(0);
     const [summary, setSummary] = useState<SummaryPayload | null>(null);
     const [isLoading, setIsLoading] = useState(true);
+    usePageReady(!isLoading);
     const [isExporting, setIsExporting] = useState(false);
     const [selected, setSelected] = useState<ActivityRow | null>(null);
 

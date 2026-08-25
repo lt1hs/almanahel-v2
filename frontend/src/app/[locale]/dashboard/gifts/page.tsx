@@ -1,5 +1,6 @@
 ﻿"use client";
 
+import { usePageReady } from "@/components/NavigationProgress";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Gift,
@@ -111,6 +112,7 @@ export default function GiftsPage() {
   const [search, setSearch] = useState("");
   const debouncedSearch = useDebouncedValue(search, 300);
   const [isLoading, setIsLoading] = useState(true);
+  usePageReady(!isLoading);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
 
   const [showForm, setShowForm] = useState(false);

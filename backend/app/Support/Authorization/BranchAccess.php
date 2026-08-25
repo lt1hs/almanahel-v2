@@ -286,6 +286,50 @@ class BranchAccess
         }
     }
 
+    public static function canMutateStock(?User $user): bool
+    {
+        if (!$user) {
+            return false;
+        }
+
+        return in_array($user->role, ['super_admin', 'admin', 'warehouse_staff', 'branch_manager'], true);
+    }
+
+    /**
+     * Branches this user may mutate stock on.
+     * iraq_only_visible_branches is visibility-only and is never included.
+     *
+     * @return int[]|null null = all branches
+     */
+    public static function stockMutableBranchIds(?User $user): ?array
+    {
+        if (!self::canMutateStock($user)) {
+            return [];
+        }
+        if (self::isAdmin($user)) {
+            return null;
+        }
+        if (!$user->branch_id) {
+            return [];
+        }
+
+        return [(int) $user->branch_id];
+    }
+
+    public static function assertCanMutateStockInBranch(?User $user, int $branchId): void
+    {
+        if (!self::canMutateStock($user)) {
+            self::deny('اجازه تغییر موجودی انبار را ندارید');
+        }
+        $ids = self::stockMutableBranchIds($user);
+        if ($ids === null) {
+            return;
+        }
+        if (!in_array($branchId, $ids, true)) {
+            self::deny('اجازه تغییر موجودی این شعبه را ندارید');
+        }
+    }
+
     public static function assertCanMutateSettlement(?User $user, ?int $branchId): void
     {
         self::assertCanMutateFinance($user);

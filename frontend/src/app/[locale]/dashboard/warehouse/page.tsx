@@ -1,5 +1,7 @@
 "use client";
 
+import { usePageReady } from "@/components/NavigationProgress";
+
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import {
     Warehouse, ArrowDown, ArrowUp, Package, User, BookOpen, History,
@@ -112,6 +114,7 @@ function WarehousePageContent() {
     const [stats, setStats] = useState({ total_in: 0, total_out: 0, current_stock: 0 });
 
     const [isLoading, setIsLoading] = useState(true);
+    usePageReady(!isLoading);
     const [isLoadingLogs, setIsLoadingLogs] = useState(false);
     const [isRefreshing, setIsRefreshing] = useState(false);
     const [loadError, setLoadError] = useState<string | null>(null);

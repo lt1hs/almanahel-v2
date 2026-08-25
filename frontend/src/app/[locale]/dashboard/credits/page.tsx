@@ -1,5 +1,6 @@
 ﻿"use client";
 
+import { usePageReady } from "@/components/NavigationProgress";
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { motion, Variants } from "framer-motion";
 import {
@@ -39,6 +40,7 @@ export default function CreditsPage() {
     const [credits, setCredits] = useState<any[]>([]);
     const [dueSoon, setDueSoon] = useState<any[]>([]);
     const [isLoading, setIsLoading] = useState(true);
+    usePageReady(!isLoading);
     const [updatingId, setUpdatingId] = useState<number | null>(null);
 
     const statusCfg = useMemo(() => ({

@@ -98,7 +98,7 @@ class ExpenseController extends Controller
             'currency'    => 'required|in:toman,dinar',
             'category'    => 'required|string|max:100',
             'description' => 'nullable|string',
-            'date'        => 'required|date',
+            'date'        => 'required|date|after:1999-12-31|before_or_equal:today',
             'financial_account_id' => 'nullable|exists:financial_accounts,id',
         ]);
 
@@ -146,7 +146,7 @@ class ExpenseController extends Controller
             'currency'    => 'sometimes|required|in:toman,dinar',
             'category'    => 'sometimes|required|string|max:100',
             'description' => 'nullable|string',
-            'date'        => 'sometimes|required|date',
+            'date'        => 'sometimes|required|date|after:1999-12-31|before_or_equal:today',
             'financial_account_id' => 'nullable|exists:financial_accounts,id',
         ]);
 

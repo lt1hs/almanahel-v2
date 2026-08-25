@@ -1,5 +1,7 @@
 "use client";
 
+import { usePageReady } from "@/components/NavigationProgress";
+
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import {
@@ -30,6 +32,7 @@ export default function BookCategoriesPage() {
 
     const [categories, setCategories] = useState<CategoryRow[]>([]);
     const [isLoading, setIsLoading] = useState(true);
+    usePageReady(!isLoading);
     const [isRefreshing, setIsRefreshing] = useState(false);
     const [newName, setNewName] = useState("");
     const [isAdding, setIsAdding] = useState(false);

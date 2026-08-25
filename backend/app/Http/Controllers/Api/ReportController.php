@@ -9,6 +9,7 @@ use App\Models\Inventory;
 use App\Models\Check;
 use App\Models\Book;
 use App\Models\Transfer;
+use App\Models\AppSetting;
 use App\Services\Reports\LedgerReportService;
 use App\Support\ActivityLogger;
 use App\Support\Authorization\BranchAccess;
@@ -80,7 +81,7 @@ class ReportController extends Controller
             $pendingChecks = $pendingQuery->count();
         }
 
-        $globalThreshold = (int) Cache::get('almanahel.low_stock_threshold', config('almanahel.low_stock_threshold', 5));
+        $globalThreshold = (int) AppSetting::get('almanahel.low_stock_threshold', config('almanahel.low_stock_threshold', 5));
         $lowStockCount = Inventory::query()
             ->join('books', 'inventories.book_id', '=', 'books.id')
             ->when($alertBranches !== null, fn ($q) => $q->whereIn('inventories.branch_id', $alertBranches ?: [0]))
@@ -134,7 +135,7 @@ class ReportController extends Controller
     public function notifications(Request $request)
     {
         $user = $request->user();
-        $globalThreshold = (int) Cache::get('almanahel.low_stock_threshold', config('almanahel.low_stock_threshold', 5));
+        $globalThreshold = (int) AppSetting::get('almanahel.low_stock_threshold', config('almanahel.low_stock_threshold', 5));
         $alertBranches = \App\Support\Authorization\BranchAccess::alertBranchIds($user);
 
         $lowStockQuery = Inventory::query()
@@ -318,22 +319,7 @@ class ReportController extends Controller
 
     public function settings()
     {
-        return response()->json([
-            'low_stock_threshold' => (int) Cache::get(
-                'almanahel.low_stock_threshold',
-                config('almanahel.low_stock_threshold', 5)
-            ),
-            'toman_to_dinar_rate' => (float) Cache::get(
-                'almanahel.toman_to_dinar_rate',
-                config('almanahel.toman_to_dinar_rate', 50)
-            ),
-            'consignment_commission_rate' => (float) Cache::get(
-                'almanahel.consignment_commission_rate',
-                config('almanahel.consignment_commission_rate', 0.1)
-            ),
-            'rate_notes' => Cache::get('almanahel.rate_notes', ''),
-            'rate_updated_at' => Cache::get('almanahel.rate_updated_at'),
-        ]);
+        return response()->json($this->settingsPayload());
     }
 
     public function updateSettings(Request $request)
@@ -342,26 +328,33 @@ class ReportController extends Controller
 
         $validated = $request->validate([
             'low_stock_threshold' => 'sometimes|integer|min:1|max:100',
-            'toman_to_dinar_rate' => 'sometimes|numeric|min:0.0001|max:1000000',
+            'toman_per_1000_dinar' => 'sometimes|numeric|min:1|max:10000000',
+            // Legacy alias — same meaning as toman_per_1000_dinar.
+            'toman_to_dinar_rate' => 'sometimes|numeric|min:1|max:10000000',
             'consignment_commission_rate' => 'sometimes|numeric|min:0|max:0.5',
             'rate_notes' => 'sometimes|nullable|string|max:500',
         ]);
 
         if (array_key_exists('low_stock_threshold', $validated)) {
-            Cache::forever('almanahel.low_stock_threshold', $validated['low_stock_threshold']);
+            AppSetting::put('almanahel.low_stock_threshold', (int) $validated['low_stock_threshold']);
         }
 
-        if (array_key_exists('toman_to_dinar_rate', $validated)) {
-            Cache::forever('almanahel.toman_to_dinar_rate', $validated['toman_to_dinar_rate']);
-            Cache::forever('almanahel.rate_updated_at', now()->toIso8601String());
+        $rateInput = $validated['toman_per_1000_dinar']
+            ?? $validated['toman_to_dinar_rate']
+            ?? null;
+        if ($rateInput !== null) {
+            $this->storeTomanPer1000Dinar((float) $rateInput);
         }
 
         if (array_key_exists('consignment_commission_rate', $validated)) {
-            Cache::forever('almanahel.consignment_commission_rate', $validated['consignment_commission_rate']);
+            AppSetting::put(
+                'almanahel.consignment_commission_rate',
+                (float) $validated['consignment_commission_rate']
+            );
         }
 
         if (array_key_exists('rate_notes', $validated)) {
-            Cache::forever('almanahel.rate_notes', $validated['rate_notes'] ?? '');
+            AppSetting::put('almanahel.rate_notes', $validated['rate_notes'] ?? '');
         }
 
         ActivityLogger::record(
@@ -372,19 +365,62 @@ class ReportController extends Controller
             $validated,
         );
 
-        return response()->json([
-            'low_stock_threshold' => (int) Cache::get(
+        return response()->json(array_merge($this->settingsPayload(), [
+            'message' => 'تنظیمات ذخیره شد',
+        ]));
+    }
+
+    private function settingsPayload(): array
+    {
+        $rate = $this->resolveTomanPer1000Dinar();
+
+        return [
+            'low_stock_threshold' => (int) AppSetting::get(
                 'almanahel.low_stock_threshold',
                 config('almanahel.low_stock_threshold', 5)
             ),
-            'toman_to_dinar_rate' => (float) Cache::get(
-                'almanahel.toman_to_dinar_rate',
-                config('almanahel.toman_to_dinar_rate', 50)
+            'toman_per_1000_dinar' => $rate,
+            // Legacy alias for older clients — same value / meaning.
+            'toman_to_dinar_rate' => $rate,
+            'consignment_commission_rate' => (float) AppSetting::get(
+                'almanahel.consignment_commission_rate',
+                config('almanahel.consignment_commission_rate', 0.1)
             ),
-            'rate_notes' => Cache::get('almanahel.rate_notes', ''),
-            'rate_updated_at' => Cache::get('almanahel.rate_updated_at'),
-            'message' => 'تنظیمات ذخیره شد',
-        ]);
+            'rate_notes' => (string) (AppSetting::get('almanahel.rate_notes', '') ?? ''),
+            'rate_updated_at' => AppSetting::get('almanahel.rate_updated_at'),
+        ];
+    }
+
+    /**
+     * Market quote: how many toman equal 1000 IQD.
+     * Ignores legacy "dinar-per-toman" multipliers (typically tiny, e.g. 50).
+     */
+    private function resolveTomanPer1000Dinar(): float
+    {
+        $default = (float) config('almanahel.toman_per_1000_dinar', 120000);
+
+        $stored = AppSetting::get('almanahel.toman_per_1000_dinar');
+        if ($stored !== null && is_numeric($stored) && (float) $stored >= 1000) {
+            return (float) $stored;
+        }
+
+        $legacy = AppSetting::get('almanahel.toman_to_dinar_rate');
+        if ($legacy !== null && is_numeric($legacy) && (float) $legacy >= 1000) {
+            $value = (float) $legacy;
+            AppSetting::put('almanahel.toman_per_1000_dinar', $value);
+
+            return $value;
+        }
+
+        return $default;
+    }
+
+    private function storeTomanPer1000Dinar(float $rate): void
+    {
+        AppSetting::put('almanahel.toman_per_1000_dinar', $rate);
+        // Keep legacy key in sync so old cache/readers stay coherent.
+        AppSetting::put('almanahel.toman_to_dinar_rate', $rate);
+        AppSetting::put('almanahel.rate_updated_at', now()->toIso8601String());
     }
 
     private function transferNotifications($user): array

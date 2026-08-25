@@ -478,6 +478,9 @@
       "costPriceToman": "قیمت خرید / بهای تمام‌شده (تومان)",
       "costPriceDinar": "قیمت خرید (دینار عراقی)",
       "costPriceHint": "خالی = همان قیمت فروش",
+      "costDinarAutoHint": "محاسبه‌شده از نرخ تبدیل — قابل ویرایش دستی",
+      "costDinarManualHint": "ویرایش دستی — برای هم‌تراز کردن با تومان، بازمحاسبه را بزنید",
+      "recalculateDinar": "بازمحاسبه",
       "iraqExclusive": "محصول انحصاری شعب عراق",
       "allBranches": "نمایش در تمامی شعب"
     },

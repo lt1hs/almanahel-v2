@@ -60,6 +60,7 @@
   
   --animate-ripple: ripple 600ms linear;
   --animate-shake: shake 0.5s cubic-bezier(.36,.07,.19,.97) both;
+  --animate-nav-progress: nav-progress 8s cubic-bezier(0.15, 0.6, 0.2, 1) forwards;
 }
 
 @keyframes ripple {
@@ -74,6 +75,15 @@
   20%, 80% { transform: translate3d(2px, 0, 0); }
   30%, 50%, 70% { transform: translate3d(-4px, 0, 0); }
   40%, 60% { transform: translate3d(4px, 0, 0); }
+}
+
+@keyframes nav-progress {
+  0% {
+    transform: translateX(40%) scaleX(0.2);
+  }
+  100% {
+    transform: translateX(0%) scaleX(1);
+  }
 }
 
 /* Custom Scrollbar */

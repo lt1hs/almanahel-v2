@@ -23,6 +23,7 @@ import {
     parsePriceDigits,
     resolveBookCoverUrl,
 } from "@/lib/bookFormUtils";
+import { parsePositiveRate, tomanToDinar } from "@/lib/currencyRate";
 
 const ScannerModal = dynamic(
     () => import("./ScannerModal").then((m) => m.ScannerModal),
@@ -71,11 +72,48 @@ export function BookForm({
     const [isScannerOpen, setIsScannerOpen] = React.useState(false);
     const [isUploadingCover, setIsUploadingCover] = React.useState(false);
     const [categories, setCategories] = useState<string[]>([...BOOK_CATEGORIES]);
+    const [tomanToDinarRate, setTomanToDinarRate] = useState(0);
+    const [costDinarManual, setCostDinarManual] = useState(false);
+    const costDinarManualRef = React.useRef(false);
     const dataRef = React.useRef(data);
 
     useEffect(() => {
         dataRef.current = data;
     }, [data]);
+
+    useEffect(() => {
+        costDinarManualRef.current = costDinarManual;
+    }, [costDinarManual]);
+
+    useEffect(() => {
+        let cancelled = false;
+        apiRequest("/settings")
+            .then((res) => {
+                if (cancelled) return;
+                const rate = parsePositiveRate(
+                    res?.toman_per_1000_dinar ?? res?.toman_to_dinar_rate
+                );
+                setTomanToDinarRate(rate);
+                if (rate <= 0 || costDinarManualRef.current || readOnlyCost) return;
+                const toman = parseFloat(parsePriceDigits(dataRef.current.costPriceToman || "")) || 0;
+                if (toman <= 0) return;
+                const currentDinar = parsePriceDigits(dataRef.current.costPriceDinar || "");
+                if (currentDinar) return;
+                const next = {
+                    ...dataRef.current,
+                    costPriceDinar: String(tomanToDinar(toman, rate)),
+                };
+                dataRef.current = next;
+                onChange(next);
+            })
+            .catch(() => {
+                /* keep 0 — no auto-convert without a rate */
+            });
+        return () => {
+            cancelled = true;
+        };
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- fetch once on mount
+    }, []);
 
     useEffect(() => {
         let cancelled = false;
@@ -135,8 +173,43 @@ export function BookForm({
         onChange(next);
     };
 
+    const applyAutoCostDinar = (tomanDigits: string, rate: number) => {
+        const toman = parseFloat(parsePriceDigits(tomanDigits)) || 0;
+        if (toman <= 0 || rate <= 0) {
+            handleChange("costPriceDinar", "");
+            return;
+        }
+        handleChange("costPriceDinar", String(tomanToDinar(toman, rate)));
+    };
+
     const handlePriceChange = (field: string, raw: string) => {
-        handleChange(field, parsePriceDigits(raw));
+        const digits = parsePriceDigits(raw);
+
+        if (field === "costPriceDinar") {
+            setCostDinarManual(true);
+            handleChange(field, digits);
+            return;
+        }
+
+        if (field === "costPriceToman") {
+            const next = { ...dataRef.current, costPriceToman: digits };
+            if (!costDinarManualRef.current && !readOnlyCost && tomanToDinarRate > 0) {
+                const toman = parseFloat(digits) || 0;
+                next.costPriceDinar =
+                    toman > 0 ? String(tomanToDinar(toman, tomanToDinarRate)) : "";
+            }
+            dataRef.current = next;
+            onChange(next);
+            return;
+        }
+
+        handleChange(field, digits);
+    };
+
+    const recalculateCostDinar = () => {
+        if (readOnlyCost || tomanToDinarRate <= 0) return;
+        setCostDinarManual(false);
+        applyAutoCostDinar(dataRef.current.costPriceToman || "", tomanToDinarRate);
     };
 
     const handleBranchStockChange = (key: BranchStockKey, raw: string) => {
@@ -165,7 +238,7 @@ export function BookForm({
             const next = {
                 ...dataRef.current,
                 coverImage: res.path,
-                coverImagePreview: resolveBookCoverUrl(res.path) || preview,
+                coverImagePreview: res.url || resolveBookCoverUrl(res.path) || preview,
             };
             dataRef.current = next;
             onChange(next);
@@ -444,7 +517,20 @@ export function BookForm({
                         )}
                         {showCostDinar && (
                         <div className="space-y-3 p-5 bg-ink/[0.02] border border-ink/5 rounded-[10px]">
-                            <label className="text-[10px] font-black text-ink/50 uppercase tracking-widest px-1 block">{t("inventory.form.costPriceDinar")}</label>
+                            <div className="flex items-center justify-between gap-2 px-1">
+                                <label className="text-[10px] font-bold font-ibm-plex-arabic text-ink/50 tracking-wide block">
+                                    {t("inventory.form.costPriceDinar")}
+                                </label>
+                                {showCostToman && !readOnlyCost && tomanToDinarRate > 0 && (
+                                    <button
+                                        type="button"
+                                        onClick={recalculateCostDinar}
+                                        className="text-[10px] font-bold font-ibm-plex-arabic text-primary hover:underline"
+                                    >
+                                        {t("inventory.form.recalculateDinar")}
+                                    </button>
+                                )}
+                            </div>
                             <Input
                                 type="text"
                                 inputMode="numeric"
@@ -454,6 +540,13 @@ export function BookForm({
                                 readOnly={readOnlyCost}
                                 className={cn(priceClass, "text-lg font-black text-ink", readOnlyCost && "bg-ink/[0.03] cursor-default")}
                             />
+                            {showCostToman && !readOnlyCost && tomanToDinarRate > 0 && (
+                                <p className="px-1 text-[10px] font-medium font-ibm-plex-arabic leading-5 text-ink/35">
+                                    {costDinarManual
+                                        ? t("inventory.form.costDinarManualHint")
+                                        : t("inventory.form.costDinarAutoHint")}
+                                </p>
+                            )}
                         </div>
                         )}
                         {showPriceQom && (

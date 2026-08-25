@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useMemo, useState } from "react";
+import React, { useMemo, useState, useCallback } from "react";
 import { motion, AnimatePresence, Variants } from "framer-motion";
 import { ChevronRight, ChevronLeft, Save, ArrowRight, Book as BookIcon, User, Hash, DollarSign, Package, MapPin, CheckCircle2, ShoppingBag } from "lucide-react";
 import { Button } from "@/components/ui/Button";
@@ -22,6 +22,7 @@ import { buildPostBooksPayload } from "@/lib/bookCatalogRequests";
 import { parsePriceDigits, resolveBranchId, stockKeyForBranch, type BranchStockKey } from "@/lib/bookFormUtils";
 import { useAuth } from "@/contexts/AuthContext";
 import { useInvalidateNotifications } from "@/hooks/useNotificationInbox";
+import { usePageReady } from "@/components/NavigationProgress";
 
 const containerVariants: Variants = {
     hidden: { opacity: 0 },
@@ -55,6 +56,8 @@ export default function NewInventoryPage() {
         default_iraq_branch_id: number | null;
     } | null>(null);
     const [branches, setBranches] = useState<any[]>([]);
+    const [isLoading, setIsLoading] = useState(true);
+    usePageReady(!isLoading);
     const [formData, setFormData] = useState({
         supplier: null as SupplierAccountSelection | null,
         book: defaultBookFormState(),
@@ -78,6 +81,9 @@ export default function NewInventoryPage() {
             .catch(() => {
                 setIntakeInfo(null);
                 setBranches([]);
+            })
+            .finally(() => {
+                setIsLoading(false);
             });
     }, []);
 
@@ -92,12 +98,79 @@ export default function NewInventoryPage() {
     }, [branches, user?.branch, user?.branch_id]);
     const posKey = stockKeyForBranch(posBranch);
 
+    const iraqBranchId = useMemo(
+        () => intakeInfo?.default_iraq_branch_id ?? resolveBranchId(branches, "najaf"),
+        [branches, intakeInfo?.default_iraq_branch_id]
+    );
+
     const visibleStockKeys = useMemo((): BranchStockKey[] => {
         if (isHubIntake) {
-            return formData.book.iraqOnly ? ["warehouse", "qom", "najaf"] : ["warehouse", "qom"];
+            const keys: BranchStockKey[] = ["warehouse", "qom"];
+            if (iraqBranchId || formData.book.iraqOnly) {
+                keys.push("najaf");
+            }
+            return keys;
         }
         return posKey ? [posKey] : ["qom"];
-    }, [formData.book.iraqOnly, isHubIntake, posKey]);
+    }, [formData.book.iraqOnly, iraqBranchId, isHubIntake, posKey]);
+
+    const resolveIntakeBranchId = useCallback((): number | null => {
+        if (!isHubIntake) {
+            return user?.branch_id ? Number(user.branch_id) : null;
+        }
+        for (const key of visibleStockKeys) {
+            const qty = parseInt(parsePriceDigits(formData.book.branchStock?.[key]), 10) || 0;
+            if (qty > 0) {
+                const id = resolveBranchId(branches, key);
+                if (id) return id;
+            }
+        }
+        return intakeInfo?.default_intake_branch_id ?? iraqBranchId ?? resolveBranchId(branches, "qom");
+    }, [
+        branches,
+        formData.book.branchStock,
+        intakeInfo?.default_intake_branch_id,
+        iraqBranchId,
+        isHubIntake,
+        user?.branch_id,
+        visibleStockKeys,
+    ]);
+
+    /**
+     * Supplier list branch must stay stable on hub intake.
+     * resolveIntakeBranchId() follows qty targets (warehouse/qom/najaf) and was
+     * clearing the selected supplier mid-wizard via the mismatch effect below.
+     */
+    const supplierBranchId = useMemo(() => {
+        if (!isHubIntake) {
+            return user?.branch_id ?? user?.branch?.id ?? null;
+        }
+        return (
+            intakeInfo?.default_intake_branch_id
+            ?? resolveBranchId(branches, "warehouse")
+            ?? resolveBranchId(branches, "qom")
+            ?? null
+        );
+    }, [
+        branches,
+        intakeInfo?.default_intake_branch_id,
+        isHubIntake,
+        user?.branch?.id,
+        user?.branch_id,
+    ]);
+
+    React.useEffect(() => {
+        // POS only: if the user's operational branch changes, drop a mismatched account.
+        // Hub keeps the selection — intakeSupplierPayload already handles cross-branch via supplier_id.
+        if (isHubIntake) return;
+        if (
+            formData.supplier &&
+            supplierBranchId &&
+            Number(formData.supplier.branchId) !== Number(supplierBranchId)
+        ) {
+            setFormData((prev) => ({ ...prev, supplier: null }));
+        }
+    }, [formData.supplier, isHubIntake, supplierBranchId]);
 
     const stockFieldLabels = useMemo(() => {
         if (isHubIntake || !posBranch?.name) return undefined;
@@ -141,6 +214,20 @@ export default function NewInventoryPage() {
             notifyToast.error("toast.titleQtyRequired");
             return;
         }
+        if (currentStep === 1) {
+            const selling = priceScope === "iraq"
+                ? parseFloat(parsePriceDigits(formData.book.priceDinar)) || 0
+                : priceScope === "mashhad"
+                    ? parseFloat(parsePriceDigits(formData.book.priceTomanMashhad || formData.book.priceTomanQom)) || 0
+                    : parseFloat(parsePriceDigits(formData.book.priceTomanQom)) || 0;
+            const cost = priceScope === "iraq"
+                ? parseFloat(parsePriceDigits(formData.book.costPriceDinar)) || 0
+                : parseFloat(parsePriceDigits(formData.book.costPriceToman)) || 0;
+            if ((cost > 0 ? cost : selling) <= 0) {
+                notifyToast.error("toast.priceRequired");
+                return;
+            }
+        }
         setCurrentStep((prev) => Math.min(prev + 1, steps.length - 1));
     };
 
@@ -154,28 +241,31 @@ export default function NewInventoryPage() {
             return;
         }
 
+        if (formData.book.type === "consignment" && !formData.supplier) {
+            notifyToast.error("toast.selectSupplierFirst");
+            setCurrentStep(0);
+            return;
+        }
+
         await notify.promise(
             (async () => {
-                const postBranchId = !isHubIntake
-                    ? Number(user?.branch_id)
-                    : (() => {
-                        for (const key of visibleStockKeys) {
-                            const qty = parseInt(parsePriceDigits(formData.book.branchStock?.[key]), 10) || 0;
-                            if (qty > 0) {
-                                const id = resolveBranchId(branches, key);
-                                if (id) return id;
-                            }
-                        }
-                        return intakeInfo?.default_intake_branch_id ?? null;
-                    })();
+                const postBranchId = resolveIntakeBranchId();
 
+                const bookPayload = bookPayloadFromForm(formData.book);
                 const postBody = buildPostBooksPayload(
                     { role: user?.role, branch_id: user?.branch_id ?? user?.branch?.id },
-                    bookPayloadFromForm(formData.book),
+                    bookPayload,
                     postBranchId
                 );
                 if ("error" in postBody) {
                     throw new Error("branch_required");
+                }
+
+                if (
+                    formData.supplier &&
+                    Number(formData.supplier.branchId) === Number(postBranchId)
+                ) {
+                    postBody.payload.supplier_account_id = formData.supplier.accountId;
                 }
 
                 const created = await apiRequest("/books", {
@@ -193,6 +283,10 @@ export default function NewInventoryPage() {
                     const cost = priceScope === "iraq"
                         ? parseFloat(parsePriceDigits(formData.book.costPriceDinar)) || 0
                         : parseFloat(parsePriceDigits(formData.book.costPriceToman)) || 0;
+                    const resolvedCost = cost > 0 ? cost : selling;
+                    if (resolvedCost <= 0) {
+                        throw new Error("price_required");
+                    }
                     await addStockIntake({
                         bookId,
                         branchId: Number(user.branch_id),
@@ -200,8 +294,8 @@ export default function NewInventoryPage() {
                         type: formData.book.type === "consignment" ? "consignment" : "owned",
                         selection: formData.supplier,
                         currency: priceScope === "iraq" ? "dinar" : "toman",
-                        costPrice: cost,
-                        sellingPrice: selling || cost,
+                        costPrice: resolvedCost,
+                        sellingPrice: selling || resolvedCost,
                         notes: formData.book.notes || null,
                         receivedAt: formData.book.settlementDate || null,
                     });
@@ -323,8 +417,10 @@ export default function NewInventoryPage() {
                                                     <p className="text-sm text-ink/50 font-medium">{t("inventory.wizard.supplierDesc")}</p>
                                                 </div>
                                                 <SupplierSelect
-                                                    branchId={user?.branch_id ?? intakeInfo?.default_intake_branch_id ?? branches[0]?.id ?? null}
-                                                    onSelect={(selection) => setFormData({ ...formData, supplier: selection })}
+                                                    branchId={supplierBranchId}
+                                                    onSelect={(selection) =>
+                                                        setFormData((prev) => ({ ...prev, supplier: selection }))
+                                                    }
                                                     selectedAccountId={formData.supplier?.accountId}
                                                 />
                                             </div>
@@ -338,7 +434,9 @@ export default function NewInventoryPage() {
                                                 </div>
                                                 <BookForm
                                                     data={formData.book}
-                                                    onChange={(book) => setFormData({ ...formData, book })}
+                                                    onChange={(book) =>
+                                                        setFormData((prev) => ({ ...prev, book }))
+                                                    }
                                                     stockFields="intake"
                                                     visibleStockKeys={visibleStockKeys}
                                                     stockFieldLabels={stockFieldLabels}

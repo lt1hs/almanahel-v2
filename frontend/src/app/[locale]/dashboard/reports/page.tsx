@@ -1,5 +1,7 @@
 "use client";
 
+import { usePageReady } from "@/components/NavigationProgress";
+
 import React, { useState, useEffect, useCallback } from "react";
 import { motion } from "framer-motion";
 import {
@@ -38,6 +40,7 @@ function ReportsPageContent() {
     const [lowStock, setLowStock] = useState<any[]>([]);
     const [distribution, setDistribution] = useState<any>(null);
     const [isLoading, setIsLoading] = useState(true);
+    usePageReady(!isLoading);
 
     const fetchReports = useCallback(async () => {
         setIsLoading(true);

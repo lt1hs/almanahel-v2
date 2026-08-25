@@ -185,7 +185,7 @@ export function SettlementWizard({
 
     return (
         <div className="space-y-4">
-            <Card className="border border-white/70 bg-white/70 backdrop-blur-xl rounded-2xl overflow-visible shadow-sm">
+            <Card className="relative z-10 border border-white/70 bg-white/70 backdrop-blur-xl rounded-2xl overflow-visible shadow-sm">
                 <CardContent className="p-5 space-y-4">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                         <div className="flex items-center gap-2 text-ink/45">

@@ -1,5 +1,6 @@
 ﻿"use client";
 
+import { usePageReady } from "@/components/NavigationProgress";
 import React, { useState, useEffect, useCallback } from "react";
 import { apiRequest } from "@/lib/api";
 import { motion, Variants, AnimatePresence } from "framer-motion";
@@ -76,6 +77,7 @@ export default function ReturnsPage() {
     const [activeTab, setActiveTab] = useState<ReturnType>("customer");
     const [returns, setReturns] = useState<any[]>([]);
     const [isLoading, setIsLoading] = useState(true);
+    usePageReady(!isLoading);
     const [showForm, setShowForm] = useState(false);
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [error, setError] = useState<string | null>(null);

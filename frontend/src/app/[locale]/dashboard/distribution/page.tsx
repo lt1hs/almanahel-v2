@@ -1,5 +1,7 @@
 "use client";
 
+import { usePageReady } from "@/components/NavigationProgress";
+
 import React, { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Truck, MapPin, RefreshCw, Plus, Warehouse, AlertTriangle, Package } from "lucide-react";
@@ -72,6 +74,7 @@ export default function DistributionPage() {
     const [alerts, setAlerts] = useState<AlertItem[]>([]);
     const [transferNotifs, setTransferNotifs] = useState<TransferNotif[]>([]);
     const [isLoading, setIsLoading] = useState(true);
+    usePageReady(!isLoading);
     const [isRefreshing, setIsRefreshing] = useState(false);
     const [prefillFrom, setPrefillFrom] = useState("");
     const [prefillTo, setPrefillTo] = useState("");
@@ -205,7 +208,10 @@ export default function DistributionPage() {
 
     useEffect(() => {
         if (typeof window === "undefined") return;
-        if (!new URLSearchParams(window.location.search).get("book")) return;
+        const params = new URLSearchParams(window.location.search);
+        const from = params.get("from") || params.get("branch");
+        if (from) setPrefillFrom(from);
+        if (!params.get("book")) return;
         const timer = window.setTimeout(() => scrollToWizard(), 300);
         return () => window.clearTimeout(timer);
     }, []);
