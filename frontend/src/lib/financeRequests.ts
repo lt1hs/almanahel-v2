@@ -8,6 +8,32 @@ export type OperationalFinanceRole =
     | "branch_manager"
     | "accountant";
 
+/** Iraq P&L is a HQ report. Qom/Mashhad (and other) branch managers must not see it. */
+export function canSeeIraqLedgerTab(role?: string | null): boolean {
+    return role === "admin" || role === "super_admin";
+}
+
+export function buildFinanceOverviewUrls(options: {
+    role?: string | null;
+    currency: "toman" | "dinar";
+    branchId?: number | null;
+    today?: string;
+    monthStart?: string;
+}): { topBooks: string; pnl: string; treasury: string } {
+    const today = options.today ?? todayIsoDate();
+    const monthStart = options.monthStart ?? `${today.slice(0, 7)}-01`;
+    const scoped =
+        options.role === "branch_manager" && options.branchId
+            ? `&branch_id=${options.branchId}`
+            : "";
+
+    return {
+        topBooks: `/reports/top-books?currency=${options.currency}${scoped}`,
+        pnl: `/finance/pnl?currency=${options.currency}&date_from=${monthStart}&date_to=${today}${scoped}`,
+        treasury: `/finance/treasury?date_from=1970-01-01&date_to=${today}${scoped}`,
+    };
+}
+
 export function todayIsoDate(reference = new Date()): string {
     return reference.toISOString().slice(0, 10);
 }

@@ -42,7 +42,10 @@ class CustomerController extends Controller
             });
         }
 
-        return response()->json($query->latest()->paginate(30));
+        $paginator = $query->latest('id')->paginate(30);
+        $paginator->getCollection()->loadCount('invoices');
+
+        return response()->json($paginator);
     }
 
     public function store(Request $request)

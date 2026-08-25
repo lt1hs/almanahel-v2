@@ -24,6 +24,7 @@ export const ROUTE_ROLES: Record<string, readonly UserRole[] | undefined> = {
     "/dashboard/invoices": BRANCH_OPS,
     "/dashboard/checks": BRANCH_OPS,
     "/dashboard/credits": BRANCH_OPS,
+    "/dashboard/customers": BRANCH_OPS,
     "/dashboard/finance/branch-profit": HQ,
     "/dashboard/finance": FINANCE_VIEW,
     "/dashboard/expenses": BRANCH_OPS,

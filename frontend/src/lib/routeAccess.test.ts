@@ -8,6 +8,8 @@ describe("canAccessRoute", () => {
         assert.equal(canAccessRoute("warehouse_staff", "/fa/dashboard/sales/"), false);
         assert.equal(canAccessRoute("warehouse_staff", "/dashboard/expenses"), false);
         assert.equal(canAccessRoute("warehouse_staff", "/dashboard/admin"), false);
+        assert.equal(canAccessRoute("warehouse_staff", "/dashboard/customers"), false);
+        assert.equal(canAccessRoute("warehouse_staff", "/dashboard/customers/detail"), false);
     });
 
     it("allows warehouse_staff on warehouse and inventory", () => {
@@ -24,6 +26,12 @@ describe("canAccessRoute", () => {
         assert.equal(canAccessRoute("accountant", "/dashboard/reports"), true);
         assert.equal(canAccessRoute("accountant", "/dashboard/finance/branch-profit"), false);
         assert.equal(canAccessRoute("accountant", "/dashboard/admin"), false);
+    });
+
+    it("allows branch ops on customers directory and blocks accountant", () => {
+        assert.equal(canAccessRoute("accountant", "/dashboard/customers"), false);
+        assert.equal(canAccessRoute("branch_manager", "/dashboard/customers"), true);
+        assert.equal(canAccessRoute("branch_manager", "/fa/dashboard/customers/detail"), true);
     });
 
     it("normalizes locale prefixes", () => {

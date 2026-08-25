@@ -17,6 +17,7 @@ import { apiRequest } from "@/lib/api";
 import { useAuth } from "@/contexts/AuthContext";
 import { supplierAccountsUrl } from "@/lib/supplierAccountSelection";
 import {
+    buildFinanceOverviewUrls,
     buildSettlementHistoryScopeKey,
     buildSettlementHistoryUrl,
     buildUnsettledDebtUrl,
@@ -124,11 +125,15 @@ function FinancePageContent() {
         if (soft) setIsRefreshing(true);
         else setIsLoading(true);
         try {
-            const [balanceData, topBooks, pnl, treasury] = await Promise.all([
-                apiRequest("/reports/all-branches"),
-                apiRequest(`/reports/top-books?currency=${currency}`),
-                apiRequest(`/finance/pnl?currency=${currency}&date_from=${new Date().getFullYear()}-${String(new Date().getMonth()+1).padStart(2,'0')}-01&date_to=${new Date().toISOString().slice(0,10)}`),
-                apiRequest(`/finance/treasury?date_from=1970-01-01&date_to=${new Date().toISOString().slice(0,10)}`),
+            const urls = buildFinanceOverviewUrls({
+                role: user?.role,
+                currency,
+                branchId: userBranchId,
+            });
+            const [topBooks, pnl, treasury] = await Promise.all([
+                apiRequest(urls.topBooks),
+                apiRequest(urls.pnl),
+                apiRequest(urls.treasury),
             ]);
 
             const cashRows = Array.isArray(treasury?.accounts) ? treasury.accounts : [];

@@ -90,9 +90,7 @@ export function Cart({
 
     React.useEffect(() => {
         setLocalError(null);
-        if (paymentMethod !== "credit") {
-            setCustomerHits([]);
-        }
+        setCustomerHits([]);
     }, [paymentMethod]);
 
     React.useEffect(() => {
@@ -121,9 +119,6 @@ export function Cart({
     const total = roundMoney(lineNets.reduce((acc, n) => acc + n, 0));
 
     React.useEffect(() => {
-        if (paymentMethod !== "credit" && paymentMethod !== "check") {
-            return;
-        }
         const q = customerQuery.trim();
         if (q.length < 2) {
             setCustomerHits([]);
@@ -143,7 +138,7 @@ export function Cart({
             }
         }, 300);
         return () => window.clearTimeout(handle);
-    }, [customerQuery, paymentMethod, branchId]);
+    }, [customerQuery, branchId]);
 
     const selectCustomer = (customer: { id: number; name: string; phone?: string | null }) => {
         onPaymentDetailsChange?.({
@@ -327,65 +322,61 @@ export function Cart({
                             {t("sales.buyerInfo")}
                         </p>
                         <div className="grid grid-cols-2 gap-1.5">
-                            {(paymentMethod === "credit" || paymentMethod === "check") && (
-                                <div className="col-span-2 space-y-1.5">
-                                    {paymentDetails.customer_id ? (
-                                        <div className="flex items-center justify-between gap-2 rounded-lg border border-primary/20 bg-primary/5 px-2.5 py-1.5">
-                                            <button
-                                                type="button"
-                                                className="text-[10px] text-ink/40 hover:text-rose-500"
-                                                onClick={() => onPaymentDetailsChange?.({
-                                                    ...paymentDetails,
-                                                    customer_id: null,
-                                                })}
-                                            >
-                                                {t("common.clear")}
-                                            </button>
-                                            <p className="text-[11px] font-black font-vazirmatn text-ink truncate">
-                                                {t("sales.selectedCustomer")}: {paymentDetails.customer_name}
-                                                {paymentDetails.customer_phone ? ` · ${paymentDetails.customer_phone}` : ""}
-                                            </p>
-                                        </div>
-                                    ) : (
-                                        <>
-                                            <input
-                                                type="search"
-                                                placeholder={t("sales.searchCustomer")}
-                                                value={customerQuery}
-                                                onChange={(e) => setCustomerQuery(e.target.value)}
-                                                className={fieldClass}
-                                            />
-                                            {searchingCustomers && (
-                                                <p className="text-[10px] text-ink/35">{t("common.pleaseWait")}</p>
-                                            )}
-                                            {customerHits.length > 0 && (
-                                                <div className="max-h-28 overflow-y-auto rounded-lg border border-ink/10 bg-white divide-y divide-ink/5">
-                                                    {customerHits.map((hit) => (
-                                                        <button
-                                                            key={hit.id}
-                                                            type="button"
-                                                            className="w-full text-end px-2.5 py-1.5 text-[11px] font-vazirmatn hover:bg-primary/5"
-                                                            onClick={() => selectCustomer(hit)}
-                                                        >
-                                                            {hit.name}{hit.phone ? ` · ${hit.phone}` : ""}
-                                                        </button>
-                                                    ))}
-                                                </div>
-                                            )}
-                                            {paymentMethod === "credit" && (
-                                                <button
-                                                    type="button"
-                                                    disabled={creatingCustomer}
-                                                    onClick={createCustomer}
-                                                    className="w-full h-7 rounded-lg border border-ink/10 text-[10px] font-black text-ink/60 hover:bg-white"
-                                                >
-                                                    {t("sales.createCustomer")}
-                                                </button>
-                                            )}
-                                        </>
-                                    )}
-                                </div>
-                            )}
+                            <div className="col-span-2 space-y-1.5">
+                                {paymentDetails.customer_id ? (
+                                    <div className="flex items-center justify-between gap-2 rounded-lg border border-primary/20 bg-primary/5 px-2.5 py-1.5">
+                                        <button
+                                            type="button"
+                                            className="text-[10px] text-ink/40 hover:text-rose-500"
+                                            onClick={() => onPaymentDetailsChange?.({
+                                                ...paymentDetails,
+                                                customer_id: null,
+                                            })}
+                                        >
+                                            {t("common.clear")}
+                                        </button>
+                                        <p className="text-[11px] font-black font-vazirmatn text-ink truncate">
+                                            {t("sales.selectedCustomer")}: {paymentDetails.customer_name}
+                                            {paymentDetails.customer_phone ? ` · ${paymentDetails.customer_phone}` : ""}
+                                        </p>
+                                    </div>
+                                ) : (
+                                    <>
+                                        <input
+                                            type="search"
+                                            placeholder={t("sales.searchCustomer")}
+                                            value={customerQuery}
+                                            onChange={(e) => setCustomerQuery(e.target.value)}
+                                            className={fieldClass}
+                                        />
+                                        {searchingCustomers && (
+                                            <p className="text-[10px] text-ink/35">{t("common.pleaseWait")}</p>
+                                        )}
+                                        {customerHits.length > 0 && (
+                                            <div className="max-h-28 overflow-y-auto rounded-lg border border-ink/10 bg-white divide-y divide-ink/5">
+                                                {customerHits.map((hit) => (
+                                                    <button
+                                                        key={hit.id}
+                                                        type="button"
+                                                        className="w-full text-end px-2.5 py-1.5 text-[11px] font-vazirmatn hover:bg-primary/5"
+                                                        onClick={() => selectCustomer(hit)}
+                                                    >
+                                                        {hit.name}{hit.phone ? ` · ${hit.phone}` : ""}
+                                                    </button>
+                                                ))}
+                                            </div>
+                                        )}
+                                        <button
+                                            type="button"
+                                            disabled={creatingCustomer}
+                                            onClick={createCustomer}
+                                            className="w-full h-7 rounded-lg border border-ink/10 text-[10px] font-black text-ink/60 hover:bg-white"
+                                        >
+                                            {t("sales.createCustomer")}
+                                        </button>
+                                    </>
+                                )}
+                            </div>
                             <input
                                 type="text"
                                 placeholder={

@@ -5,7 +5,7 @@ import { useRouter, usePathname } from "@/i18n/routing";
 import {
     Bell, User, Search, Globe, ChevronDown, CheckCircle2, AlertTriangle, Info,
     LogOut, CreditCard, RefreshCw, Store, Settings, X, Languages, Trash2,
-    LayoutDashboard, Library, Wallet, BarChart3, Truck, Warehouse, Users,
+    LayoutDashboard, Library, Wallet, BarChart3, Truck, Warehouse, Users, ContactRound,
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { useTranslation } from "@/hooks/useTranslation";
@@ -59,6 +59,7 @@ const QUICK_LINKS: QuickLink[] = [
     { titleKey: "nav.distribution", href: "/dashboard/distribution", icon: Truck, keywords: ["distribution", "transfer", "توزیع", "انتقال"] },
     { titleKey: "nav.sales", href: "/dashboard/sales", icon: Wallet, keywords: ["sales", "invoice", "فروش", "صندوق", "فاکتور"] },
     { titleKey: "nav.finance", href: "/dashboard/finance", icon: BarChart3, keywords: ["finance", "profit", "مالی", "سود"] },
+    { titleKey: "nav.customers", href: "/dashboard/customers", icon: ContactRound, keywords: ["customer", "مشتری", "عميل"] },
     { titleKey: "nav.suppliers", href: "/dashboard/suppliers", icon: Users, keywords: ["supplier", "تأمین", "تامین"] },
     { titleKey: "nav.checks", href: "/dashboard/checks", icon: CreditCard, keywords: ["check", "چک"] },
     { titleKey: "nav.admin", href: "/dashboard/admin", icon: Settings, keywords: ["admin", "settings", "تنظیمات", "مدیریت"] },
@@ -73,6 +74,7 @@ const PAGE_TITLE_KEYS: Record<string, string> = {
     "/dashboard/consignment": "nav.consignment",
     "/dashboard/gifts": "nav.gifts",
     "/dashboard/returns": "nav.returns",
+    "/dashboard/customers": "nav.customers",
     "/dashboard/suppliers": "nav.suppliers",
     "/dashboard/sales": "nav.sales",
     "/dashboard/checks": "nav.checks",

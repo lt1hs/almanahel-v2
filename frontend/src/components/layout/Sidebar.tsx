@@ -22,6 +22,7 @@ import {
     CreditCard,
     HandCoins,
     Users,
+    ContactRound,
     Activity,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -79,6 +80,7 @@ const NAV_GROUPS: NavGroup[] = [
     {
         titleKey: "nav.groups.system",
         items: [
+            { titleKey: "nav.customers", href: "/dashboard/customers", icon: ContactRound, color: "text-sky-600" },
             { titleKey: "nav.suppliers", href: "/dashboard/suppliers", icon: Users, color: "text-amber-600" },
             { titleKey: "nav.admin", href: "/dashboard/admin", icon: Settings, color: "text-slate-500" },
             { titleKey: "nav.activityLog", href: "/dashboard/admin/activity", icon: Activity, color: "text-teal-600" },

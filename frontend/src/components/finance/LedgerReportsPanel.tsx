@@ -12,6 +12,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { useTranslation } from "@/hooks/useTranslation";
 import { cn } from "@/lib/utils";
 import { downloadXlsx, printWorkbook, type LedgerWorkbook, type WorkbookTable } from "@/components/finance/ledgerWorkbook";
+import { canSeeIraqLedgerTab } from "@/lib/financeRequests";
 
 type Currency = "toman" | "dinar";
 type Tab = "pnl" | "treasury" | "trial" | "position" | "ar" | "ap" | "checks" | "iraq" | "inventory";
@@ -106,6 +107,7 @@ export function LedgerReportsPanel() {
     const { t, formatNumber, preferredCurrency } = useTranslation();
     const { user } = useAuth();
     const aggregate = ["admin", "super_admin", "accountant"].includes(String(user?.role));
+    const showIraq = canSeeIraqLedgerTab(user?.role);
     const [currency, setCurrency] = useState<Currency>(preferredCurrency);
     const [tab, setTab] = useState<Tab>("pnl");
     const [from, setFrom] = useState(() => isoDate(new Date(new Date().getFullYear(), new Date().getMonth(), 1)));
@@ -134,6 +136,9 @@ export function LedgerReportsPanel() {
             setError(t("finance.ledger.invalidPeriod"));
             return;
         }
+        if (tab === "iraq" && !showIraq) {
+            return;
+        }
         const endpoints: Record<Tab, string> = {
             pnl: `/finance/pnl?${query}`, treasury: `/finance/treasury?${query}`,
             trial: `/finance/trial-balance?${query}`, position: `/finance/financial-position?${query}`,
@@ -152,13 +157,19 @@ export function LedgerReportsPanel() {
         } finally {
             setLoading(false);
         }
-    }, [from, to, query, tab, currency, aggregate, branchId, t]);
+    }, [from, to, query, tab, currency, aggregate, branchId, showIraq, t]);
+
+    useEffect(() => {
+        if (tab === "iraq" && !showIraq) setTab("pnl");
+    }, [tab, showIraq]);
 
     useEffect(() => { load(); }, [load]);
 
     const symbol = currency === "dinar" ? t("common.currency.dinarSymbol") : t("common.currency.tomanSymbol");
     const branchName = branchId ? branches.find((branch) => String(branch.id) === branchId)?.name || `#${branchId}` : t("finance.ledger.allBranches");
-    const tabs = (Object.keys(TAB_ICONS) as Tab[]).map((id) => ({ id, icon: TAB_ICONS[id], label: t(`finance.ledger.${id}`), description: t(`finance.ledger.descriptions.${id}`) }));
+    const tabs = (Object.keys(TAB_ICONS) as Tab[])
+        .filter((id) => id !== "iraq" || showIraq)
+        .map((id) => ({ id, icon: TAB_ICONS[id], label: t(`finance.ledger.${id}`), description: t(`finance.ledger.descriptions.${id}`) }));
     const active = tabs.find((item) => item.id === tab) || tabs[0];
 
     const preset = (kind: "today" | "month" | "previous") => {
@@ -366,7 +377,7 @@ export function LedgerReportsPanel() {
             <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between"><div className="flex items-start gap-3"><div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-primary text-white shadow-lg shadow-primary/20"><active.icon className="h-5 w-5" /></div><div><CardTitle className="text-base font-black font-vazirmatn">{t("finance.ledger.title")}</CardTitle><p className="mt-1 max-w-2xl text-[10px] font-bold leading-5 text-ink/45">{active.description}</p></div></div><div className="flex flex-wrap gap-2"><button type="button" onClick={download} disabled={!report || loading} className="flex h-9 items-center gap-1.5 rounded-xl border border-emerald-200 bg-emerald-50 px-3 text-[10px] font-black text-emerald-700 disabled:opacity-40"><Download className="h-3.5 w-3.5" />{t("finance.ledger.exportExcel")}</button><button type="button" onClick={print} disabled={!report || loading} className="flex h-9 items-center gap-1.5 rounded-xl border border-ink/10 bg-white px-3 text-[10px] font-black text-ink/60 disabled:opacity-40"><Printer className="h-3.5 w-3.5" />{t("finance.ledger.printPdf")}</button><button type="button" onClick={load} disabled={loading} className="flex h-9 w-9 items-center justify-center rounded-xl border border-ink/10 bg-white text-ink/45 disabled:opacity-40"><RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} /></button></div></div>
             <div className={cn("grid gap-3 rounded-2xl border border-white bg-white/75 p-3 shadow-sm sm:grid-cols-2", aggregate ? "lg:grid-cols-4" : "lg:grid-cols-3")}><Filter label={t("finance.ledger.currency")}><select value={currency} onChange={(event) => setCurrency(event.target.value as Currency)}><option value="toman">{t("finance.branchProfit.currencyToman")}</option><option value="dinar">{t("finance.branchProfit.currencyDinar")}</option></select></Filter>{aggregate && <Filter label={t("finance.ledger.branch")}><select value={branchId} onChange={(event) => setBranchId(event.target.value)}><option value="">{t("finance.ledger.allBranches")}</option>{branches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</select></Filter>}<Filter label={t("finance.ledger.from")}><input type="date" value={from} onChange={(event) => setFrom(event.target.value)} /></Filter><Filter label={t("finance.ledger.to")}><input type="date" value={to} onChange={(event) => setTo(event.target.value)} /></Filter></div>
             <div className="flex flex-wrap items-center justify-between gap-2"><div className="flex flex-wrap items-center gap-1.5"><span className="flex items-center gap-1 text-[9px] font-bold text-ink/35"><CalendarRange className="h-3 w-3" />{t("finance.ledger.quickPeriod")}</span>{(["today", "month", "previous"] as const).map((item) => <button key={item} onClick={() => preset(item)} className="rounded-lg bg-ink/5 px-2.5 py-1 text-[9px] font-black text-ink/55 hover:bg-primary/10 hover:text-primary">{t(`finance.ledger.presets.${item}`)}</button>)}</div>{updated && <p className="text-[9px] font-bold text-ink/30">{t("finance.ledger.lastUpdated")}: {updated.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</p>}</div>
-            <div className="grid grid-cols-3 gap-1.5 sm:grid-cols-5 lg:grid-cols-9">{tabs.map((item) => <button key={item.id} onClick={() => setTab(item.id)} className={cn("flex min-h-16 flex-col items-center justify-center gap-1 rounded-xl border px-2 py-2 transition", tab === item.id ? "border-primary bg-primary text-white shadow-lg shadow-primary/15" : "border-white bg-white/70 text-ink/55 hover:text-primary")}><item.icon className="h-4 w-4" /><span className="text-[9px] font-black">{item.label}</span></button>)}</div>
+            <div className={cn("grid grid-cols-3 gap-1.5 sm:grid-cols-4", showIraq ? "lg:grid-cols-9" : "lg:grid-cols-8")}>{tabs.map((item) => <button key={item.id} onClick={() => setTab(item.id)} className={cn("flex min-h-16 flex-col items-center justify-center gap-1 rounded-xl border px-2 py-2 transition", tab === item.id ? "border-primary bg-primary text-white shadow-lg shadow-primary/15" : "border-white bg-white/70 text-ink/55 hover:text-primary")}><item.icon className="h-4 w-4" /><span className="text-[9px] font-black">{item.label}</span></button>)}</div>
         </CardHeader>
         <CardContent className="p-4 font-vazirmatn sm:p-6">{loading ? <Loading /> : error ? <div className="rounded-2xl border border-rose-100 bg-rose-50 p-5 text-[11px] font-black text-rose-700">{error}</div> : !report ? <Empty label={t("finance.settlement.noData")} /> : <div className="space-y-5"><div className="flex flex-wrap items-center justify-between gap-3"><div><h3 className="text-sm font-black">{active.label}</h3><p className="mt-1 text-[9px] font-bold text-ink/35">{branchName} · {from} — {to} · {symbol}</p></div>{reconciliation}</div><ReportBody tab={tab} data={report} currency={currency} symbol={symbol} t={t} format={formatNumber} /></div>}</CardContent>
     </Card>;

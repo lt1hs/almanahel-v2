@@ -6,6 +6,8 @@ use App\Exceptions\DomainException;
 use App\Http\Controllers\Controller;
 use App\Models\Check;
 use App\Models\Customer;
+use App\Models\CustomerPayment;
+use App\Models\CustomerReturn;
 use App\Models\CustomerReturnItem;
 use App\Models\Invoice;
 use App\Models\InvoiceItem;
@@ -410,19 +412,28 @@ class InvoiceController extends Controller
     public function credits(Request $request)
     {
         $user = $request->user();
+        $ids = BranchAccess::visibleBranchIds($user);
 
-        // Sync overdue: pending credits past due date
-        Invoice::query()
+        $overdue = Invoice::query()
             ->where('payment_method', 'credit')
             ->whereIn('payment_status', ['pending', 'partially_paid'])
             ->whereNotNull('due_date')
-            ->whereDate('due_date', '<', now()->toDateString())
-            ->update(['payment_status' => 'overdue']);
+            ->where('due_date', '<', now()->toDateString());
+        if ($ids !== null) {
+            $overdue->whereIn('branch_id', $ids ?: [0]);
+        }
+        $overdue->update(['payment_status' => 'overdue']);
 
-        $query = Invoice::with(['branch', 'user', 'items.book'])
+        $columns = [
+            'id', 'branch_id', 'invoice_number', 'customer_id', 'customer_name', 'customer_phone',
+            'due_date', 'total', 'currency', 'payment_status', 'sold_at', 'created_at',
+        ];
+
+        $query = Invoice::query()
+            ->select($columns)
+            ->with(['branch:id,name'])
             ->where('payment_method', 'credit');
 
-        $ids = BranchAccess::visibleBranchIds($user);
         if ($ids !== null) {
             $query->whereIn('branch_id', $ids ?: [0]);
         } elseif ($request->filled('branch_id')) {
@@ -443,20 +454,28 @@ class InvoiceController extends Controller
             });
         }
 
-        $dueSoonQuery = Invoice::with(['branch'])
+        $dueSoonQuery = Invoice::query()
+            ->select($columns)
+            ->with(['branch:id,name'])
             ->where('payment_method', 'credit')
             ->whereIn('payment_status', ['pending', 'overdue', 'partially_paid'])
             ->whereNotNull('due_date')
             ->whereBetween('due_date', [now()->toDateString(), now()->addDays(7)->toDateString()]);
-
-        $ids = BranchAccess::visibleBranchIds($user);
         if ($ids !== null) {
             $dueSoonQuery->whereIn('branch_id', $ids ?: [0]);
         }
 
+        $credits = $query
+            ->orderByRaw("CASE WHEN payment_status IN ('pending','overdue','partially_paid') THEN 0 ELSE 1 END")
+            ->latest('due_date')
+            ->get();
+        $dueSoon = $dueSoonQuery->orderBy('due_date')->limit(50)->get();
+        $this->attachCreditOutstanding($credits);
+        $this->attachCreditOutstanding($dueSoon);
+
         return response()->json([
-            'credits'  => $query->latest('due_date')->get(),
-            'due_soon' => $dueSoonQuery->orderBy('due_date')->get(),
+            'credits'  => $credits,
+            'due_soon' => $dueSoon,
         ]);
     }
 
@@ -513,5 +532,34 @@ class InvoiceController extends Controller
         }
 
         return $customer;
+    }
+
+    private function attachCreditOutstanding($invoices): void
+    {
+        $ids = collect($invoices)->pluck('id')->filter()->values();
+        if ($ids->isEmpty()) {
+            return;
+        }
+
+        $paid = CustomerPayment::query()
+            ->whereIn('invoice_id', $ids)
+            ->selectRaw('invoice_id, COALESCE(SUM(amount), 0) as paid')
+            ->groupBy('invoice_id')
+            ->pluck('paid', 'invoice_id');
+
+        $reduced = CustomerReturn::query()
+            ->whereIn('invoice_id', $ids)
+            ->whereNotNull('receivable_reduction')
+            ->selectRaw('invoice_id, COALESCE(SUM(receivable_reduction), 0) as reduced')
+            ->groupBy('invoice_id')
+            ->pluck('reduced', 'invoice_id');
+
+        foreach ($invoices as $invoice) {
+            $outstanding = Money::max('0', Money::sub(
+                Money::sub(Money::of($invoice->total), Money::of($reduced[$invoice->id] ?? 0)),
+                Money::of($paid[$invoice->id] ?? 0)
+            ));
+            $invoice->setAttribute('outstanding', $outstanding);
+        }
     }
 }

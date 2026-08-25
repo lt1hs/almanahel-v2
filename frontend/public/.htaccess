@@ -22,6 +22,7 @@
     # Book covers: public_html/storage MUST symlink to the LIVE Laravel disk:
     #   ln -sfn /home/daralmanahelc/backend/storage/app/public storage
     # Do NOT force-rewrite into public_html/backend (that tree is stale).
+    # Only rewrite if the symlink path is missing as a fallback.
     RewriteCond %{REQUEST_FILENAME} !-f
     RewriteCond %{DOCUMENT_ROOT}/backend/storage/app/public/$1 -f
     RewriteRule ^storage/(.*)$ backend/storage/app/public/$1 [L]

@@ -2,9 +2,11 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
     ALL_TIME_DEBT_PERIOD_START,
+    buildFinanceOverviewUrls,
     buildSettlementHistoryScopeKey,
     buildSettlementHistoryUrl,
     buildUnsettledDebtUrl,
+    canSeeIraqLedgerTab,
 } from "./financeRequests";
 
 describe("buildUnsettledDebtUrl", () => {
@@ -44,6 +46,44 @@ describe("buildUnsettledDebtUrl", () => {
     it("unassigned accountant returns null (no silent zero KPI)", () => {
         assert.equal(buildUnsettledDebtUrl({ role: "accountant", branchId: null, today }), null);
         assert.equal(buildUnsettledDebtUrl({ role: "accountant", today }), null);
+    });
+});
+
+describe("buildFinanceOverviewUrls", () => {
+    it("does not call HQ all-branches for a Qom/Mashhad branch manager", () => {
+        const urls = buildFinanceOverviewUrls({
+            role: "branch_manager",
+            currency: "toman",
+            branchId: 4,
+            today: "2026-08-25",
+            monthStart: "2026-08-01",
+        });
+        const blob = `${urls.topBooks} ${urls.pnl} ${urls.treasury}`;
+        assert.equal(blob.includes("/reports/all-branches"), false);
+        assert.equal(urls.topBooks.includes("branch_id=4"), true);
+        assert.equal(urls.pnl.includes("branch_id=4"), true);
+        assert.equal(urls.treasury.includes("branch_id=4"), true);
+    });
+
+    it("keeps HQ overview unscoped for admin", () => {
+        const urls = buildFinanceOverviewUrls({
+            role: "admin",
+            currency: "dinar",
+            today: "2026-08-25",
+            monthStart: "2026-08-01",
+        });
+        assert.equal(urls.pnl.includes("branch_id="), false);
+        assert.match(urls.pnl, /currency=dinar/);
+    });
+});
+
+describe("canSeeIraqLedgerTab", () => {
+    it("is admin-only so Qom and Mashhad branch managers do not see Iraq P&L", () => {
+        assert.equal(canSeeIraqLedgerTab("admin"), true);
+        assert.equal(canSeeIraqLedgerTab("super_admin"), true);
+        assert.equal(canSeeIraqLedgerTab("branch_manager"), false);
+        assert.equal(canSeeIraqLedgerTab("accountant"), false);
+        assert.equal(canSeeIraqLedgerTab(undefined), false);
     });
 });
 

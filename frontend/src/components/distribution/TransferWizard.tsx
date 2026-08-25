@@ -12,7 +12,6 @@ import { cn } from "@/lib/utils";
 import { apiRequest } from "@/lib/api";
 import {
     buildBookShowUrl,
-    buildBooksListUrl,
     buildInventoryBookBranchesUrl,
 } from "@/lib/bookCatalogRequests";
 import { useTranslation } from "@/hooks/useTranslation";
@@ -46,6 +45,18 @@ function isQomStore(branch: Branch) {
     return branch.type === "store" && (city === "قم" || name.includes("قم"));
 }
 
+function mapStockBook(row: any) {
+    const book = row?.book || {};
+    const id = book.id ?? row?.book_id;
+    return {
+        id,
+        title: book.title || "",
+        author: book.author || "",
+        isbn: book.isbn || "",
+        quantity: Number(row?.quantity) || 0,
+    };
+}
+
 function stockMapFromInventories(inventories: any[] | undefined): Record<string, number> {
     const map: Record<string, number> = {};
     for (const row of inventories || []) {
@@ -64,14 +75,13 @@ export function TransferWizard({
     onSuccess,
     prefillFrom,
     prefillTo,
-    recentTransfers = [],
+    recentTransfers: _recentTransfers = [],
 }: TransferWizardProps) {
     const { t, formatNumber } = useTranslation();
     const initialPosUser = !(isHqRole(userRole) || userRole === "warehouse_staff");
     const [step, setStep] = useState(0);
     const [searchQuery, setSearchQuery] = useState("");
-    const [searchResults, setSearchResults] = useState<any[]>([]);
-    const [catalogBooks, setCatalogBooks] = useState<any[]>([]);
+    const [stockBooks, setStockBooks] = useState<any[]>([]);
     const [isLoadingBooks, setIsLoadingBooks] = useState(true);
     const [selectedBook, setSelectedBook] = useState<any>(null);
     const [catalogBranchId, setCatalogBranchId] = useState<string>(
@@ -154,72 +164,40 @@ export function TransferWizard({
         }
     }, [prefillFrom, prefillTo, isPosUser, userBranchId, storeBranches]);
 
-    const recentBooks = useMemo(() => {
-        const seen = new Set<string>();
-        const list: any[] = [];
-        for (const transfer of recentTransfers) {
-            const items = Array.isArray(transfer?.items) ? transfer.items : [];
-            for (const item of items) {
-                const id = String(item?.book?.id ?? item?.book_id ?? "");
-                if (!id || seen.has(id)) continue;
-                seen.add(id);
-                list.push({
-                    id: item?.book?.id ?? item?.book_id,
-                    title: item?.book?.title || t("distribution.bookFallback"),
-                    author: item?.book?.author || "",
-                    isbn: item?.book?.isbn || "",
-                });
-            }
-        }
-        return list;
-    }, [recentTransfers, t]);
-
-    const browseBooks = useMemo(() => {
-        const seen = new Set(recentBooks.map((b) => String(b.id)));
-        const extra = catalogBooks.filter((b) => !seen.has(String(b.id)));
-        return [...recentBooks, ...extra].slice(0, 48);
-    }, [recentBooks, catalogBooks]);
-
     const visibleBooks = useMemo(() => {
         const q = searchQuery.trim().toLowerCase();
-        if (q.length >= 2 && searchResults.length > 0) return searchResults;
-        if (!q) return browseBooks;
-        return browseBooks.filter((b) => {
+        const list = stockBooks.filter((b) => Number(b.quantity) > 0 && b.id);
+        if (!q) return list;
+        return list.filter((b) => {
             const hay = `${b.title || ""} ${b.author || ""} ${b.isbn || ""}`.toLowerCase();
             return hay.includes(q);
         });
-    }, [searchQuery, searchResults, browseBooks]);
+    }, [searchQuery, stockBooks]);
 
     useEffect(() => {
         let cancelled = false;
         if (!catalogBranchId) {
-            setCatalogBooks([]);
+            setStockBooks([]);
             setIsLoadingBooks(false);
             return;
         }
         setIsLoadingBooks(true);
-        const url = buildBooksListUrl(
-            { role: userRole ?? undefined, branch_id: userBranchId ?? undefined },
-            { branchId: Number(catalogBranchId), lite: true }
-        );
-        if (!url) {
-            setCatalogBooks([]);
-            setIsLoadingBooks(false);
-            return;
-        }
-        apiRequest(url)
+        apiRequest(`/warehouse/${catalogBranchId}/inventory`)
             .then((data) => {
                 if (cancelled) return;
-                setCatalogBooks(Array.isArray(data) ? data : []);
+                const rows = Array.isArray(data) ? data : [];
+                setStockBooks(
+                    rows.map(mapStockBook).filter((b) => b.id && Number(b.quantity) > 0)
+                );
             })
             .catch(() => {
-                if (!cancelled) setCatalogBooks([]);
+                if (!cancelled) setStockBooks([]);
             })
             .finally(() => {
                 if (!cancelled) setIsLoadingBooks(false);
             });
         return () => { cancelled = true; };
-    }, [catalogBranchId, userBranchId, userRole]);
+    }, [catalogBranchId]);
 
     useEffect(() => {
         const bookId = new URLSearchParams(window.location.search).get("book");
@@ -319,30 +297,6 @@ export function TransferWizard({
         setIsLoadingStock(false);
         setSourceStock(stockByBranch[fromBranch] ?? 0);
     }, [fromBranch, selectedBook, stockByBranch, isLoadingAvailability]);
-
-    useEffect(() => {
-        const timer = setTimeout(async () => {
-            if (searchQuery.length > 2 && !selectedBook && catalogBranchId) {
-                try {
-                    const url = buildBooksListUrl(
-                        { role: userRole ?? undefined, branch_id: userBranchId ?? undefined },
-                        { branchId: Number(catalogBranchId), search: searchQuery }
-                    );
-                    if (!url) {
-                        setSearchResults([]);
-                        return;
-                    }
-                    const data = await apiRequest(url);
-                    setSearchResults(Array.isArray(data) ? data : (data.data || []));
-                } catch {
-                    setSearchResults([]);
-                }
-            } else if (searchQuery.length === 0) {
-                setSearchResults([]);
-            }
-        }, 280);
-        return () => clearTimeout(timer);
-    }, [searchQuery, selectedBook, catalogBranchId, userBranchId, userRole]);
 
     useEffect(() => {
         if (didAutoRouteRef.current) return;
@@ -495,14 +449,16 @@ export function TransferWizard({
                                         <p className="text-[11px] text-ink/40 mt-0.5 truncate">
                                             {selectedBook.author || "—"}
                                             {selectedBook.isbn ? ` · ${selectedBook.isbn}` : ""}
+                                            {Number(selectedBook.quantity) > 0
+                                                ? ` · ${formatNumber(Number(selectedBook.quantity))} ${t("distribution.volumeUnit")}`
+                                                : ""}
                                         </p>
                                     </div>
                                     <button type="button" onClick={() => {
                                         setSelectedBook(null);
                                         setSearchQuery("");
-                                        setSearchResults([]);
                                         setStockByBranch({});
-                                        setFromBranch("");
+                                        setFromBranch(catalogBranchId || "");
                                         setSourceStock(null);
                                     }}
                                         className="p-2 rounded-lg hover:bg-rose-50 text-ink/30 hover:text-rose-500 transition-colors">
@@ -525,9 +481,7 @@ export function TransferWizard({
                                         <p className="text-[10px] font-black text-ink/35 shrink-0">
                                             {searchQuery.trim()
                                                 ? t("distribution.wizard.searchHint")
-                                                : recentBooks.length > 0
-                                                    ? t("distribution.wizard.recentBooks")
-                                                    : t("distribution.wizard.availableBooks")}
+                                                : t("distribution.wizard.availableBooks")}
                                         </p>
                                     </div>
                                     <div className="rounded-xl border border-ink/8 bg-white p-2 max-h-[420px] overflow-y-auto">
@@ -550,7 +504,13 @@ export function TransferWizard({
                                                         onClick={() => {
                                                             setSelectedBook(b);
                                                             setSearchQuery(b.title || "");
-                                                            setSearchResults([]);
+                                                            if (catalogBranchId && Number(b.quantity) > 0) {
+                                                                setStockByBranch((prev) => ({
+                                                                    ...prev,
+                                                                    [catalogBranchId]: Number(b.quantity),
+                                                                }));
+                                                                setFromBranch(catalogBranchId);
+                                                            }
                                                         }}
                                                         className="w-full px-3 py-2.5 text-start hover:bg-primary/5 rounded-xl border border-transparent hover:border-primary/15 flex items-center gap-3"
                                                     >
@@ -564,6 +524,12 @@ export function TransferWizard({
                                                                 {b.isbn ? ` · ${b.isbn}` : ""}
                                                             </p>
                                                         </div>
+                                                        <span className="shrink-0 text-[11px] font-black font-vazirmatn tabular-nums text-primary bg-primary/8 border border-primary/10 rounded-lg px-2 py-1">
+                                                            {formatNumber(Number(b.quantity) || 0)}
+                                                            <span className="ms-1 text-[9px] font-bold text-primary/70">
+                                                                {t("distribution.volumeUnit")}
+                                                            </span>
+                                                        </span>
                                                     </button>
                                                 ))}
                                             </div>

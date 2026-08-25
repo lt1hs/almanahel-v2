@@ -1,7 +1,10 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import { Calculator, Download, Send, ChevronDown, Building2, BookOpen, CalendarDays } from "lucide-react";
+import {
+    Calculator, ChevronDown, Building2, BookOpen, CalendarDays,
+    Printer, CheckCircle2, Banknote, Landmark,
+} from "lucide-react";
 import { Card, CardContent } from "@/components/ui/Card";
 import { cn } from "@/lib/utils";
 import { useTranslation } from "@/hooks/useTranslation";
@@ -173,31 +176,40 @@ export function SettlementWizard({
         onConfirm?.(selectedSupplier.id, fromDate, toDate, amountNum);
     };
 
+    const amountEntered = Number.isFinite(amountNum) && amountNum > 0;
+    const leftover = Math.max(0, totalPayable - (amountEntered ? amountNum : 0));
+    const overMax = amountEntered && !amountValid;
+
     const breakdownRows = [
-        { key: "sales", label: "فروش", value: breakdown?.sales_payable },
-        { key: "gifts", label: "هدایا", value: breakdown?.gift_payable },
-        { key: "reversals", label: "برگشت/تعدیل", value: breakdown?.return_reversals },
-        { key: "settled", label: "تسویه‌شده قبلی", value: breakdown?.previously_settled },
-        { key: "remaining", label: "مانده قابل تسویه", value: breakdown?.remaining_payable ?? totalPayable },
+        { key: "sales", label: t("finance.settlement.salesPayable"), value: breakdown?.sales_payable },
+        { key: "gifts", label: t("finance.settlement.giftPayable"), value: breakdown?.gift_payable },
+        { key: "reversals", label: t("finance.settlement.returnReversals"), value: breakdown?.return_reversals },
+        { key: "settled", label: t("finance.settlement.previouslySettled"), value: breakdown?.previously_settled },
+        { key: "remaining", label: t("finance.settlement.remainingPayable"), value: breakdown?.remaining_payable ?? totalPayable, emphasize: true },
     ];
 
     const canCalculate = Boolean(branchId && selectedSupplier && fromDate && toDate && !isLoading && !disabled);
 
     return (
         <div className="space-y-4">
-            <Card className="relative z-10 border border-white/70 bg-white/70 backdrop-blur-xl rounded-2xl overflow-visible shadow-sm">
-                <CardContent className="p-5 space-y-4">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                        <div className="flex items-center gap-2 text-ink/45">
-                            <CalendarDays className="w-3.5 h-3.5" />
-                            <p className="text-[10px] font-black uppercase tracking-widest">بازه تسویه</p>
+            <Card className="relative z-10 overflow-visible rounded-3xl border border-white/80 bg-white/75 shadow-[0_18px_70px_rgba(23,32,31,0.06)] backdrop-blur-xl">
+                <CardContent className="space-y-4 p-5 pt-5">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div className="flex items-center gap-2.5">
+                            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary/10 text-primary">
+                                <CalendarDays className="h-4 w-4" />
+                            </div>
+                            <div>
+                                <p className="text-[11px] font-black text-ink">{t("finance.settlement.periodLabel")}</p>
+                                <p className="text-[9px] font-bold text-ink/35">{t("finance.settlement.period")}</p>
+                            </div>
                         </div>
                         <div className="flex flex-wrap gap-1.5">
                             {(
                                 [
-                                    { key: "month", label: "این ماه" },
-                                    { key: "90d", label: "۹۰ روز" },
-                                    { key: "year", label: "امسال" },
+                                    { key: "month", label: t("finance.settlement.presetThisMonth") },
+                                    { key: "90d", label: t("finance.settlement.preset90d") },
+                                    { key: "year", label: t("finance.settlement.presetThisYear") },
                                 ] as const
                             ).map((p) => (
                                 <button
@@ -206,10 +218,10 @@ export function SettlementWizard({
                                     disabled={disabled}
                                     onClick={() => applyPreset(p.key)}
                                     className={cn(
-                                        "h-7 rounded-lg px-2.5 text-[10px] font-black transition-all",
+                                        "h-8 rounded-xl px-3 text-[10px] font-black transition-all",
                                         activePreset === p.key
-                                            ? "bg-primary text-white shadow-sm"
-                                            : "bg-parchment/50 text-ink/45 hover:bg-parchment hover:text-ink"
+                                            ? "bg-primary text-white shadow-sm shadow-primary/20"
+                                            : "border border-ink/5 bg-parchment/60 text-ink/45 hover:border-primary/20 hover:text-ink"
                                     )}
                                 >
                                     {p.label}
@@ -260,7 +272,7 @@ export function SettlementWizard({
                             {open && (
                                 <div className="absolute z-20 mt-1 w-full max-h-56 overflow-auto rounded-xl border border-ink/10 bg-white shadow-xl">
                                     {suppliers.length === 0 ? (
-                                        <p className="px-3 py-3 text-[11px] text-ink/35">تأمین‌کننده‌ای برای این شعبه نیست</p>
+                                        <p className="px-3 py-3 text-[11px] text-ink/35">{t("finance.settlement.noSuppliers")}</p>
                                     ) : (
                                         suppliers.map((s) => (
                                             <button
@@ -335,13 +347,23 @@ export function SettlementWizard({
             </Card>
 
             {breakdown && settlementData.length > 0 && (
-                <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
                     {breakdownRows.map((row) => (
-                        <Card key={row.key} className="rounded-xl border border-white/70 bg-white/70">
-                            <CardContent className="p-3">
-                                <p className="text-[8px] font-black uppercase tracking-wider text-ink/35 mb-1">{row.label}</p>
-                                <p className="text-[13px] font-black font-vazirmatn tabular-nums text-ink">
+                        <Card
+                            key={row.key}
+                            className={cn(
+                                "rounded-2xl border bg-white/75 shadow-sm",
+                                row.emphasize ? "border-primary/20 bg-primary/[0.04]" : "border-white/70"
+                            )}
+                        >
+                            <CardContent className="p-3.5 pt-3.5">
+                                <p className="mb-1 text-[8px] font-black uppercase tracking-wider text-ink/35">{row.label}</p>
+                                <p className={cn(
+                                    "font-vazirmatn text-[13px] font-black tabular-nums",
+                                    row.emphasize ? "text-primary" : "text-ink"
+                                )}>
                                     {formatNumber(Number(row.value || 0))}
+                                    <span className="ms-1 text-[9px] font-bold text-ink/25">{symbol}</span>
                                 </p>
                             </CardContent>
                         </Card>
@@ -349,8 +371,8 @@ export function SettlementWizard({
                 </div>
             )}
 
-            <Card className="border border-white/70 bg-white/50 backdrop-blur-md rounded-2xl overflow-hidden hidden md:block">
-                <CardContent className="p-0">
+            <Card className="hidden overflow-hidden rounded-3xl border border-white/80 bg-white/70 shadow-[0_18px_70px_rgba(23,32,31,0.04)] backdrop-blur-md md:block">
+                <CardContent className="p-0 pt-0">
                     {isLoading && (
                         <div className="p-8 space-y-3">
                             {Array.from({ length: 3 }).map((_, i) => (
@@ -376,7 +398,7 @@ export function SettlementWizard({
                                             <div className="flex items-center justify-end gap-2">
                                                 <span className="text-[12px] font-black font-vazirmatn text-ink">
                                                     {item.title}
-                                                    {item.kind === "gift" ? " (هدیه)" : ""}
+                                                    {item.kind === "gift" ? ` (${t("finance.settlement.giftItem")})` : ""}
                                                 </span>
                                                 <div className="w-7 h-7 rounded-lg bg-parchment/60 border border-ink/5 flex items-center justify-center shrink-0">
                                                     <BookOpen className="w-3.5 h-3.5 text-ink/20" />
@@ -434,87 +456,107 @@ export function SettlementWizard({
                 ))}
             </div>
 
-            <div className="flex flex-col sm:flex-row items-center justify-between gap-5 p-5 text-white rounded-2xl shadow-xl border border-primary/20 relative overflow-hidden bg-gradient-to-br from-[#0b1e1e] via-[#0d2626] to-ink/95">
-                <div className="absolute inset-0 bg-gradient-to-l from-accent/5 via-transparent to-primary/15 pointer-events-none" />
+            <div className="sticky bottom-20 z-20 md:bottom-4">
+                <div className="overflow-hidden rounded-3xl border border-white/80 bg-white/90 shadow-[0_18px_70px_rgba(23,32,31,0.12)] backdrop-blur-xl">
+                    <div className="h-1 w-full bg-gradient-to-l from-accent via-primary to-primary/40" />
+                    <div className="grid gap-4 p-4 md:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)_auto] md:items-end md:p-5">
+                        <div className="flex items-start gap-3 rounded-2xl border border-primary/10 bg-primary/[0.045] px-4 py-3.5">
+                            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-primary text-white shadow-lg shadow-primary/20">
+                                <Landmark className="h-5 w-5" />
+                            </div>
+                            <div className="min-w-0">
+                                <p className="text-[10px] font-bold text-ink/40">{t("finance.settlement.finalPayable")}</p>
+                                <p className="mt-1 font-vazirmatn text-[26px] font-black leading-none tabular-nums text-primary">
+                                    {formatNumber(totalPayable)}
+                                    <span className="ms-1 text-[11px] font-bold text-ink/30">{symbol}</span>
+                                </p>
+                                {selectedSupplier?.name && (
+                                    <p className="mt-1.5 truncate text-[10px] font-bold text-ink/35">{selectedSupplier.name}</p>
+                                )}
+                            </div>
+                        </div>
 
-                <div className="relative z-10 text-center sm:text-end space-y-3 w-full sm:w-auto">
-                    <div>
-                        <p className="text-[10px] font-black font-vazirmatn text-white/40 uppercase tracking-widest mb-2">
-                            {t("finance.settlement.finalPayable")}
-                        </p>
-                        <div className="flex items-end gap-2 justify-center sm:justify-end">
-                            <span className="text-[28px] font-black font-vazirmatn tabular-nums text-primary leading-none">
-                                {formatNumber(totalPayable)}
-                            </span>
-                            <span className="text-[12px] font-black font-vazirmatn text-white/25 mb-1">{symbol}</span>
+                        <div className="space-y-2">
+                            <div className="flex items-center justify-between gap-2">
+                                <label className="flex items-center gap-1.5 text-[10px] font-black text-ink/45">
+                                    <Banknote className="h-3.5 w-3.5" />
+                                    {t("finance.settlement.partialAmount")}
+                                </label>
+                                <span className="text-[9px] font-bold text-ink/30">{t("finance.settlement.partialHint")}</span>
+                            </div>
+                            <input
+                                type="number"
+                                min={0}
+                                step="0.01"
+                                max={totalPayable || undefined}
+                                value={settleAmount}
+                                onChange={(e) => setSettleAmount(e.target.value)}
+                                disabled={disabled || settlementData.length === 0}
+                                placeholder={totalPayable > 0 ? String(totalPayable) : "0"}
+                                className={cn(
+                                    "h-12 w-full rounded-xl border bg-white px-3 font-vazirmatn text-[15px] font-black tabular-nums text-ink outline-none transition-all placeholder:text-ink/20 disabled:opacity-40",
+                                    overMax ? "border-rose-300 ring-2 ring-rose-100" : "border-ink/10 focus:border-primary/30 focus:ring-2 focus:ring-primary/10"
+                                )}
+                            />
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div className="flex gap-1.5">
+                                    <button
+                                        type="button"
+                                        disabled={disabled || settlementData.length === 0 || totalPayable <= 0}
+                                        onClick={() => setSettleAmount(String(Math.round(totalPayable / 2)))}
+                                        className="h-7 rounded-lg border border-ink/10 bg-parchment/70 px-2.5 text-[9px] font-black text-ink/50 hover:border-primary/20 hover:text-primary disabled:opacity-40"
+                                    >
+                                        {t("finance.settlement.half")}
+                                    </button>
+                                    <button
+                                        type="button"
+                                        disabled={disabled || settlementData.length === 0 || totalPayable <= 0}
+                                        onClick={() => setSettleAmount(String(totalPayable))}
+                                        className="h-7 rounded-lg border border-ink/10 bg-parchment/70 px-2.5 text-[9px] font-black text-ink/50 hover:border-primary/20 hover:text-primary disabled:opacity-40"
+                                    >
+                                        {t("finance.settlement.fullRemaining")}
+                                    </button>
+                                </div>
+                                {overMax ? (
+                                    <p className="text-[9px] font-bold text-rose-500">{t("finance.settlement.overMax")}</p>
+                                ) : amountEntered ? (
+                                    <p className="text-[9px] font-bold text-ink/35">
+                                        {t("finance.settlement.remainingAfter")}: {formatNumber(leftover)} {symbol}
+                                    </p>
+                                ) : null}
+                            </div>
+                        </div>
+
+                        <div className="flex w-full gap-2 md:w-auto md:flex-col lg:flex-row">
+                            <button
+                                type="button"
+                                disabled={disabled || !branchId || settlementData.length === 0 || !selectedSupplier}
+                                onClick={handlePrint}
+                                className="flex h-12 flex-1 items-center justify-center gap-2 rounded-xl border border-ink/10 bg-white px-4 text-[11px] font-black text-ink/55 transition-all hover:border-primary/20 hover:text-primary disabled:opacity-40 md:min-w-[9.5rem]"
+                            >
+                                <Printer className="h-4 w-4 shrink-0" />
+                                {t("finance.settlement.downloadPdf")}
+                            </button>
+                            <button
+                                type="button"
+                                disabled={
+                                    disabled ||
+                                    !branchId ||
+                                    settlementData.length === 0 ||
+                                    !selectedSupplier ||
+                                    !fromDate ||
+                                    !toDate ||
+                                    isConfirming ||
+                                    !amountValid
+                                }
+                                onClick={confirmAmount}
+                                className="flex h-12 flex-1 items-center justify-center gap-2 rounded-xl bg-accent px-4 text-[11px] font-black text-ink shadow-lg shadow-accent/25 transition-all hover:bg-accent/90 active:scale-[0.98] disabled:opacity-40 md:min-w-[11.5rem]"
+                            >
+                                <CheckCircle2 className="h-4 w-4 shrink-0" />
+                                {isConfirming ? t("common.submitting") : t("finance.settlement.confirmDeposit")}
+                            </button>
                         </div>
                     </div>
-                    <div className="text-start sm:text-end space-y-2">
-                        <label className="text-[9px] font-black uppercase tracking-widest text-white/40 block">
-                            مبلغ تسویه (جزئی مجاز)
-                        </label>
-                        <input
-                            type="number"
-                            min={0}
-                            step="0.01"
-                            max={totalPayable || undefined}
-                            value={settleAmount}
-                            onChange={(e) => setSettleAmount(e.target.value)}
-                            disabled={disabled || settlementData.length === 0}
-                            placeholder={totalPayable > 0 ? String(totalPayable) : "0"}
-                            className="h-10 w-full sm:w-48 rounded-xl border border-white/20 bg-white/10 px-3 text-[13px] font-black font-vazirmatn tabular-nums text-white outline-none disabled:opacity-40 placeholder:text-white/25"
-                        />
-                        {totalPayable > 0 && (
-                            <div className="flex gap-2 justify-center sm:justify-end">
-                                <button
-                                    type="button"
-                                    disabled={disabled || settlementData.length === 0}
-                                    onClick={() => setSettleAmount(String(Math.round(totalPayable / 2)))}
-                                    className="text-[9px] font-black text-white/50 hover:text-white underline disabled:opacity-40"
-                                >
-                                    ۵۰٪
-                                </button>
-                                <button
-                                    type="button"
-                                    disabled={disabled || settlementData.length === 0}
-                                    onClick={() => setSettleAmount(String(totalPayable))}
-                                    className="text-[9px] font-black text-white/50 hover:text-white underline disabled:opacity-40"
-                                >
-                                    کل مانده
-                                </button>
-                            </div>
-                        )}
-                    </div>
-                </div>
-
-                <div className="flex gap-2.5 w-full sm:w-auto relative z-10">
-                    <button
-                        type="button"
-                        disabled={disabled || !branchId || settlementData.length === 0 || !selectedSupplier}
-                        onClick={handlePrint}
-                        className="flex-1 sm:flex-none flex items-center justify-center gap-2 h-11 px-5 rounded-xl border border-white/15 text-white/70 hover:bg-white/10 hover:text-white disabled:opacity-40 text-[11.5px] font-black font-vazirmatn transition-all"
-                    >
-                        <Download className="w-4 h-4 shrink-0" />
-                        {t("finance.settlement.downloadPdf")}
-                    </button>
-                    <button
-                        type="button"
-                        disabled={
-                            disabled ||
-                            !branchId ||
-                            settlementData.length === 0 ||
-                            !selectedSupplier ||
-                            !fromDate ||
-                            !toDate ||
-                            isConfirming ||
-                            !amountValid
-                        }
-                        onClick={confirmAmount}
-                        className="flex-1 sm:flex-none flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-accent hover:bg-accent/90 disabled:opacity-40 text-white shadow-lg shadow-accent/25 text-[11.5px] font-black font-vazirmatn transition-all active:scale-[0.98]"
-                    >
-                        <Send className="w-4 h-4 shrink-0" />
-                        {isConfirming ? t("common.submitting") : t("finance.settlement.confirmDeposit")}
-                    </button>
                 </div>
             </div>
         </div>

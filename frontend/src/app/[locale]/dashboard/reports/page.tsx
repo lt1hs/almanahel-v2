@@ -15,6 +15,7 @@ import { useTranslation } from "@/hooks/useTranslation";
 import { useRouter } from "@/i18n/routing";
 import { apiRequest } from "@/lib/api";
 import { buildBookLowStockUrl } from "@/lib/bookCatalogRequests";
+import { canSeeIraqLedgerTab } from "@/lib/financeRequests";
 import { useAuth } from "@/contexts/AuthContext";
 import { cn } from "@/lib/utils";
 import { RequireRole } from "@/components/auth/RequireRole";
@@ -56,7 +57,9 @@ function ReportsPageContent() {
                 apiRequest("/reports/dashboard"),
                 apiRequest("/reports/all-branches"),
                 apiRequest(`/reports/top-books?currency=${isDinar ? "dinar" : "toman"}`),
-                apiRequest(`/reports/iraq-profit?currency=${isDinar ? "dinar" : "toman"}`).catch(() => null),
+                canSeeIraqLedgerTab(user?.role)
+                    ? apiRequest(`/reports/iraq-profit?currency=${isDinar ? "dinar" : "toman"}`).catch(() => null)
+                    : Promise.resolve(null),
                 lowStockUrl ? apiRequest(lowStockUrl).catch(() => []) : Promise.resolve([]),
                 apiRequest("/reports/distribution-from-qom").catch(() => null),
             ]);

@@ -395,6 +395,10 @@ class T101HistoricalReportsTest extends TestCase
         $this->assertGreaterThan(0, $dash['total_stock']);
 
         $this->actingAsRole('branch_manager', $home);
+        $this->getJson('/api/reports/all-branches')->assertForbidden();
+        $this->getJson('/api/finance/pnl?currency=toman')->assertOk();
+        $this->getJson('/api/finance/treasury?date_from=1970-01-01&date_to=2099-12-31')->assertOk();
+        $this->getJson('/api/reports/top-books?currency=toman')->assertOk();
         $this->getJson('/api/reports/monthly-trends?branch_id='.$other->id.'&currency=toman')->assertForbidden();
         $own = $this->getJson('/api/reports/monthly-trends?currency=toman')->assertOk()->json();
         $this->assertNotEmpty($own);
@@ -403,6 +407,7 @@ class T101HistoricalReportsTest extends TestCase
         $this->actingAsRole('branch_manager', $home, ['iraq_only_visible_branches' => [$iraq->id]]);
         $this->getJson('/api/finance/pnl?branch_id='.$iraq->id.'&currency=toman')->assertForbidden();
         $this->getJson('/api/reports/top-books?branch_id='.$iraq->id)->assertForbidden();
+        $this->getJson('/api/reports/iraq-profit?currency=toman')->assertForbidden();
 
         $this->actingAsRole('accountant', $home);
         $this->getJson('/api/reports/monthly-trends?currency=toman')->assertOk();
