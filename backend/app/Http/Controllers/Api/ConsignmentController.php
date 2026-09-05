@@ -8,6 +8,7 @@ use App\Models\ConsignmentReceipt;
 use App\Models\ConsignmentReceiptItem;
 use App\Models\Inventory;
 use App\Models\Settlement;
+use App\Models\SupplierAccount;
 use App\Services\Ledger\FinancePostingGateway;
 use App\Services\Ledger\SupplierCheckTransition;
 use App\Services\Settlement\PayableSnapshot;
@@ -657,7 +658,32 @@ class ConsignmentController extends Controller
         ]);
 
         if ($request->boolean('aggregate')) {
-            return response()->json(['message' => 'حالت تجمیعی برای ثبت مجاز نیست', 'error' => 'aggregate_not_allowed'], 422);
+            $created = app(SettlementRecorder::class)->createForAllBranches($request->user(), $validated);
+            $total = '0.00';
+            foreach ($created as $row) {
+                $total = Money::add($total, $row->amount);
+            }
+            ActivityLogger::record(
+                'settlements',
+                'settled',
+                'تسویه همزمان همه شعب — '.count($created).' شعبه',
+                $created[0] ?? null,
+                [
+                    'count' => count($created),
+                    'supplier_id' => $created[0]->supplier_id ?? null,
+                    'amount' => $total,
+                    'currency' => $validated['currency'],
+                    'payment_method' => $validated['payment_method'],
+                    'aggregate' => true,
+                ],
+            );
+
+            return response()->json([
+                'aggregate' => true,
+                'count' => count($created),
+                'total_amount' => $total,
+                'settlements' => $created,
+            ], 201);
         }
 
         $settlement = app(SettlementRecorder::class)->create($request->user(), $validated);
@@ -721,6 +747,19 @@ class ConsignmentController extends Controller
         return response()->json($query->latest()->paginate(20));
     }
 
+    public function showSettlement(Request $request, Settlement $settlement)
+    {
+        $user = $request->user();
+        if (!BranchAccess::isAdmin($user)) {
+            $branchId = BranchAccess::resolveOperationalBranchId($user, null);
+            if ((int) $settlement->branch_id !== (int) $branchId) {
+                abort(403);
+            }
+        }
+
+        return response()->json($settlement->load(['supplier', 'branch', 'user']));
+    }
+
     /** Preview payable using the same SupplierPayable math as settle. */
     public function settlementPreview(Request $request)
     {
@@ -734,12 +773,46 @@ class ConsignmentController extends Controller
         ]);
 
         if ($request->boolean('aggregate')) {
-            return response()->json(['message' => 'حالت تجمیعی برای پیش‌نمایش عملیاتی مجاز نیست', 'error' => 'aggregate_not_allowed'], 422);
+            BranchAccess::assertCanAggregateSupplierAccounts($request->user());
+
+            $supplierId = null;
+            if (!empty($validated['supplier_id'])) {
+                $supplierId = (int) $validated['supplier_id'];
+            } elseif (!empty($validated['supplier_account_id'])) {
+                $account = SupplierAccount::query()->find($validated['supplier_account_id']);
+                $supplierId = $account?->supplier_id ? (int) $account->supplier_id : null;
+            }
+            if (!$supplierId) {
+                throw new DomainException('برای محاسبه همه شعب، تأمین‌کننده متعارف لازم است', 422);
+            }
+
+            $currency = $validated['currency'] ?? 'toman';
+            $preview = app(PeriodSettlement::class)->previewAllBranches(
+                $supplierId,
+                $currency,
+                $validated['period_start'],
+                $validated['period_end']
+            );
+
+            return response()->json([
+                'items' => $preview['lines'],
+                'breakdown' => $preview['breakdown'] ?? null,
+                'by_branch' => $preview['by_branch'] ?? [],
+                'commission_rate' => $preview['commission_rate'],
+                'total_payable' => $preview['total_payable'],
+                'period_start' => $preview['period_start'],
+                'period_end' => $preview['period_end'],
+                'currency' => $preview['currency'],
+                'supplier_account_id' => null,
+                'branch_id' => null,
+                'supplier_id' => $supplierId,
+                'aggregate' => true,
+            ]);
         }
 
         $scope = app(\App\Services\Suppliers\SupplierSettlementScope::class)->resolve($request->user(), $validated);
         $currency = $validated['currency'] ?? 'toman';
-        $preview = app(\App\Services\Settlement\PeriodSettlement::class)->preview(
+        $preview = app(PeriodSettlement::class)->preview(
             $scope['supplier_id'],
             $currency,
             $validated['period_start'],

@@ -4,10 +4,13 @@ namespace App\Services\Settlement;
 
 use App\Exceptions\DomainException;
 use App\Models\ConsignmentReceipt;
+use App\Models\ConsignmentReceiptItem;
 use App\Models\GiftLotAllocation;
 use App\Models\SaleLotAllocation;
 use App\Models\Settlement;
 use App\Models\SettlementAllocation;
+use App\Models\StockLot;
+use App\Models\SupplierAccount;
 use App\Support\Money;
 use Illuminate\Support\Facades\DB;
 
@@ -24,7 +27,12 @@ class PeriodSettlement
         ?int $branchId = null,
         ?int $supplierAccountId = null
     ): array {
-        $lines = $this->openLines($supplierId, $currency, $periodStart, $periodEnd, $branchId, $supplierAccountId);
+        $lines = $this->attachRemainingQty(
+            $this->openLines($supplierId, $currency, $periodStart, $periodEnd, $branchId, $supplierAccountId),
+            $supplierId,
+            $currency,
+            $branchId
+        );
         $salesPayable = '0.00';
         $giftPayable = '0.00';
         $previouslySettled = '0.00';
@@ -56,6 +64,88 @@ class PeriodSettlement
             'currency' => $currency,
             'supplier_account_id' => $supplierAccountId,
             'branch_id' => $branchId,
+        ];
+    }
+
+    /**
+     * Sum branch-local previews so the all-branches total matches what settle can actually post.
+     *
+     * @return array{total_payable: string, lines: list<array<string, mixed>>, breakdown: array<string, string>, by_branch: list<array<string, mixed>>, commission_rate: string, period_start: string, period_end: string, currency: string}
+     */
+    public function previewAllBranches(
+        int $supplierId,
+        string $currency,
+        string $periodStart,
+        string $periodEnd
+    ): array {
+        $accounts = SupplierAccount::query()
+            ->with('branch:id,name')
+            ->where('supplier_id', $supplierId)
+            ->orderBy('branch_id')
+            ->get();
+
+        $lines = [];
+        $salesPayable = '0.00';
+        $giftPayable = '0.00';
+        $previouslySettled = '0.00';
+        $returnReversals = '0.00';
+        $total = '0.00';
+        $byBranch = [];
+
+        foreach ($accounts as $account) {
+            $preview = $this->preview(
+                $supplierId,
+                $currency,
+                $periodStart,
+                $periodEnd,
+                (int) $account->branch_id,
+                (int) $account->id
+            );
+            if (Money::isZero($preview['total_payable'])) {
+                continue;
+            }
+
+            $stockByBook = [];
+            foreach ($preview['lines'] as $line) {
+                $line['branch_id'] = (int) $account->branch_id;
+                $line['branch_name'] = $account->branch?->name;
+                $bookId = isset($line['book_id']) ? (int) $line['book_id'] : 0;
+                if ($bookId > 0) {
+                    $stockByBook[$bookId] = (int) ($line['remaining_qty'] ?? 0);
+                }
+                $lines[] = $line;
+            }
+            $salesPayable = Money::add($salesPayable, $preview['breakdown']['sales_payable'] ?? 0);
+            $giftPayable = Money::add($giftPayable, $preview['breakdown']['gift_payable'] ?? 0);
+            $previouslySettled = Money::add($previouslySettled, $preview['breakdown']['previously_settled'] ?? 0);
+            $returnReversals = Money::add($returnReversals, $preview['breakdown']['return_reversals'] ?? 0);
+            $total = Money::add($total, $preview['total_payable']);
+            $byBranch[] = [
+                'supplier_account_id' => (int) $account->id,
+                'branch_id' => (int) $account->branch_id,
+                'branch_name' => $account->branch?->name,
+                'remaining_payable' => $preview['total_payable'],
+                'remaining_qty' => array_sum($stockByBook),
+            ];
+        }
+
+        return [
+            'total_payable' => $total,
+            'lines' => $lines,
+            'breakdown' => [
+                'sales_payable' => $salesPayable,
+                'gift_payable' => $giftPayable,
+                'return_reversals' => $returnReversals,
+                'previously_settled' => $previouslySettled,
+                'remaining_payable' => $total,
+            ],
+            'by_branch' => $byBranch,
+            'commission_rate' => '1.0000',
+            'period_start' => $periodStart,
+            'period_end' => $periodEnd,
+            'currency' => $currency,
+            'supplier_account_id' => null,
+            'branch_id' => null,
         ];
     }
 
@@ -141,6 +231,111 @@ class PeriodSettlement
         app(GiftSettlementStatus::class)->syncMany($giftIds);
 
         return $created;
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $lines
+     * @return list<array<string, mixed>>
+     */
+    private function attachRemainingQty(
+        array $lines,
+        int $supplierId,
+        string $currency,
+        ?int $branchId
+    ): array {
+        $bookIds = [];
+        foreach ($lines as $line) {
+            $bookId = isset($line['book_id']) ? (int) $line['book_id'] : 0;
+            if ($bookId > 0) {
+                $bookIds[$bookId] = $bookId;
+            }
+        }
+        if ($bookIds === []) {
+            return $lines;
+        }
+
+        $lotRemaining = $this->lotRemainingByBook($supplierId, $currency, $branchId, array_values($bookIds));
+        $receiptRemaining = $this->receiptRemainingByBook($supplierId, $currency, $branchId, array_values($bookIds));
+
+        foreach ($lines as &$line) {
+            $bookId = isset($line['book_id']) ? (int) $line['book_id'] : 0;
+            $fromLots = $bookId > 0 ? (int) ($lotRemaining[$bookId] ?? 0) : 0;
+            $fromReceipts = $bookId > 0 ? (int) ($receiptRemaining[$bookId] ?? 0) : 0;
+            $line['remaining_qty'] = $fromLots > 0 ? $fromLots : $fromReceipts;
+        }
+        unset($line);
+
+        return $lines;
+    }
+
+    /**
+     * Physical unsold at this scope: on-hand plus reserved (transfers still count).
+     *
+     * @param  list<int>  $bookIds
+     * @return array<int, int>
+     */
+    private function lotRemainingByBook(int $supplierId, string $currency, ?int $branchId, array $bookIds): array
+    {
+        $query = StockLot::query()
+            ->where('ownership_type', 'consignment')
+            ->where('currency', $currency)
+            ->whereIn('book_id', $bookIds)
+            ->where(function ($builder) use ($supplierId) {
+                $builder->where('supplier_id', $supplierId)
+                    ->orWhereIn('consignment_receipt_item_id', function ($sub) use ($supplierId) {
+                        $sub->select('consignment_receipt_items.id')
+                            ->from('consignment_receipt_items')
+                            ->join('consignment_receipts', 'consignment_receipts.id', '=', 'consignment_receipt_items.consignment_receipt_id')
+                            ->where('consignment_receipts.supplier_id', $supplierId);
+                    });
+            });
+        if ($branchId) {
+            $query->where('branch_id', $branchId);
+        }
+
+        return $query
+            ->selectRaw('book_id, COALESCE(SUM(qty_available), 0) as remaining_qty')
+            ->groupBy('book_id')
+            ->pluck('remaining_qty', 'book_id')
+            ->map(fn ($qty) => (int) $qty)
+            ->all();
+    }
+
+    /**
+     * Same unsold math as the consignment receipt page: received − sold − returned.
+     *
+     * @param  list<int>  $bookIds
+     * @return array<int, int>
+     */
+    private function receiptRemainingByBook(int $supplierId, string $currency, ?int $branchId, array $bookIds): array
+    {
+        $query = ConsignmentReceiptItem::query()
+            ->join('consignment_receipts', 'consignment_receipts.id', '=', 'consignment_receipt_items.consignment_receipt_id')
+            ->where('consignment_receipts.supplier_id', $supplierId)
+            ->where('consignment_receipts.currency', $currency)
+            ->whereIn('consignment_receipt_items.book_id', $bookIds);
+        if ($branchId) {
+            $query->where('consignment_receipts.branch_id', $branchId);
+        }
+
+        $rows = $query->get([
+            'consignment_receipt_items.book_id',
+            'consignment_receipt_items.quantity_received',
+            'consignment_receipt_items.quantity_sold',
+            'consignment_receipt_items.quantity_returned',
+        ]);
+
+        $out = [];
+        foreach ($rows as $row) {
+            $bookId = (int) $row->book_id;
+            $unsold = max(
+                0,
+                (int) $row->quantity_received - (int) $row->quantity_sold - (int) $row->quantity_returned
+            );
+            $out[$bookId] = ($out[$bookId] ?? 0) + $unsold;
+        }
+
+        return $out;
     }
 
     /** @return list<array<string, mixed>> */

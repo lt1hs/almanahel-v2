@@ -440,7 +440,148 @@ class SupplierAccountWave1Test extends TestCase
             $this->assertSame($accountA->id, $line['supplier_account_id'] ?? null);
             $this->assertSame($book->id, $line['book_id'] ?? null);
             $this->assertSame($book->title, $line['title'] ?? null);
+            $this->assertSame(8, $line['remaining_qty'] ?? null);
         }
+    }
+
+    public function test_admin_aggregate_settlement_preview_sums_all_branches(): void
+    {
+        $a = $this->makeBranch(['name' => 'A']);
+        $b = $this->makeBranch(['name' => 'B', 'city' => 'مشهد']);
+        $supplier = $this->makeSupplier();
+        $book = $this->makeBook();
+        $this->actingAsRole('admin', $a);
+
+        $accountA = app(SupplierAccountResolver::class)->ensureForPair($a->id, $supplier->id);
+        $accountB = app(SupplierAccountResolver::class)->ensureForPair($b->id, $supplier->id);
+
+        foreach ([[$a, $accountA, 2], [$b, $accountB, 5]] as [$branch, $account, $qty]) {
+            $this->postJson('/api/consignments', [
+                'supplier_account_id' => $account->id,
+                'branch_id' => $branch->id,
+                'currency' => 'toman',
+                'received_at' => now()->toDateString(),
+                'items' => [['book_id' => $book->id, 'quantity' => 10, 'cost_price' => 10000, 'selling_price' => 15000]],
+            ])->assertCreated();
+            $this->postJson('/api/invoices', [
+                'branch_id' => $branch->id,
+                'payment_method' => 'cash',
+                'currency' => 'toman',
+                'items' => [['book_id' => $book->id, 'quantity' => $qty, 'actual_price' => 15000]],
+            ])->assertCreated();
+        }
+
+        $period = [
+            'period_start' => now()->subMonth()->toDateString(),
+            'period_end' => now()->toDateString(),
+            'currency' => 'toman',
+        ];
+
+        $aggregate = $this->getJson('/api/consignments/settlement-preview?'.http_build_query([
+            'aggregate' => 1,
+            'supplier_id' => $supplier->id,
+            ...$period,
+        ]))->assertOk()->json();
+
+        $this->assertTrue($aggregate['aggregate']);
+        $this->assertSame($supplier->id, $aggregate['supplier_id']);
+        $this->assertNull($aggregate['branch_id']);
+        $this->assertSame(70000.0, (float) $aggregate['total_payable']);
+        $this->assertCount(2, $aggregate['by_branch']);
+
+        $viaAccount = $this->getJson('/api/consignments/settlement-preview?'.http_build_query([
+            'aggregate' => 1,
+            'supplier_account_id' => $accountA->id,
+            ...$period,
+        ]))->assertOk()->json();
+        $this->assertSame(70000.0, (float) $viaAccount['total_payable']);
+
+        $this->actingAsRole('branch_manager', $a);
+        $this->getJson('/api/consignments/settlement-preview?'.http_build_query([
+            'aggregate' => 1,
+            'supplier_id' => $supplier->id,
+            ...$period,
+        ]))->assertForbidden();
+        $this->postJson('/api/consignments/settle?aggregate=1', [
+            'supplier_id' => $supplier->id,
+            'period_type' => 'custom',
+            'period_start' => $period['period_start'],
+            'period_end' => $period['period_end'],
+            'amount' => 70000,
+            'currency' => 'toman',
+            'payment_method' => 'cash',
+        ])->assertForbidden();
+
+        $this->actingAsRole('admin', $a);
+        $settled = $this->postJson('/api/consignments/settle?aggregate=1', [
+            'supplier_id' => $supplier->id,
+            'period_type' => 'custom',
+            'period_start' => $period['period_start'],
+            'period_end' => $period['period_end'],
+            'amount' => 70000,
+            'expected_total' => $aggregate['total_payable'],
+            'currency' => 'toman',
+            'payment_method' => 'cash',
+        ])->assertCreated()->json();
+
+        $this->assertTrue($settled['aggregate']);
+        $this->assertSame(2, $settled['count']);
+        $this->assertSame(70000.0, (float) $settled['total_amount']);
+        $amounts = collect($settled['settlements'])->map(fn ($row) => (float) $row['amount'])->sort()->values();
+        $this->assertSame([20000.0, 50000.0], $amounts->all());
+        foreach ($settled['settlements'] as $row) {
+            $this->assertNotNull($row['branch_id']);
+            $this->assertSame($supplier->id, $row['supplier_id']);
+        }
+
+        $after = $this->getJson('/api/consignments/settlement-preview?'.http_build_query([
+            'aggregate' => 1,
+            'supplier_id' => $supplier->id,
+            ...$period,
+        ]))->assertOk()->json();
+        $this->assertSame(0.0, (float) $after['total_payable']);
+    }
+
+    public function test_admin_aggregate_settle_allocates_partial_pro_rata(): void
+    {
+        $a = $this->makeBranch(['name' => 'A']);
+        $b = $this->makeBranch(['name' => 'B', 'city' => 'مشهد']);
+        $supplier = $this->makeSupplier();
+        $book = $this->makeBook();
+        $this->actingAsRole('admin', $a);
+
+        $accountA = app(SupplierAccountResolver::class)->ensureForPair($a->id, $supplier->id);
+        $accountB = app(SupplierAccountResolver::class)->ensureForPair($b->id, $supplier->id);
+
+        foreach ([[$a, $accountA, 2], [$b, $accountB, 5]] as [$branch, $account, $qty]) {
+            $this->postJson('/api/consignments', [
+                'supplier_account_id' => $account->id,
+                'branch_id' => $branch->id,
+                'currency' => 'toman',
+                'received_at' => now()->toDateString(),
+                'items' => [['book_id' => $book->id, 'quantity' => 10, 'cost_price' => 10000, 'selling_price' => 15000]],
+            ])->assertCreated();
+            $this->postJson('/api/invoices', [
+                'branch_id' => $branch->id,
+                'payment_method' => 'cash',
+                'currency' => 'toman',
+                'items' => [['book_id' => $book->id, 'quantity' => $qty, 'actual_price' => 15000]],
+            ])->assertCreated();
+        }
+
+        $settled = $this->postJson('/api/consignments/settle?aggregate=1', [
+            'supplier_id' => $supplier->id,
+            'period_type' => 'custom',
+            'period_start' => now()->subMonth()->toDateString(),
+            'period_end' => now()->toDateString(),
+            'amount' => 35000,
+            'currency' => 'toman',
+            'payment_method' => 'cash',
+        ])->assertCreated()->json();
+
+        $byAccount = collect($settled['settlements'])->keyBy('supplier_account_id');
+        $this->assertSame(10000.0, (float) $byAccount[$accountA->id]['amount']);
+        $this->assertSame(25000.0, (float) $byAccount[$accountB->id]['amount']);
     }
 
     public function test_balance_uses_payable_category_not_cogs_counterpart(): void
@@ -938,7 +1079,7 @@ class SupplierAccountWave1Test extends TestCase
             'amount' => 1000,
             'currency' => 'toman',
             'payment_method' => 'cash',
-        ])->assertStatus(422);
+        ])->assertStatus(422)->assertJsonPath('error', 'no_branch_payable');
     }
 
     public function test_unsettled_debt_rows_keyed_by_supplier_account_id(): void
@@ -1055,6 +1196,35 @@ class SupplierAccountWave1Test extends TestCase
             ->pluck('settlement_number');
         $this->assertTrue($ids->contains('SET-BR'));
         $this->assertFalse($ids->contains('SET-CORP'));
+    }
+
+    public function test_admin_can_show_settlement_and_other_branch_is_forbidden(): void
+    {
+        $a = $this->makeBranch(['name' => 'A']);
+        $b = $this->makeBranch(['name' => 'B', 'city' => 'مشهد']);
+        $supplier = $this->makeSupplier();
+        $this->actingAsRole('admin', $a);
+        $account = app(SupplierAccountResolver::class)->ensureForPair($a->id, $supplier->id);
+        $settlement = Settlement::create([
+            'supplier_id' => $supplier->id,
+            'supplier_account_id' => $account->id,
+            'branch_id' => $a->id,
+            'user_id' => null,
+            'settlement_number' => 'SET-SHOW',
+            'period_type' => 'custom',
+            'period_start' => now()->subMonth()->toDateString(),
+            'period_end' => now()->toDateString(),
+            'amount' => 3000,
+            'currency' => 'toman',
+            'payment_method' => 'bank_transfer',
+        ]);
+
+        $this->getJson('/api/consignments/settlements/'.$settlement->id)
+            ->assertOk()
+            ->assertJsonPath('settlement_number', 'SET-SHOW');
+
+        $this->actingAsRole('branch_manager', $b);
+        $this->getJson('/api/consignments/settlements/'.$settlement->id)->assertForbidden();
     }
 
     public function test_assigned_accountant_cannot_access_other_branch_settlement(): void

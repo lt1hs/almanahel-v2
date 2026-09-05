@@ -38,10 +38,40 @@ export function intakeSupplierPayload(
     return { supplier_id: selection.canonicalSupplierId };
 }
 
+export const ALL_BRANCHES_VALUE = "all";
+
 export function supplierAccountsUrl(branchId: number, financial = false): string {
     const params = new URLSearchParams({ branch_id: String(branchId) });
     if (financial) {
         params.set("financial", "1");
     }
     return `/supplier-accounts?${params.toString()}`;
+}
+
+export function supplierAccountsAggregateUrl(financial = false): string {
+    const params = new URLSearchParams({ aggregate: "1" });
+    if (financial) {
+        params.set("financial", "1");
+    }
+    return `/supplier-accounts?${params.toString()}`;
+}
+
+/** Deduplicate per-branch accounts onto one row per canonical supplier. */
+export function uniqueCanonicalSuppliers(
+    rows: Array<{ id: number; supplier_id?: number | null; display_name?: string; name?: string }>
+): { id: number; name: string }[] {
+    const seen = new Set<number>();
+    const out: { id: number; name: string }[] = [];
+    for (const row of rows) {
+        const supplierId = Number(row.supplier_id);
+        if (!Number.isFinite(supplierId) || supplierId <= 0 || seen.has(supplierId)) {
+            continue;
+        }
+        seen.add(supplierId);
+        out.push({
+            id: supplierId,
+            name: String(row.display_name || row.name || `#${supplierId}`),
+        });
+    }
+    return out;
 }

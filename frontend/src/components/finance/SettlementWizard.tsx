@@ -1,25 +1,54 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
     Calculator, ChevronDown, Building2, BookOpen, CalendarDays,
-    Printer, CheckCircle2, Banknote, Landmark,
+    FileText, ScrollText, CheckCircle2, Banknote, Landmark, Palette,
 } from "lucide-react";
+import { Link } from "@/i18n/routing";
+import { cacheSettlementInvoiceRow } from "@/lib/settlementInvoiceLayout";
 import { Card, CardContent } from "@/components/ui/Card";
 import { cn } from "@/lib/utils";
 import { useTranslation } from "@/hooks/useTranslation";
 import { useNotify } from "@/hooks/useNotify";
 import { printSettlement, buildSettlementPrintLabels } from "@/lib/printSettlement";
+import { ALL_BRANCHES_VALUE } from "@/lib/supplierAccountSelection";
 
 interface SettlementItem {
     title: string;
     qty: number;
+    remainingQty?: number;
     price: number;
     total: number;
     commission: number;
     publisherShare?: number;
     kind?: "sale" | "gift";
+    branchId?: number | null;
+    branchName?: string | null;
 }
+
+export type SettlementConfirmResult = {
+    id?: number;
+    settlement_number?: string;
+    settlements?: Array<{ id?: number; settlement_number?: string }>;
+} | false;
+
+type IssuedInvoice = {
+    supplierName: string;
+    fromDate: string;
+    toDate: string;
+    amount: number;
+    items: SettlementItem[];
+    docNumber: string;
+    settlementId?: number;
+};
+
+export type SettlementBranchShare = {
+    branch_id: number;
+    branch_name?: string | null;
+    remaining_payable?: string | number;
+    remaining_qty?: string | number;
+};
 
 export type SettlementBreakdown = {
     sales_payable?: string | number;
@@ -27,6 +56,7 @@ export type SettlementBreakdown = {
     return_reversals?: string | number;
     previously_settled?: string | number;
     remaining_payable?: string | number;
+    by_branch?: SettlementBranchShare[];
 };
 
 function toDateInput(d: Date): string {
@@ -55,10 +85,46 @@ function periodPreset(kind: "month" | "90d" | "year"): { from: string; to: strin
     return { from: toDateInput(new Date(to.getFullYear(), 0, 1)), to: toDateInput(to) };
 }
 
+function groupSettlementByBranch(items: SettlementItem[]): { branchId: number | null; branchName: string; items: SettlementItem[] }[] {
+    const groups = new Map<string, { branchId: number | null; branchName: string; items: SettlementItem[] }>();
+    for (const item of items) {
+        const branchId = item.branchId != null && Number.isFinite(item.branchId) ? Number(item.branchId) : null;
+        const key = branchId != null ? `b:${branchId}` : "none";
+        const existing = groups.get(key);
+        if (existing) {
+            existing.items.push(item);
+            continue;
+        }
+        groups.set(key, {
+            branchId,
+            branchName: item.branchName || (branchId != null ? `#${branchId}` : ""),
+            items: [item],
+        });
+    }
+    return Array.from(groups.values());
+}
+
+function uniqueRemainingQty(items: SettlementItem[]): number {
+    const seen = new Set<string>();
+    let sum = 0;
+    for (const item of items) {
+        const key = `${item.branchId ?? ""}:${item.title}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        sum += Number(item.remainingQty ?? 0);
+    }
+    return sum;
+}
+
 interface SettlementWizardProps {
     suppliers: { id: number; name: string }[];
     onCalculate: (supplierAccountId: number, fromDate: string, toDate: string) => Promise<void>;
-    onConfirm?: (supplierAccountId: number, fromDate: string, toDate: string, amount: number) => Promise<void>;
+    onConfirm?: (
+        supplierAccountId: number,
+        fromDate: string,
+        toDate: string,
+        amount: number
+    ) => Promise<SettlementConfirmResult | void>;
     settlementData: SettlementItem[];
     breakdown?: SettlementBreakdown | null;
     isLoading?: boolean;
@@ -73,6 +139,7 @@ interface SettlementWizardProps {
     selectedBranchId?: string;
     onBranchChange?: (branchId: string) => void;
     showBranchPicker?: boolean;
+    allowAllBranches?: boolean;
 }
 
 export function SettlementWizard({
@@ -92,8 +159,9 @@ export function SettlementWizard({
     selectedBranchId = "",
     onBranchChange,
     showBranchPicker = false,
+    allowAllBranches = false,
 }: SettlementWizardProps) {
-    const { t, formatNumber } = useTranslation();
+    const { t, formatNumber, language } = useTranslation();
     const notify = useNotify();
     const symbol = currencySymbol || t("common.currency.tomanSymbol");
     const initialDates = defaultPeriod();
@@ -103,6 +171,7 @@ export function SettlementWizard({
     const [toDate, setToDate] = useState(initialDates.to);
     const [settleAmount, setSettleAmount] = useState("");
     const [activePreset, setActivePreset] = useState<"month" | "90d" | "year" | "custom">("month");
+    const [issuedInvoice, setIssuedInvoice] = useState<IssuedInvoice | null>(null);
 
     useEffect(() => {
         const next = defaultPeriod();
@@ -112,8 +181,11 @@ export function SettlementWizard({
         setSettleAmount("");
     }, [sessionKey]);
 
+    const allBranchesMode = Boolean(allowAllBranches && selectedBranchId === ALL_BRANCHES_VALUE);
+    const hasScope = Boolean(branchId) || allBranchesMode;
+
     useEffect(() => {
-        if (!suppliers.length || disabled || !branchId) {
+        if (!suppliers.length || disabled || !hasScope) {
             setSelectedSupplier(null);
             return;
         }
@@ -124,7 +196,7 @@ export function SettlementWizard({
             if (prev && suppliers.some((s) => s.id === prev.id)) return prev;
             return fromUrl || suppliers[0] || null;
         });
-    }, [suppliers, initialSupplierAccountId, disabled, branchId, sessionKey]);
+    }, [suppliers, initialSupplierAccountId, disabled, hasScope, sessionKey]);
 
     const totalPayable = settlementData.reduce(
         (acc, item) => acc + (item.publisherShare ?? item.total - item.commission), 0
@@ -144,24 +216,49 @@ export function SettlementWizard({
     const tableHeaders = [
         t("finance.settlement.table.book"),
         t("finance.settlement.table.soldQty"),
+        t("finance.settlement.table.remainingQty"),
         t("finance.settlement.table.total"),
-        t("finance.settlement.table.commission"),
         t("finance.settlement.table.publisherShare"),
     ];
 
-    const handlePrint = () => {
+    const branchGroups = useMemo(() => groupSettlementByBranch(settlementData), [settlementData]);
+    const splitByBranch = allBranchesMode || branchGroups.length > 1;
+
+    const printArgs = (items: SettlementItem[], extra?: Partial<Parameters<typeof printSettlement>[0]>) => ({
+        supplierName: extra?.supplierName || selectedSupplier?.name || "",
+        fromDate: extra?.fromDate || fromDate,
+        toDate: extra?.toDate || toDate,
+        items,
+        formatNumber,
+        currencySymbol: symbol,
+        labels: buildSettlementPrintLabels(t),
+        dir: "rtl" as const,
+        lang: (language === "ar" ? "ar" : "fa") as "fa" | "ar",
+        ...extra,
+    });
+
+    const handlePrintReport = async () => {
         if (!selectedSupplier || settlementData.length === 0) return;
         try {
-            printSettlement({
-                supplierName: selectedSupplier.name,
-                fromDate,
-                toDate,
-                items: settlementData,
-                formatNumber,
-                currencySymbol: symbol,
-                labels: buildSettlementPrintLabels(t),
-                dir: "rtl",
-            });
+            await printSettlement(printArgs(settlementData, { variant: "report" }));
+        } catch {
+            notify.error("toast.invoicePrintError");
+        }
+    };
+
+    const handlePrintInvoice = async (issued?: IssuedInvoice | null) => {
+        const doc = issued || issuedInvoice;
+        if (!doc) return;
+        try {
+            await printSettlement(printArgs(doc.items, {
+                variant: "invoice",
+                supplierName: doc.supplierName,
+                fromDate: doc.fromDate,
+                toDate: doc.toDate,
+                settledAmount: doc.amount,
+                docNumber: doc.docNumber,
+                settlementId: doc.settlementId,
+            }));
         } catch {
             notify.error("toast.invoicePrintError");
         }
@@ -171,9 +268,39 @@ export function SettlementWizard({
     const amountValid =
         Number.isFinite(amountNum) && amountNum > 0 && amountNum <= totalPayable + 1e-9;
 
-    const confirmAmount = () => {
-        if (!selectedSupplier || !amountValid) return;
-        onConfirm?.(selectedSupplier.id, fromDate, toDate, amountNum);
+    const confirmAmount = async () => {
+        if (!selectedSupplier || !amountValid || !onConfirm) return;
+        const snapshot: IssuedInvoice = {
+            supplierName: selectedSupplier.name,
+            fromDate,
+            toDate,
+            amount: amountNum,
+            items: settlementData,
+            docNumber: "",
+        };
+        const result = await onConfirm(selectedSupplier.id, fromDate, toDate, amountNum);
+        if (result === false) return;
+        const settlementId = result?.id || result?.settlements?.[0]?.id;
+        const docNumber =
+            result?.settlement_number ||
+            result?.settlements?.[0]?.settlement_number ||
+            `SET-${new Date().toISOString().slice(0, 10).replace(/-/g, "")}`;
+        if (settlementId) {
+            cacheSettlementInvoiceRow({
+                id: settlementId,
+                settlement_number: docNumber,
+                amount: amountNum,
+                period_start: fromDate,
+                period_end: toDate,
+                paid_at: new Date().toISOString(),
+                supplier: { name: selectedSupplier.name },
+            });
+        }
+        setIssuedInvoice({
+            ...snapshot,
+            docNumber,
+            settlementId,
+        });
     };
 
     const amountEntered = Number.isFinite(amountNum) && amountNum > 0;
@@ -188,7 +315,7 @@ export function SettlementWizard({
         { key: "remaining", label: t("finance.settlement.remainingPayable"), value: breakdown?.remaining_payable ?? totalPayable, emphasize: true },
     ];
 
-    const canCalculate = Boolean(branchId && selectedSupplier && fromDate && toDate && !isLoading && !disabled);
+    const canCalculate = Boolean(hasScope && selectedSupplier && fromDate && toDate && !isLoading && !disabled);
 
     return (
         <div className="space-y-4">
@@ -249,6 +376,9 @@ export function SettlementWizard({
                                     className="h-11 w-full rounded-xl border border-ink/10 bg-white/90 px-3 text-[12px] font-vazirmatn outline-none focus:border-primary/30 disabled:opacity-40"
                                 >
                                     <option value="">{t("expenses.form.selectBranch")}</option>
+                                    {allowAllBranches && (
+                                        <option value={ALL_BRANCHES_VALUE}>{t("finance.ledger.allBranches")}</option>
+                                    )}
                                     {branches.map((b) => (
                                         <option key={b.id} value={b.id}>{b.name}</option>
                                     ))}
@@ -262,7 +392,7 @@ export function SettlementWizard({
                             </label>
                             <button
                                 type="button"
-                                disabled={disabled || !branchId}
+                                disabled={disabled || !hasScope}
                                 onClick={() => setOpen((v) => !v)}
                                 className="h-11 w-full rounded-xl border border-ink/10 bg-white/90 px-3 flex items-center justify-between text-[12px] font-black font-vazirmatn disabled:opacity-40"
                             >
@@ -303,7 +433,7 @@ export function SettlementWizard({
                                     setFromDate(e.target.value);
                                     setActivePreset("custom");
                                 }}
-                                disabled={disabled || !branchId}
+                                disabled={disabled || !hasScope}
                                 className="h-11 w-full rounded-xl border border-ink/10 bg-white/90 px-3 text-[12px] font-vazirmatn outline-none focus:border-primary/30 disabled:opacity-40"
                             />
                         </div>
@@ -319,7 +449,7 @@ export function SettlementWizard({
                                     setToDate(e.target.value);
                                     setActivePreset("custom");
                                 }}
-                                disabled={disabled || !branchId}
+                                disabled={disabled || !hasScope}
                                 className="h-11 w-full rounded-xl border border-ink/10 bg-white/90 px-3 text-[12px] font-vazirmatn outline-none focus:border-primary/30 disabled:opacity-40"
                             />
                         </div>
@@ -337,16 +467,22 @@ export function SettlementWizard({
                         </div>
                     </div>
 
-                    {!branchId && (
+                    {!hasScope && (
                         <p className="text-[11px] font-bold text-amber-700 bg-amber-50 border border-amber-100 rounded-xl px-3 py-2 flex items-center gap-1.5">
                             <Building2 className="w-3.5 h-3.5 shrink-0" />
                             {t("expenses.form.selectBranch")}
+                        </p>
+                    )}
+                    {allBranchesMode && (
+                        <p className="text-[11px] font-bold text-ink/50 bg-parchment/70 border border-ink/5 rounded-xl px-3 py-2">
+                            {t("finance.settlement.aggregateHint")}
                         </p>
                     )}
                 </CardContent>
             </Card>
 
             {breakdown && settlementData.length > 0 && (
+                <div className="space-y-2">
                 <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
                     {breakdownRows.map((row) => (
                         <Card
@@ -369,92 +505,121 @@ export function SettlementWizard({
                         </Card>
                     ))}
                 </div>
+                </div>
             )}
 
-            <Card className="hidden overflow-hidden rounded-3xl border border-white/80 bg-white/70 shadow-[0_18px_70px_rgba(23,32,31,0.04)] backdrop-blur-md md:block">
-                <CardContent className="p-0 pt-0">
-                    {isLoading && (
-                        <div className="p-8 space-y-3">
-                            {Array.from({ length: 3 }).map((_, i) => (
-                                <div key={i} className="h-10 bg-parchment/30 rounded-xl animate-pulse" />
-                            ))}
+            {isLoading && (
+                <Card className="overflow-hidden rounded-3xl border border-white/80 bg-white/70 shadow-[0_18px_70px_rgba(23,32,31,0.04)]">
+                    <CardContent className="space-y-3 p-8 pt-8">
+                        {Array.from({ length: 3 }).map((_, i) => (
+                            <div key={i} className="h-10 animate-pulse rounded-xl bg-parchment/30" />
+                        ))}
+                    </CardContent>
+                </Card>
+            )}
+
+            {issuedInvoice && (
+                <Card className="overflow-hidden rounded-3xl border border-emerald-100 bg-emerald-50/80">
+                    <CardContent className="flex flex-wrap items-center justify-between gap-3 p-4 pt-4">
+                        <div>
+                            <p className="text-[12px] font-black font-vazirmatn text-ink">{t("finance.settlement.invoiceReady")}</p>
+                            <p className="mt-0.5 text-[10px] font-bold text-ink/40">
+                                {issuedInvoice.docNumber} · {formatNumber(issuedInvoice.amount)} {symbol}
+                            </p>
                         </div>
-                    )}
-                    {!isLoading && settlementData.length > 0 && (
-                        <table className="w-full text-end">
-                            <thead>
-                                <tr className="border-b border-ink/5 bg-parchment/20">
-                                    {tableHeaders.map((h) => (
-                                        <th key={h} className="px-5 py-3 text-[9px] font-black uppercase tracking-widest text-ink/30">
-                                            {h}
-                                        </th>
-                                    ))}
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {settlementData.map((item, i) => (
-                                    <tr key={i} className="border-b border-ink/5 last:border-0">
-                                        <td className="px-5 py-3.5">
-                                            <div className="flex items-center justify-end gap-2">
-                                                <span className="text-[12px] font-black font-vazirmatn text-ink">
-                                                    {item.title}
-                                                    {item.kind === "gift" ? ` (${t("finance.settlement.giftItem")})` : ""}
-                                                </span>
-                                                <div className="w-7 h-7 rounded-lg bg-parchment/60 border border-ink/5 flex items-center justify-center shrink-0">
-                                                    <BookOpen className="w-3.5 h-3.5 text-ink/20" />
+                        <div className="flex flex-wrap gap-2">
+                            {issuedInvoice.settlementId ? (
+                                <Link
+                                    href={`/dashboard/consignment/settle/invoice?id=${issuedInvoice.settlementId}`}
+                                    className="flex h-10 items-center justify-center gap-2 rounded-xl border border-ink/10 bg-white px-4 text-[11px] font-black text-ink/60"
+                                >
+                                    <Palette className="h-4 w-4 shrink-0" />
+                                    {t("consignment.settle.invoice.design")}
+                                </Link>
+                            ) : null}
+                            <button
+                                type="button"
+                                onClick={() => handlePrintInvoice(issuedInvoice)}
+                                className="flex h-10 items-center justify-center gap-2 rounded-xl bg-primary px-4 text-[11px] font-black text-white"
+                            >
+                                <ScrollText className="h-4 w-4 shrink-0" />
+                                {t("finance.settlement.printInvoice")}
+                            </button>
+                        </div>
+                    </CardContent>
+                </Card>
+            )}
+
+            {!isLoading && settlementData.length === 0 && !issuedInvoice && (
+                <Card className="overflow-hidden rounded-3xl border border-white/80 bg-white/70">
+                    <CardContent className="p-10 pt-10 text-center text-[11px] font-black font-vazirmatn text-ink/25">
+                        {t("finance.settlement.noData")}
+                    </CardContent>
+                </Card>
+            )}
+
+            {!isLoading && settlementData.length > 0 && (
+                <div className="space-y-4">
+                    {branchGroups.map((group) => {
+                        const payable = group.items.reduce(
+                            (acc, item) => acc + (item.publisherShare ?? item.total - item.commission),
+                            0
+                        );
+                        return (
+                            <Card
+                                key={group.branchId ?? "none"}
+                                className="overflow-hidden rounded-3xl border border-white/80 bg-white/70 shadow-[0_18px_70px_rgba(23,32,31,0.04)] backdrop-blur-md"
+                            >
+                                <CardContent className="p-0 pt-0">
+                                    {splitByBranch && group.branchName ? (
+                                        <div className="flex items-center justify-between gap-3 border-b border-ink/5 bg-parchment/35 px-5 py-3.5">
+                                            <div className="flex min-w-0 items-center gap-2.5">
+                                                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
+                                                    <Building2 className="h-4 w-4" />
+                                                </div>
+                                                <div className="min-w-0">
+                                                    <p className="truncate text-[13px] font-black font-vazirmatn text-ink">{group.branchName}</p>
+                                                    <p className="text-[10px] font-bold text-ink/35">
+                                                        {t("finance.settlement.branchStock")}: {formatNumber(uniqueRemainingQty(group.items))} {t("common.units.volume")}
+                                                    </p>
                                                 </div>
                                             </div>
-                                        </td>
-                                        <td className="px-5 py-3.5 text-[12px] font-black font-vazirmatn tabular-nums text-ink/60">
-                                            {formatNumber(item.qty)}
-                                            <span className="text-[9px] text-ink/30 ms-1">{t("common.units.volume")}</span>
-                                        </td>
-                                        <td className="px-5 py-3.5 text-[12px] font-black font-vazirmatn tabular-nums text-ink/60">
-                                            {formatNumber(item.total)}
-                                        </td>
-                                        <td className="px-5 py-3.5 text-[12px] font-black font-vazirmatn tabular-nums text-rose-400">
-                                            {formatNumber(item.commission)}
-                                        </td>
-                                        <td className="px-5 py-3.5 text-[14px] font-black font-vazirmatn tabular-nums text-primary">
-                                            {formatNumber(item.publisherShare ?? item.total - item.commission)}
-                                        </td>
-                                    </tr>
-                                ))}
-                            </tbody>
-                        </table>
-                    )}
-                    {settlementData.length === 0 && !isLoading && (
-                        <div className="p-10 text-center text-ink/25 font-black text-[11px] font-vazirmatn">
-                            {t("finance.settlement.noData")}
-                        </div>
-                    )}
-                </CardContent>
-            </Card>
-
-            <div className="space-y-3 md:hidden">
-                {isLoading && (
-                    Array.from({ length: 2 }).map((_, i) => (
-                        <div key={i} className="h-24 bg-parchment/20 rounded-2xl animate-pulse" />
-                    ))
-                )}
-                {!isLoading && settlementData.map((item, i) => (
-                    <Card key={i} className="border border-white/70 bg-white/50 backdrop-blur-md rounded-2xl overflow-hidden">
-                        <CardContent className="p-4 space-y-3">
-                            <div className="flex items-center justify-between">
-                                <span className="text-[9px] font-black text-ink/30 font-vazirmatn">
-                                    {formatNumber(item.qty)} {t("common.units.volume")}
-                                </span>
-                                <span className="text-[13px] font-black font-vazirmatn text-ink">{item.title}</span>
-                            </div>
-                            <div className="grid grid-cols-3 gap-2 pt-2 border-t border-ink/5">
-                                <MobileStat label={t("finance.settlement.total")} value={formatNumber(item.total)} />
-                                <MobileStat label={t("finance.settlement.commission")} value={formatNumber(item.commission)} danger />
-                                <MobileStat label={t("finance.settlement.publisherShare")} value={formatNumber(item.publisherShare ?? item.total - item.commission)} primary />
-                            </div>
-                        </CardContent>
-                    </Card>
-                ))}
-            </div>
+                                            <p className="shrink-0 font-vazirmatn text-[13px] font-black tabular-nums text-primary">
+                                                {formatNumber(payable)}
+                                                <span className="ms-1 text-[9px] font-bold text-ink/30">{symbol}</span>
+                                            </p>
+                                        </div>
+                                    ) : null}
+                                    <div className="hidden md:block">
+                                        <SettlementBooksTable
+                                            items={group.items}
+                                            headers={tableHeaders}
+                                            formatNumber={formatNumber}
+                                            giftLabel={t("finance.settlement.giftItem")}
+                                            unitLabel={t("common.units.volume")}
+                                        />
+                                    </div>
+                                    <div className="space-y-3 p-3 md:hidden">
+                                        {group.items.map((item, i) => (
+                                            <div key={`${group.branchId ?? "none"}-${i}`} className="rounded-2xl border border-ink/5 bg-white/80 p-3.5">
+                                                <p className="text-start text-[13px] font-black font-vazirmatn text-ink">
+                                                    {item.title}
+                                                    {item.kind === "gift" ? ` (${t("finance.settlement.giftItem")})` : ""}
+                                                </p>
+                                                <div className="mt-3 grid grid-cols-3 gap-2 border-t border-ink/5 pt-2">
+                                                    <MobileStat label={t("finance.settlement.table.soldQty")} value={formatNumber(item.qty)} />
+                                                    <MobileStat label={t("finance.settlement.table.remainingQty")} value={formatNumber(item.remainingQty ?? 0)} />
+                                                    <MobileStat label={t("finance.settlement.publisherShare")} value={formatNumber(item.publisherShare ?? item.total - item.commission)} primary />
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </CardContent>
+                            </Card>
+                        );
+                    })}
+                </div>
+            )}
 
             <div className="sticky bottom-20 z-20 md:bottom-4">
                 <div className="overflow-hidden rounded-3xl border border-white/80 bg-white/90 shadow-[0_18px_70px_rgba(23,32,31,0.12)] backdrop-blur-xl">
@@ -530,18 +695,18 @@ export function SettlementWizard({
                         <div className="flex w-full gap-2 md:w-auto md:flex-col lg:flex-row">
                             <button
                                 type="button"
-                                disabled={disabled || !branchId || settlementData.length === 0 || !selectedSupplier}
-                                onClick={handlePrint}
-                                className="flex h-12 flex-1 items-center justify-center gap-2 rounded-xl border border-ink/10 bg-white px-4 text-[11px] font-black text-ink/55 transition-all hover:border-primary/20 hover:text-primary disabled:opacity-40 md:min-w-[9.5rem]"
+                                disabled={disabled || !hasScope || settlementData.length === 0 || !selectedSupplier}
+                                onClick={handlePrintReport}
+                                className="flex h-12 flex-1 items-center justify-center gap-2 rounded-xl border border-ink/10 bg-white px-3 text-[11px] font-black text-ink/55 transition-all hover:border-primary/20 hover:text-primary disabled:opacity-40 md:min-w-[8.5rem]"
                             >
-                                <Printer className="h-4 w-4 shrink-0" />
-                                {t("finance.settlement.downloadPdf")}
+                                <FileText className="h-4 w-4 shrink-0" />
+                                {t("finance.settlement.printReport")}
                             </button>
                             <button
                                 type="button"
                                 disabled={
                                     disabled ||
-                                    !branchId ||
+                                    !hasScope ||
                                     settlementData.length === 0 ||
                                     !selectedSupplier ||
                                     !fromDate ||
@@ -559,6 +724,74 @@ export function SettlementWizard({
                     </div>
                 </div>
             </div>
+        </div>
+    );
+}
+
+function SettlementBooksTable({
+    items,
+    headers,
+    formatNumber,
+    giftLabel,
+    unitLabel,
+}: {
+    items: SettlementItem[];
+    headers: string[];
+    formatNumber: (n: number) => string;
+    giftLabel: string;
+    unitLabel: string;
+}) {
+    return (
+        <div className="overflow-x-auto" dir="rtl">
+            <table className="w-full min-w-[40rem] border-collapse text-start">
+                <thead>
+                    <tr className="border-b border-ink/5 bg-parchment/25">
+                        {headers.map((header, index) => (
+                            <th
+                                key={header}
+                                className={cn(
+                                    "py-3 text-[9px] font-black uppercase tracking-widest text-ink/35",
+                                    index === 0 ? "ps-5 pe-3" : "px-3",
+                                    index === headers.length - 1 && "pe-5"
+                                )}
+                            >
+                                {header}
+                            </th>
+                        ))}
+                    </tr>
+                </thead>
+                <tbody>
+                    {items.map((item, i) => (
+                        <tr key={i} className="border-b border-ink/5 last:border-0 even:bg-parchment/15">
+                            <td className="py-3.5 ps-5 pe-3">
+                                <div className="flex items-center gap-2.5">
+                                    <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-ink/5 bg-parchment/60">
+                                        <BookOpen className="h-3.5 w-3.5 text-ink/20" />
+                                    </div>
+                                    <span className="text-[12px] font-black font-vazirmatn text-ink">
+                                        {item.title}
+                                        {item.kind === "gift" ? ` (${giftLabel})` : ""}
+                                    </span>
+                                </div>
+                            </td>
+                            <td className="px-3 py-3.5 text-[12px] font-black font-vazirmatn tabular-nums text-ink/65">
+                                {formatNumber(item.qty)}
+                                <span className="ms-1 text-[9px] text-ink/30">{unitLabel}</span>
+                            </td>
+                            <td className="px-3 py-3.5 text-[12px] font-black font-vazirmatn tabular-nums text-ink/65">
+                                {formatNumber(item.remainingQty ?? 0)}
+                                <span className="ms-1 text-[9px] text-ink/30">{unitLabel}</span>
+                            </td>
+                            <td className="px-3 py-3.5 text-[12px] font-black font-vazirmatn tabular-nums text-ink/65">
+                                {formatNumber(item.total)}
+                            </td>
+                            <td className="py-3.5 pe-5 ps-3 text-[14px] font-black font-vazirmatn tabular-nums text-primary">
+                                {formatNumber(item.publisherShare ?? item.total - item.commission)}
+                            </td>
+                        </tr>
+                    ))}
+                </tbody>
+            </table>
         </div>
     );
 }

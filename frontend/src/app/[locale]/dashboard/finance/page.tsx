@@ -5,6 +5,7 @@ import { usePageReady } from "@/components/NavigationProgress";
 import React, { useEffect, useState, useCallback } from "react";
 import dynamic from "next/dynamic";
 import { SettlementWizard } from "@/components/finance/SettlementWizard";
+import { printSettlement, buildSettlementPrintLabels } from "@/lib/printSettlement";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card";
 import {
     Wallet, TrendingUp, Receipt, BarChart2, FileText, History,
@@ -69,7 +70,7 @@ export default function FinancePage() {
 }
 
 function FinancePageContent() {
-    const { t, formatNumber, isArabic, isDinar, preferredCurrency } = useTranslation();
+    const { t, formatNumber, isArabic, isDinar, preferredCurrency, language } = useTranslation();
     const notify = useNotify();
     const { user } = useAuth();
     const isAdmin = user?.role === "admin" || user?.role === "super_admin";
@@ -355,6 +356,7 @@ function FinancePageContent() {
             const items = (data.items || []).map((item: any) => {
                 const total = Number(item.open_amount ?? item.total ?? 0);
                 const qty = Number(item.open_qty ?? item.qty_sold ?? 0);
+                const remainingQty = Number(item.remaining_qty ?? 0);
                 const price = Number(item.unit_cost ?? item.cost_price ?? 0);
                 const commission = Number(
                     item.commission ?? 0
@@ -363,6 +365,9 @@ function FinancePageContent() {
                 return {
                     title: item.title || (bookId ? `#${bookId}` : "—"),
                     qty,
+                    remainingQty,
+                    branchId: item.branch_id != null ? Number(item.branch_id) : null,
+                    branchName: item.branch_name ? String(item.branch_name) : null,
                     price,
                     total,
                     commission,
@@ -387,7 +392,7 @@ function FinancePageContent() {
     const handleConfirmSettlement = async (supplierAccountId: number, fromDate: string, toDate: string, amount: number) => {
         setIsConfirming(true);
         try {
-            await apiRequest("/consignments/settle", {
+            const result = await apiRequest("/consignments/settle", {
                 method: "POST",
                 body: JSON.stringify({
                     supplier_account_id: supplierAccountId,
@@ -404,11 +409,13 @@ function FinancePageContent() {
             setSettlementData([]);
             fetchOverview(true);
             if (activeTab === "history") refreshHistory();
+            return result;
         } catch (error) {
             console.error("Settlement failed:", error);
             const msg = error instanceof Error ? error.message : "";
             if (msg) notify.rawError(msg);
             else notify.error("toast.settlementError");
+            return false;
         } finally {
             setIsConfirming(false);
         }
@@ -670,15 +677,43 @@ function FinancePageContent() {
                                         </div>
                                     </div>
                                 </div>
-                                <div className="text-end shrink-0">
-                                    <p className="text-[14px] font-black font-vazirmatn tabular-nums text-primary leading-none">
-                                        {formatNumber(Number(s.amount || 0))}
-                                    </p>
-                                    <p className="text-[8px] text-ink/30 mt-0.5">
-                                        {s.currency === "dinar"
-                                            ? t("common.currency.dinarSymbol")
-                                            : t("common.currency.tomanSymbol")}
-                                    </p>
+                                <div className="flex items-center gap-2.5 shrink-0">
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            printSettlement({
+                                                supplierName: s.supplier?.name || "—",
+                                                fromDate: formatPeriodDate(s.period_start),
+                                                toDate: formatPeriodDate(s.period_end),
+                                                items: [],
+                                                formatNumber,
+                                                currencySymbol: s.currency === "dinar"
+                                                    ? t("common.currency.dinarSymbol")
+                                                    : t("common.currency.tomanSymbol"),
+                                                labels: buildSettlementPrintLabels(t),
+                                                dir: "rtl",
+                                                lang: language === "ar" ? "ar" : "fa",
+                                                variant: "invoice",
+                                                settledAmount: Number(s.amount || 0),
+                                                docNumber: s.settlement_number,
+                                                issueDate: formatPeriodDate(s.paid_at || s.created_at),
+                                                settlementId: s.id,
+                                            }).catch(() => notify.error("toast.invoicePrintError"));
+                                        }}
+                                        className="h-8 rounded-lg border border-ink/10 bg-white px-2.5 text-[10px] font-black text-ink/55 hover:border-primary/20 hover:text-primary"
+                                    >
+                                        {t("finance.settlement.printInvoice")}
+                                    </button>
+                                    <div className="text-end">
+                                        <p className="text-[14px] font-black font-vazirmatn tabular-nums text-primary leading-none">
+                                            {formatNumber(Number(s.amount || 0))}
+                                        </p>
+                                        <p className="text-[8px] text-ink/30 mt-0.5">
+                                            {s.currency === "dinar"
+                                                ? t("common.currency.dinarSymbol")
+                                                : t("common.currency.tomanSymbol")}
+                                        </p>
+                                    </div>
                                 </div>
                             </div>
                         ))

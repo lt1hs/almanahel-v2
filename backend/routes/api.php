@@ -96,6 +96,7 @@ Route::middleware(['auth:sanctum', AuditMutations::class])->group(function () {
     Route::get('/consignments/unsettled-by-supplier', [ConsignmentController::class, 'unsettledBySupplier']);
     Route::get('/consignments/settlement-preview', [ConsignmentController::class, 'settlementPreview']);
     Route::get('/consignments/settlements',        [ConsignmentController::class, 'settlements']);
+    Route::get('/consignments/settlements/{settlement}', [ConsignmentController::class, 'showSettlement']);
     Route::post('/consignments/settle',            [ConsignmentController::class, 'settle']);
     Route::post('/consignments/settle-bulk',       [ConsignmentController::class, 'settleBulk']);
     Route::put('/consignments/settlements/{settlement}/check', [ConsignmentController::class, 'updateSettlementCheck']);

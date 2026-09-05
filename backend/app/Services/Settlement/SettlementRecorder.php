@@ -118,4 +118,141 @@ class SettlementRecorder
             return $created;
         });
     }
+
+    /**
+     * One admin confirm → one settlement per branch. Never a corporate (null branch) row.
+     *
+     * @param  array<string, mixed>  $data
+     * @return list<Settlement>
+     */
+    public function createForAllBranches(User $user, array $data): array
+    {
+        BranchAccess::assertCanAggregateSupplierAccounts($user);
+
+        if (!empty($data['aggregate'])) {
+            unset($data['aggregate']);
+        }
+
+        $method = (string) ($data['payment_method'] ?? '');
+        if ($method === 'check') {
+            throw new DomainException('تسویه همه شعب با چک مجاز نیست', 422);
+        }
+
+        $supplierId = $this->canonicalSupplierId($data);
+        $currency = (string) $data['currency'];
+        $amount = Money::of($data['amount'] ?? 0);
+        if (Money::cmp($amount, '0') <= 0) {
+            throw new DomainException('مبلغ تسویه باید بزرگ‌تر از صفر باشد', 422);
+        }
+
+        return DB::transaction(function () use ($user, $data, $supplierId, $currency, $amount) {
+            $preview = $this->period->previewAllBranches(
+                $supplierId,
+                $currency,
+                (string) $data['period_start'],
+                (string) $data['period_end']
+            );
+            $rows = $preview['by_branch'] ?? [];
+            if ($rows === []) {
+                throw new DomainException('مانده‌ای برای تسویه همه شعب نیست', 422, [
+                    'error' => 'no_branch_payable',
+                ]);
+            }
+
+            if (!empty($data['expected_total']) && Money::cmp((string) $data['expected_total'], $preview['total_payable']) !== 0) {
+                throw new DomainException('مبلغ قابل پرداخت از زمان پیش‌نمایش تغییر کرده است', 409, [
+                    'current_payable' => $preview['total_payable'],
+                ]);
+            }
+
+            if (Money::cmp($amount, $preview['total_payable']) > 0) {
+                throw new DomainException('مبلغ تسویه بیشتر از بدهی قابل پرداخت است', 422, [
+                    'max_payable' => $preview['total_payable'],
+                ]);
+            }
+
+            $shares = $this->allocateByRemaining($rows, $amount);
+            $created = [];
+            foreach ($shares as $share) {
+                $created[] = $this->create($user, [
+                    'supplier_account_id' => $share['supplier_account_id'],
+                    'branch_id' => $share['branch_id'],
+                    'period_type' => $data['period_type'],
+                    'period_start' => $data['period_start'],
+                    'period_end' => $data['period_end'],
+                    'amount' => $share['amount'],
+                    'expected_total' => $share['remaining_payable'],
+                    'currency' => $currency,
+                    'payment_method' => $data['payment_method'],
+                    'notes' => $data['notes'] ?? null,
+                ]);
+            }
+
+            return $created;
+        });
+    }
+
+    /**
+     * @param  array<string, mixed>  $data
+     */
+    private function canonicalSupplierId(array $data): int
+    {
+        if (!empty($data['supplier_id'])) {
+            return (int) $data['supplier_id'];
+        }
+        if (!empty($data['supplier_account_id'])) {
+            $account = \App\Models\SupplierAccount::query()->find($data['supplier_account_id']);
+            $supplierId = $account?->supplier_id ? (int) $account->supplier_id : 0;
+            if ($supplierId > 0) {
+                return $supplierId;
+            }
+        }
+
+        throw new DomainException('برای تسویه همه شعب، تأمین‌کننده متعارف لازم است', 422);
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $rows
+     * @return list<array{supplier_account_id: int, branch_id: int, remaining_payable: string, amount: string}>
+     */
+    private function allocateByRemaining(array $rows, string $amount): array
+    {
+        $total = '0.00';
+        foreach ($rows as $row) {
+            $total = Money::add($total, $row['remaining_payable'] ?? 0);
+        }
+
+        $shares = [];
+        $paid = '0.00';
+        $last = count($rows) - 1;
+        foreach ($rows as $index => $row) {
+            $remaining = Money::of($row['remaining_payable'] ?? 0);
+            if ($index === $last) {
+                $share = Money::min($remaining, Money::sub($amount, $paid));
+            } elseif (Money::isZero($total)) {
+                $share = '0.00';
+            } else {
+                $ratio = bcdiv($remaining, $total, 8);
+                $share = Money::min($remaining, Money::roundHalfUp(bcmul($amount, $ratio, 8)));
+            }
+            if (Money::cmp($share, '0') <= 0) {
+                continue;
+            }
+            $shares[] = [
+                'supplier_account_id' => (int) $row['supplier_account_id'],
+                'branch_id' => (int) $row['branch_id'],
+                'remaining_payable' => $remaining,
+                'amount' => Money::of($share),
+            ];
+            $paid = Money::add($paid, $share);
+        }
+
+        if ($shares === []) {
+            throw new DomainException('مانده‌ای برای تسویه همه شعب نیست', 422, [
+                'error' => 'no_branch_payable',
+            ]);
+        }
+
+        return $shares;
+    }
 }
