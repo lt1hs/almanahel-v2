@@ -21,6 +21,7 @@ use App\Http\Controllers\Api\UserController;
 use App\Http\Controllers\Api\ActivityLogController;
 use App\Http\Controllers\Api\CustomerController;
 use App\Http\Controllers\Api\NotificationController;
+use App\Http\Controllers\Api\PriceChangeController;
 use Illuminate\Support\Facades\Route;
 use App\Http\Middleware\AuditMutations;
 
@@ -58,6 +59,12 @@ Route::middleware(['auth:sanctum', AuditMutations::class])->group(function () {
     Route::put('/books/{book}',        [BookController::class, 'update']);
     Route::delete('/books/{book}',     [BookController::class, 'destroy'])->middleware('role:admin');
     Route::get('/branches/{branchId}/books', [BookController::class, 'byBranch']);
+    Route::get('/books/{book}/price-history', [PriceChangeController::class, 'history']);
+
+    Route::post('/price-changes/preview', [PriceChangeController::class, 'preview']);
+    Route::post('/price-changes', [PriceChangeController::class, 'store']);
+    Route::get('/price-changes/current', [PriceChangeController::class, 'current']);
+    Route::get('/price-changes/{priceChangeBatch}', [PriceChangeController::class, 'show']);
 
     // ─── Branches ──────────────────────────────────────────────
     Route::get('/branches',              [BranchController::class, 'index']);

@@ -150,12 +150,15 @@ export function emptyInvoiceTexts(): InvoiceFieldTexts {
 
 export function mergeInvoiceTexts(
   base: InvoiceFieldTexts,
-  overrides?: Partial<InvoiceFieldTexts> | null
+  overrides?: Partial<InvoiceFieldTexts> | null,
+  facts: string[] = []
 ): InvoiceFieldTexts {
   const next = { ...base };
   if (!overrides) return next;
   for (const id of INVOICE_FIELD_ORDER) {
-    if (typeof overrides[id] === "string") next[id] = overrides[id] as string;
+    if (typeof overrides[id] !== "string") continue;
+    if (facts.length && !preservesProtectedFacts(overrides[id] as string, base[id], facts)) continue;
+    next[id] = overrides[id] as string;
   }
   return next;
 }
@@ -207,6 +210,37 @@ function fill(template: string, vars: Record<string, string>): string {
 
 export function dayPart(value: string | null | undefined): string {
   return value ? String(value).slice(0, 10) : "";
+}
+
+export function invoiceProtectedFacts(
+  source: SettlementInvoiceSource,
+  formatNumber: (n: number) => string
+): string[] {
+  const amount = formatNumber(Number(source.amount || 0));
+  const raw = [
+    dayPart(source.paid_at || source.created_at),
+    dayPart(source.period_start),
+    dayPart(source.period_end),
+    amount,
+  ];
+  const seen = new Set<string>();
+  const facts: string[] = [];
+  for (const item of raw) {
+    if (!item || item === "—") continue;
+    if (seen.has(item)) continue;
+    seen.add(item);
+    facts.push(item);
+  }
+  facts.sort((a, b) => b.length - a.length);
+  return facts;
+}
+
+export function preservesProtectedFacts(text: string, reference: string, facts: string[]): boolean {
+  return facts.every((fact) => !reference.includes(fact) || text.includes(fact));
+}
+
+export function keepProtectedFacts(next: string, prev: string, facts: string[]): string {
+  return preservesProtectedFacts(next, prev, facts) ? next : prev;
 }
 
 export function invoiceFieldTexts(opts: {

@@ -226,7 +226,7 @@ class TransferController extends Controller
                     $lotService->setSellPrices($destInv, [
                         'price_toman' => $srcInv->price_toman ?? $destInv->price_toman,
                         'price_dinar' => $srcInv->price_dinar ?? $destInv->price_dinar,
-                    ]);
+                    ], 'transfer_price_copy', true);
                 }
             }
             $lotService->receiveTransfer($transfer);

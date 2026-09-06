@@ -16,6 +16,8 @@ import {
   compressTemplateImage,
   defaultInvoiceDesign,
   invoiceFieldTexts,
+  invoiceProtectedFacts,
+  keepProtectedFacts,
   loadInvoiceTexts,
   mergeInvoiceTexts,
   saveInvoiceDesign,
@@ -45,9 +47,10 @@ export function SettlementInvoiceDesigner({
     () => invoiceFieldTexts({ source, labels, formatNumber, currencySymbol: symbol }),
     [source, labels, formatNumber, symbol]
   );
+  const facts = useMemo(() => invoiceProtectedFacts(source, formatNumber), [source, formatNumber]);
   const [design, setDesign] = useState<InvoiceDesign>(initialDesign);
   const [texts, setTexts] = useState<InvoiceFieldTexts>(() =>
-    mergeInvoiceTexts(generatedTexts, loadInvoiceTexts(source.id))
+    mergeInvoiceTexts(generatedTexts, loadInvoiceTexts(source.id), facts)
   );
   const [selectedId, setSelectedId] = useState<InvoiceFieldId>("body");
   const [isSavingPdf, setIsSavingPdf] = useState(false);
@@ -81,7 +84,10 @@ export function SettlementInvoiceDesigner({
   };
 
   const patchText = (id: InvoiceFieldId, value: string) => {
-    const next = { ...textsRef.current, [id]: value };
+    const prev = textsRef.current[id] ?? "";
+    const nextValue = keepProtectedFacts(value, prev, facts);
+    if (nextValue === prev) return;
+    const next = { ...textsRef.current, [id]: nextValue };
     textsRef.current = next;
     setTexts(next);
     setDirty(true);
@@ -369,6 +375,9 @@ export function SettlementInvoiceDesigner({
                   className="mt-1 w-full rounded-xl border border-ink/10 bg-white px-3 py-2 text-[12px] font-bold leading-6 text-ink outline-none focus:border-primary/30"
                 />
               </label>
+              <p className="text-[10px] font-bold leading-5 text-ink/40">
+                {t("consignment.settle.invoice.lockedHint")}
+              </p>
               <button
                 type="button"
                 onClick={() => {

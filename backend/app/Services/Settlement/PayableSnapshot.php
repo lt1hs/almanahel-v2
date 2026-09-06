@@ -35,15 +35,19 @@ class PayableSnapshot
     /**
      * @return array{payable_basis: string, payable_rate: string, gross_cost: string, publisher_payable: string, rule_source: string}
      */
-    public function fromStampedLot(StockLot $lot, int $quantity): array
+    public function fromStampedLot(StockLot $lot, int $quantity, mixed $unitCost = null): array
     {
         if ($lot->payable_basis === null || $lot->payable_basis === ''
             || $lot->payable_rate === null || $lot->payable_rate === '') {
             throw new DomainException('لات امانی مُهرشده نیست؛ از forNewIntake یا inferLegacy استفاده کنید');
         }
 
+        $cost = $unitCost ?? ((string) $lot->ownership_type === 'consignment'
+            ? $lot->effectivePayableUnitCost()
+            : $lot->unit_cost);
+
         return $this->snapshot(
-            $lot->unit_cost,
+            $cost,
             $quantity,
             (string) $lot->payable_basis,
             $lot->payable_rate,

@@ -21,6 +21,8 @@ use App\Services\Receivables\InvoiceBalance;
 use App\Support\Authorization\BranchAccess;
 use App\Models\SaleLotAllocation;
 use App\Support\Money;
+use App\Support\PriceFlags;
+use App\Services\Pricing\SellingPriceService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -104,6 +106,7 @@ class InvoiceController extends Controller
             'items.*.discount'     => 'nullable|numeric|min:0',
             'customer_id'      => 'required_if:payment_method,credit|nullable|exists:customers,id',
             'items.*.override_reason' => 'nullable|string|max:255',
+            'items.*.expected_price_version' => 'nullable|integer|min:1',
             'check_number'     => 'required_if:payment_method,check|nullable|string',
             'bank_name'        => 'nullable|string',
             'payer_name'       => 'required_if:payment_method,check|nullable|string',
@@ -151,10 +154,30 @@ class InvoiceController extends Controller
             foreach ($validated['items'] as $item) {
                 $bookId = (int) $item['book_id'];
                 $inventory = $inventories[$bookId];
+                $versioning = PriceFlags::sellingVersioningEnabled();
+                $sellingRevisionId = null;
+                $sellingVersion = null;
 
-                $listPrice = $validated['currency'] === 'dinar'
-                    ? Money::of($inventory->price_dinar ?? 0)
-                    : Money::of($inventory->price_toman ?? 0);
+                if ($versioning) {
+                    $locked = app(SellingPriceService::class)->lockCurrent($bookId, $branchId, $validated['currency']);
+                    $listPrice = Money::of($locked['price']);
+                    $sellingRevisionId = $locked['revision_id'];
+                    $sellingVersion = $locked['version'];
+                    $expectedVersion = isset($item['expected_price_version']) ? (int) $item['expected_price_version'] : null;
+                    if ($expectedVersion === null || $expectedVersion !== (int) $locked['version']) {
+                        throw new DomainException('قیمت فروش تغییر کرده است', 409, [
+                            'error' => 'price_changed',
+                            'book_id' => $bookId,
+                            'old_price' => isset($item['actual_price']) ? Money::of($item['actual_price']) : $listPrice,
+                            'current_price' => $listPrice,
+                            'current_version' => $locked['version'],
+                        ]);
+                    }
+                } else {
+                    $listPrice = $validated['currency'] === 'dinar'
+                        ? Money::of($inventory->price_dinar ?? 0)
+                        : Money::of($inventory->price_toman ?? 0);
+                }
 
                 $actualPrice = isset($item['actual_price']) ? Money::of($item['actual_price']) : $listPrice;
                 $discount = Money::of($item['discount'] ?? 0);
@@ -170,35 +193,58 @@ class InvoiceController extends Controller
 
                 $overrideBy = null;
                 $overrideReason = $item['override_reason'] ?? null;
-                if (Money::cmp($actualPrice, $listPrice) < 0) {
-                    if (Money::isZero($discount)) {
-                        $discount = Money::sub($listPrice, $actualPrice);
-                    }
-                    $overrideBy = $user->id;
-                    if (!$overrideReason) {
-                        $overrideReason = 'markdown';
-                    }
-                }
-                if (Money::isZero($actualPrice) && ($validated['type'] ?? 'sale') !== 'gift') {
+                if ($versioning && Money::cmp($actualPrice, $listPrice) !== 0) {
                     if (!BranchAccess::canOverridePrice($user) || !$overrideReason) {
-                        throw new DomainException('فروش با قیمت صفر فقط با مجوز و دلیل مجاز است', 422, [
+                        throw new DomainException('تغییر قیمت فروش نیازمند مجوز و دلیل است', 422, [
                             'book_id' => $item['book_id'],
                         ]);
                     }
                     $overrideBy = $user->id;
-                }
-                if (Money::cmp($actualPrice, $listPrice) > 0) {
-                    if (!BranchAccess::canOverridePrice($user)) {
-                        throw new DomainException('فروش بالاتر از قیمت ثبت‌شده مجاز نیست', 403, [
-                            'book_id' => $item['book_id'],
-                        ]);
+                    ActivityLogger::record(
+                        'sales',
+                        'price_override',
+                        "فروش با قیمت متفاوت کتاب #{$bookId}",
+                        null,
+                        [
+                            'book_id' => $bookId,
+                            'list_price' => $listPrice,
+                            'actual_price' => $actualPrice,
+                            'override_reason' => $overrideReason,
+                        ],
+                        $branchId,
+                        $user->id,
+                    );
+                } else {
+                    if (Money::cmp($actualPrice, $listPrice) < 0) {
+                        if (Money::isZero($discount)) {
+                            $discount = Money::sub($listPrice, $actualPrice);
+                        }
+                        $overrideBy = $user->id;
+                        if (!$overrideReason) {
+                            $overrideReason = 'markdown';
+                        }
                     }
-                    if (!$overrideReason) {
-                        throw new DomainException('دلیل افزایش قیمت الزامی است', 422, [
-                            'book_id' => $item['book_id'],
-                        ]);
+                    if (Money::isZero($actualPrice) && ($validated['type'] ?? 'sale') !== 'gift') {
+                        if (!BranchAccess::canOverridePrice($user) || !$overrideReason) {
+                            throw new DomainException('فروش با قیمت صفر فقط با مجوز و دلیل مجاز است', 422, [
+                                'book_id' => $item['book_id'],
+                            ]);
+                        }
+                        $overrideBy = $user->id;
                     }
-                    $overrideBy = $user->id;
+                    if (Money::cmp($actualPrice, $listPrice) > 0) {
+                        if (!BranchAccess::canOverridePrice($user)) {
+                            throw new DomainException('فروش بالاتر از قیمت ثبت‌شده مجاز نیست', 403, [
+                                'book_id' => $item['book_id'],
+                            ]);
+                        }
+                        if (!$overrideReason) {
+                            throw new DomainException('دلیل افزایش قیمت الزامی است', 422, [
+                                'book_id' => $item['book_id'],
+                            ]);
+                        }
+                        $overrideBy = $user->id;
+                    }
                 }
 
                 $prepared[] = [
@@ -211,6 +257,8 @@ class InvoiceController extends Controller
                     'override_by' => $overrideBy,
                     'override_reason' => $overrideBy ? $overrideReason : null,
                     'inventory' => $inventory,
+                    'selling_price_revision_id' => $sellingRevisionId,
+                    'selling_price_version' => $sellingVersion,
                 ];
             }
 
@@ -254,6 +302,8 @@ class InvoiceController extends Controller
                     'discount'        => $item['discount'],
                     'override_by'     => $item['override_by'],
                     'override_reason' => $item['override_reason'],
+                    'selling_price_revision_id' => $item['selling_price_revision_id'] ?? null,
+                    'selling_price_version' => $item['selling_price_version'] ?? null,
                 ]);
 
                 $lotService->allocateSale($invoiceItem, $branchId, (int) $item['quantity'], $validated['currency']);

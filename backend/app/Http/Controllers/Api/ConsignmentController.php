@@ -245,7 +245,7 @@ class ConsignmentController extends Controller
                     ?? ($validated['currency'] === 'toman' ? $item['selling_price'] : $inventory->price_toman),
                 'price_dinar' => $item['price_dinar']
                     ?? ($validated['currency'] === 'dinar' ? $item['selling_price'] : $inventory->price_dinar),
-            ]);
+            ], 'consignment_intake', true);
 
             $branch = \App\Models\Branch::find($validated['branch_id']);
             $book = \App\Models\Book::find($item['book_id']);

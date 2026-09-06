@@ -5,7 +5,7 @@ import { useRouter, usePathname } from "@/i18n/routing";
 import {
     Bell, User, Search, Globe, ChevronDown, CheckCircle2, AlertTriangle, Info,
     LogOut, CreditCard, RefreshCw, Store, Settings, X, Languages, Trash2,
-    LayoutDashboard, Library, Wallet, BarChart3, Truck, Warehouse, Users, ContactRound,
+    LayoutDashboard, Library, Wallet, BarChart3, Truck, Warehouse, Users, ContactRound, Tag,
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { useTranslation } from "@/hooks/useTranslation";
@@ -55,6 +55,7 @@ interface QuickLink {
 const QUICK_LINKS: QuickLink[] = [
     { titleKey: "nav.dashboard", href: "/dashboard", icon: LayoutDashboard, keywords: ["dashboard", "پیشخوان", "home"] },
     { titleKey: "nav.inventory", href: "/dashboard/inventory", icon: Library, keywords: ["inventory", "book", "کتاب", "موجودی", "barcode", "بارکد"] },
+    { titleKey: "nav.prices", href: "/dashboard/prices", icon: Tag, keywords: ["price", "pricing", "قیمت", "امانی"] },
     { titleKey: "nav.warehouse", href: "/dashboard/warehouse", icon: Warehouse, keywords: ["warehouse", "انبار"] },
     { titleKey: "nav.distribution", href: "/dashboard/distribution", icon: Truck, keywords: ["distribution", "transfer", "توزیع", "انتقال"] },
     { titleKey: "nav.sales", href: "/dashboard/sales", icon: Wallet, keywords: ["sales", "invoice", "فروش", "صندوق", "فاکتور"] },
@@ -68,6 +69,7 @@ const QUICK_LINKS: QuickLink[] = [
 const PAGE_TITLE_KEYS: Record<string, string> = {
     "/dashboard": "nav.dashboard",
     "/dashboard/inventory": "nav.inventory",
+    "/dashboard/prices": "nav.prices",
     "/dashboard/warehouse": "nav.warehouse",
     "/dashboard/warehouse/log": "nav.warehouse",
     "/dashboard/distribution": "nav.distribution",

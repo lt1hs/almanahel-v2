@@ -253,6 +253,7 @@ class WarehouseController extends Controller
         }
 
         $this->fillMissingPricesFromSiblings($rows);
+        app(\App\Services\Pricing\SellingPriceService::class)->decorateInventories($rows);
 
         return response()->json($rows);
     }
@@ -365,7 +366,7 @@ class WarehouseController extends Controller
                     ?? ($validated['currency'] === 'toman' ? $validated['selling_price'] : $inventory->price_toman),
                 'price_dinar' => $validated['price_dinar']
                     ?? ($validated['currency'] === 'dinar' ? $validated['selling_price'] : $inventory->price_dinar),
-            ]);
+            ], 'owned_intake', true);
 
             $branch = \App\Models\Branch::find($validated['branch_id']);
             $book = \App\Models\Book::find($validated['book_id']);
@@ -448,7 +449,6 @@ class WarehouseController extends Controller
     public function upsertPricing(Request $request)
     {
         $user = $request->user();
-        BranchAccess::assertCanMutateBranchCatalog($user);
 
         $validated = $request->validate([
             'branch_id'        => 'required|exists:branches,id',
@@ -463,6 +463,7 @@ class WarehouseController extends Controller
             $user,
             (int) $validated['branch_id']
         );
+        BranchAccess::assertCanChangeSellingPrice($user, $branchId, false);
         $bookId = (int) $validated['book_id'];
 
         $book = \App\Models\Book::query()->findOrFail($bookId);
@@ -485,15 +486,7 @@ class WarehouseController extends Controller
 
         $inventory = app(StockLotService::class)->ensureAggregate($branchId, $bookId);
 
-        $inventory = app(StockLotService::class)->setSellPrices($inventory, $validated);
-
-        \App\Models\BookBranchPrice::updateOrCreate(
-            ['book_id' => $inventory->book_id, 'branch_id' => $inventory->branch_id],
-            [
-                'price_toman' => $inventory->price_toman,
-                'price_dinar' => $inventory->price_dinar,
-            ]
-        );
+        $inventory = app(StockLotService::class)->setSellPrices($inventory, $validated, 'upsert_pricing', false);
 
         ActivityLogger::record(
             'inventory',
@@ -521,6 +514,11 @@ class WarehouseController extends Controller
             'price_dinar'      => 'nullable|numeric|min:0',
         ]);
 
+        $hasPrice = ($validated['price_toman'] ?? null) !== null || ($validated['price_dinar'] ?? null) !== null;
+        if ($hasPrice) {
+            BranchAccess::assertCanChangeSellingPrice($request->user(), (int) $inventory->branch_id, false);
+        }
+
         if (array_key_exists('quantity', $validated)) {
             $delta = (int) $validated['quantity'] - (int) $inventory->quantity;
             if ($delta !== 0) {
@@ -534,7 +532,7 @@ class WarehouseController extends Controller
             }
         }
 
-        $inventory = app(StockLotService::class)->setSellPrices($inventory->fresh(), $validated);
+        $inventory = app(StockLotService::class)->setSellPrices($inventory->fresh(), $validated, 'inventory_update', false);
 
         ActivityLogger::record(
             'inventory',

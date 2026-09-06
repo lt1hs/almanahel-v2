@@ -14,6 +14,7 @@ const REPORTS: UserRole[] = ["super_admin", "admin", "accountant"];
 export const ROUTE_ROLES: Record<string, readonly UserRole[] | undefined> = {
     "/dashboard": undefined,
     "/dashboard/inventory/add-stock": HQ,
+    "/dashboard/prices": FINANCE_VIEW,
     "/dashboard/inventory": undefined,
     "/dashboard/warehouse": WAREHOUSE_OPS,
     "/dashboard/distribution": undefined,

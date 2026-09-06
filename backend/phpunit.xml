@@ -32,5 +32,7 @@
         <env name="ALMANAHEL_CONSIGNMENT_COMMISSION_RATE" value="0.1"/>
         <env name="ALMANAHEL_LOW_STOCK_THRESHOLD" value="5"/>
         <env name="FINANCE_LEDGER_REPORTS_ENABLED" value="true"/>
+        <env name="SELLING_PRICE_VERSIONING_ENABLED" value="false"/>
+        <env name="CONSIGNMENT_COST_REVISION_ENABLED" value="false"/>
     </php>
 </phpunit>

@@ -51,6 +51,7 @@ interface SalesBook {
     price: number;
     stock: number;
     type: "owned" | "consignment";
+    price_version?: number;
 }
 
 interface CartBook extends SalesBook {
@@ -68,6 +69,7 @@ function mapInventoryItem(item: any, isDinar: boolean): SalesBook | null {
             price: isDinar ? Number(item.price_dinar || 0) : Number(item.price_toman || 0),
             stock: Number(item.quantity || 0),
             type: item.type === "consignment" ? "consignment" : "owned",
+            price_version: Number(isDinar ? (item.price_dinar_version ?? item.price_version) : (item.price_toman_version ?? item.price_version) || 1),
         };
     }
     if (item.id && item.title) {
@@ -83,6 +85,11 @@ function mapInventoryItem(item: any, isDinar: boolean): SalesBook | null {
                 : Number(branchInv?.price_toman || 0),
             stock: Number(branchInv?.quantity || item.total_qty || 0),
             type: branchInv?.type === "consignment" ? "consignment" : "owned",
+            price_version: Number(
+                isDinar
+                    ? (branchInv?.price_dinar_version ?? branchInv?.price_version)
+                    : (branchInv?.price_toman_version ?? branchInv?.price_version) || 1
+            ),
         };
     }
     return null;
@@ -222,6 +229,7 @@ export default function SalesPage() {
                         ...item,
                         stock: fresh.stock,
                         price: fresh.price,
+                        price_version: fresh.price_version,
                         quantity: Math.min(item.quantity, fresh.stock),
                     };
                 }).filter((item) => {
@@ -308,6 +316,14 @@ export default function SalesPage() {
             notify.success("toast.invoiceSuccess");
         } catch (error) {
             console.error("Checkout failed:", error);
+            if (error instanceof ApiError && error.status === 409) {
+                const body = error.body as { error?: string; current_price?: string };
+                if (body?.error === "price_changed") {
+                    notify.error("prices.priceChanged");
+                    fetchData(true);
+                    return;
+                }
+            }
             const msg = error instanceof Error ? error.message : "";
             if (msg) notify.rawError(msg);
             else notify.error("toast.invoiceError");
@@ -352,6 +368,11 @@ export default function SalesPage() {
                 stock: branchInv?.quantity ?? 0,
                 type: branchInv?.type === "consignment" ? "consignment" : "owned",
                 isbn: book.isbn || trimmed,
+                price_version: Number(
+                    isDinar
+                        ? (branchInv?.price_dinar_version ?? branchInv?.price_version)
+                        : (branchInv?.price_toman_version ?? branchInv?.price_version) || 1
+                ),
             };
             if (mapped.stock <= 0) {
                 notify.error("toast.bookNotInBranch");

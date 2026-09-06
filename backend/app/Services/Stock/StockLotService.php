@@ -106,20 +106,15 @@ class StockLotService
         return $inventory->fresh();
     }
 
-    public function setSellPrices(Inventory $inventory, array $prices): Inventory
+    public function setSellPrices(Inventory $inventory, array $prices, string $reason = 'price_update', bool $intake = false): Inventory
     {
-        $allowed = ['price_toman', 'price_dinar'];
-        $updates = [];
-        foreach ($allowed as $key) {
-            if (array_key_exists($key, $prices)) {
-                $updates[$key] = $prices[$key];
-            }
-        }
-        if ($updates) {
-            $inventory->update($updates);
-        }
-
-        return $inventory->fresh();
+        return app(\App\Services\Pricing\SellingPriceService::class)->applyInventoryPrices(
+            $inventory,
+            $prices,
+            $reason,
+            Auth::user(),
+            $intake
+        );
     }
 
     public function createIntakeLot(array $data, ?Model $reference = null): StockLot
@@ -160,6 +155,8 @@ class StockLotService
             'legacy_inventory_id' => $data['legacy_inventory_id'] ?? null,
             'migration_source' => $data['migration_source'] ?? 'intake',
             'status' => $status,
+            'payable_unit_cost' => $this->intakePayableUnitCost($data),
+            'current_cost_revision_id' => $this->intakeCurrentCostRevisionId($data),
         ], $this->intakePayableFields($data)));
 
         app(\App\Services\Catalog\BranchCatalogService::class)->ensureForIntake(
@@ -239,15 +236,21 @@ class StockLotService
             }
             $this->decrementAvailable($lot, $take);
             $this->move($lot, 'sale', -$take, $invoiceItem);
+            $unitCost = (string) $lot->ownership_type === 'consignment'
+                ? $lot->effectivePayableUnitCost()
+                : Money::of($lot->unit_cost);
             $alloc = SaleLotAllocation::create(array_merge([
                 'invoice_item_id' => $invoiceItem->id,
                 'stock_lot_id' => $lot->id,
                 'quantity' => $take,
-                'unit_cost' => $lot->unit_cost,
+                'unit_cost' => $unitCost,
                 'currency' => $lot->currency,
                 'quantity_returned' => 0,
                 'supplier_account_id' => $lot->supplier_account_id,
-            ], $this->allocationPayableFields($lot, $take)));
+                'consignment_cost_revision_id' => $lot->ownership_type === 'consignment'
+                    ? $lot->current_cost_revision_id
+                    : null,
+            ], $this->allocationPayableFields($lot, $take, $unitCost)));
             $allocations[] = $alloc;
             if ($lot->ownership_type === 'consignment' && $lot->consignment_receipt_item_id) {
                 ConsignmentReceiptItem::where('id', $lot->consignment_receipt_item_id)
@@ -593,16 +596,22 @@ class StockLotService
                 ConsignmentReceiptItem::where('id', $lot->consignment_receipt_item_id)
                     ->increment('quantity_sold', $take);
             }
+            $unitCost = (string) $lot->ownership_type === 'consignment'
+                ? $lot->effectivePayableUnitCost()
+                : Money::of($lot->unit_cost);
             $created[] = GiftLotAllocation::create(array_merge([
                 'gift_id' => $gift->id,
                 'stock_lot_id' => $lot->id,
                 'quantity' => $take,
-                'unit_cost' => $lot->unit_cost,
+                'unit_cost' => $unitCost,
                 'currency' => $lot->currency,
                 'ownership_type' => $lot->ownership_type,
                 'supplier_id' => $lot->supplier_id,
                 'supplier_account_id' => $lot->supplier_account_id,
-            ], $this->allocationPayableFields($lot, $take)));
+                'consignment_cost_revision_id' => $lot->ownership_type === 'consignment'
+                    ? $lot->current_cost_revision_id
+                    : null,
+            ], $this->allocationPayableFields($lot, $take, $unitCost)));
             $remaining -= $take;
         }
 
@@ -694,7 +703,7 @@ class StockLotService
     /**
      * @return array<string, mixed>
      */
-    private function allocationPayableFields(StockLot $lot, int $quantity): array
+    private function allocationPayableFields(StockLot $lot, int $quantity, mixed $unitCost = null): array
     {
         if ((string) $lot->ownership_type !== 'consignment') {
             return [];
@@ -702,7 +711,8 @@ class StockLotService
         if ($lot->payable_basis === null || $lot->payable_rate === null) {
             throw new DomainException('لات امانی مُهرشده نیست');
         }
-        $snap = (new PayableSnapshot())->fromStampedLot($lot, $quantity);
+        $cost = $unitCost ?? $lot->effectivePayableUnitCost();
+        $snap = (new PayableSnapshot())->fromStampedLot($lot, $quantity, $cost);
 
         return [
             'payable_basis' => $snap['payable_basis'],
@@ -712,6 +722,47 @@ class StockLotService
             'rule_source' => $snap['rule_source'],
             'rule_stamped_at' => $lot->payable_rule_stamped_at ?? now(),
         ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $data
+     */
+    private function intakePayableUnitCost(array $data): ?string
+    {
+        if (($data['ownership_type'] ?? '') !== 'consignment') {
+            return null;
+        }
+        if (array_key_exists('payable_unit_cost', $data) && $data['payable_unit_cost'] !== null) {
+            return Money::of($data['payable_unit_cost']);
+        }
+        if (!empty($data['parent_lot_id'])) {
+            $parent = StockLot::query()->whereKey($data['parent_lot_id'])->first();
+            if ($parent) {
+                return $parent->effectivePayableUnitCost();
+            }
+        }
+
+        return Money::of($data['unit_cost']);
+    }
+
+    /**
+     * @param  array<string, mixed>  $data
+     */
+    private function intakeCurrentCostRevisionId(array $data): ?int
+    {
+        if (($data['ownership_type'] ?? '') !== 'consignment') {
+            return null;
+        }
+        if (!empty($data['current_cost_revision_id'])) {
+            return (int) $data['current_cost_revision_id'];
+        }
+        if (!empty($data['parent_lot_id'])) {
+            $parent = StockLot::query()->whereKey($data['parent_lot_id'])->first();
+
+            return $parent?->current_cost_revision_id ? (int) $parent->current_cost_revision_id : null;
+        }
+
+        return null;
     }
 
     private function fifoLots(int $branchId, int $bookId, ?string $currency = null)

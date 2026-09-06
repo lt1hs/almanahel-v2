@@ -24,6 +24,7 @@ import {
     Users,
     ContactRound,
     Activity,
+    Tag,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/contexts/AuthContext";
@@ -54,6 +55,7 @@ const NAV_GROUPS: NavGroup[] = [
         titleKey: "nav.groups.stock",
         items: [
             { titleKey: "nav.inventory", href: "/dashboard/inventory", icon: Library, color: "text-amber-500" },
+            { titleKey: "nav.prices", href: "/dashboard/prices", icon: Tag, color: "text-fuchsia-500" },
             { titleKey: "nav.warehouse", href: "/dashboard/warehouse", icon: Warehouse, color: "text-sky-500" },
             { titleKey: "nav.distribution", href: "/dashboard/distribution", icon: Truck, color: "text-emerald-500" },
         ],

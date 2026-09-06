@@ -13,6 +13,7 @@ interface CartItem {
     price: number;
     quantity: number;
     stock?: number;
+    price_version?: number;
 }
 
 export interface PaymentDetails {
@@ -212,13 +213,20 @@ export function Cart({
                 payment_method: paymentMethod,
                 items: items.map((i) => {
                     const actual = getActualPrice(i);
-                    return {
+                    const line: Record<string, unknown> = {
                         book_id: parseInt(i.id),
                         quantity: i.quantity,
                         unit_price: i.price,
                         actual_price: actual,
                         discount: percentOf(actual, discount),
                     };
+                    if (i.price_version != null) {
+                        line.expected_price_version = i.price_version;
+                    }
+                    if (actual !== i.price) {
+                        line.override_reason = useOverPrice ? "manual_override" : "markdown";
+                    }
+                    return line;
                 }),
             };
 

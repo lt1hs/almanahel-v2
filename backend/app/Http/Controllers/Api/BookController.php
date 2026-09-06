@@ -146,6 +146,7 @@ class BookController extends Controller
             'inventories.branch',
             'inventories.supplier',
         ]);
+        app(\App\Services\Pricing\SellingPriceService::class)->decorateInventories($book->inventories);
 
         return response()->json($book);
     }
@@ -287,6 +288,7 @@ class BookController extends Controller
             'inventories.branch',
             'inventories.supplier',
         ]);
+        app(\App\Services\Pricing\SellingPriceService::class)->decorateInventories($book->inventories);
         $this->appendCurrentLotCosts($book, $branchId);
 
         return response()->json($book);

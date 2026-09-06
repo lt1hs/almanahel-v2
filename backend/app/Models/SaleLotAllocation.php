@@ -12,6 +12,7 @@ class SaleLotAllocation extends Model
         'quantity_returned', 'settled_publisher_amount',
         'payable_basis', 'payable_rate', 'gross_cost', 'publisher_payable',
         'rule_source', 'rule_stamped_at',
+        'consignment_cost_revision_id',
     ];
 
     protected $casts = [

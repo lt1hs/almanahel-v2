@@ -22,6 +22,10 @@ return [
     ],
     /** Branch managers may sell above list price when true. */
     'allow_branch_price_override' => (bool) env('ALMANAHEL_ALLOW_BRANCH_PRICE_OVERRIDE', true),
+    /** POS version check and bulk selling-price API. Off = rollback to inventory list price. */
+    'selling_price_versioning_enabled' => filter_var(env('SELLING_PRICE_VERSIONING_ENABLED', false), FILTER_VALIDATE_BOOLEAN),
+    /** Bulk consignment payable_unit_cost revisions. Off = lots keep intake/backfill cost. */
+    'consignment_cost_revision_enabled' => filter_var(env('CONSIGNMENT_COST_REVISION_ENABLED', false), FILTER_VALIDATE_BOOLEAN),
     'book_categories' => [
         'دینی',
         'ادبی',

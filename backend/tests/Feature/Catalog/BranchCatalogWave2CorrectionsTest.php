@@ -870,7 +870,7 @@ class BranchCatalogWave2CorrectionsTest extends TestCase
         ])->assertForbidden();
     }
 
-    public function test_upsert_pricing_central_source_at_warehouse(): void
+    public function test_upsert_pricing_forbidden_for_warehouse_staff(): void
     {
         $warehouse = $this->makeBranch([
             'type' => 'warehouse',
@@ -883,13 +883,7 @@ class BranchCatalogWave2CorrectionsTest extends TestCase
             'branch_id' => $warehouse->id,
             'book_id' => $book->id,
             'price_toman' => 50000,
-        ])->assertOk();
-
-        $this->assertDatabaseHas('branch_catalog_items', [
-            'branch_id' => $warehouse->id,
-            'book_id' => $book->id,
-            'source' => CatalogSource::CENTRAL,
-        ]);
+        ])->assertForbidden();
     }
 
     // --- iraq visibility must not grant operational access ---

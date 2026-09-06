@@ -262,6 +262,59 @@ class BranchAccess
             && in_array($user->role, ['branch_manager', 'accountant'], true);
     }
 
+    public static function canChangeSellingPrice(?User $user, int $branchId, bool $intake = false): bool
+    {
+        if (!$user) {
+            return false;
+        }
+        if (self::isAdmin($user)) {
+            return true;
+        }
+        if ($user->role === 'warehouse_staff') {
+            return $intake && $user->branch_id && (int) $user->branch_id === $branchId;
+        }
+        if ($user->role === 'branch_manager') {
+            return (bool) $user->branch_id && (int) $user->branch_id === $branchId;
+        }
+
+        return false;
+    }
+
+    public static function assertCanChangeSellingPrice(?User $user, int $branchId, bool $intake = false): void
+    {
+        if (!self::canChangeSellingPrice($user, $branchId, $intake)) {
+            self::deny('اجازه تغییر قیمت فروش این شعبه را ندارید');
+        }
+    }
+
+    public static function canChangeConsignmentCost(?User $user): bool
+    {
+        return self::isAdmin($user);
+    }
+
+    public static function assertCanChangeConsignmentCost(?User $user): void
+    {
+        if (!self::canChangeConsignmentCost($user)) {
+            self::deny('تغییر بهای امانی فقط برای مدیر مجاز است');
+        }
+    }
+
+    public static function canViewPriceHistory(?User $user): bool
+    {
+        if (!$user) {
+            return false;
+        }
+
+        return in_array($user->role, ['super_admin', 'admin', 'accountant', 'branch_manager'], true);
+    }
+
+    public static function assertCanViewPriceHistory(?User $user): void
+    {
+        if (!self::canViewPriceHistory($user)) {
+            self::deny('اجازه مشاهده تاریخچه قیمت را ندارید');
+        }
+    }
+
     public static function canMutateFinance(?User $user): bool
     {
         if (!$user) {
