@@ -2,6 +2,12 @@ import { ALL_TIME_DEBT_PERIOD_START, todayIsoDate } from "@/lib/financeRequests"
 
 export type SettlementPreset = "all" | "month" | "90d" | "year" | "custom";
 
+export function parseOptionalBranchId(value: string | number | null | undefined): number | null {
+    if (value === "" || value == null) return null;
+    const n = typeof value === "number" ? value : Number(value);
+    return Number.isFinite(n) && n > 0 ? n : null;
+}
+
 export function toDateInput(d: Date): string {
     const y = d.getFullYear();
     const m = String(d.getMonth() + 1).padStart(2, "0");
@@ -36,7 +42,7 @@ export function buildSettlementPreviewUrl(options: {
     supplierId?: number | null;
     fromDate?: string;
     toDate?: string;
-    branchId?: number | null;
+    branchId?: number | string | null;
     aggregate?: boolean;
     allOpen?: boolean;
 }): string {
@@ -53,7 +59,8 @@ export function buildSettlementPreviewUrl(options: {
         if (options.toDate) q.set("period_end", options.toDate);
     }
     q.set("currency", options.currency);
-    if (options.branchId) q.set("branch_id", String(options.branchId));
+    const branchId = parseOptionalBranchId(options.branchId);
+    if (branchId) q.set("branch_id", String(branchId));
     return `/consignments/settlement-preview?${q.toString()}`;
 }
 
@@ -64,7 +71,7 @@ export function buildSettlementBody(options: {
     supplierId?: number | null;
     fromDate?: string;
     toDate?: string;
-    branchId?: number | null;
+    branchId?: number | string | null;
     allOpen?: boolean;
     expectedTotal?: string | number | null;
     aggregate?: boolean;
@@ -80,7 +87,8 @@ export function buildSettlementBody(options: {
     if (options.aggregate) body.aggregate = 1;
     if (options.supplierId) body.supplier_id = options.supplierId;
     if (options.supplierAccountId) body.supplier_account_id = options.supplierAccountId;
-    if (options.branchId) body.branch_id = options.branchId;
+    const branchId = parseOptionalBranchId(options.branchId);
+    if (branchId) body.branch_id = branchId;
     if (options.expectedTotal != null && options.expectedTotal !== "") {
         body.expected_total = options.expectedTotal;
     }

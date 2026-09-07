@@ -138,9 +138,13 @@ class PriceBackfill
             ->orderBy('id');
         $lotsWouldFill = (clone $lotQuery)->count();
         if ($apply && !$auditOnly) {
-            $lotQuery->chunkById(200, function ($lots) use (&$lotsFilled) {
+            $lotQuery->with('receiptItem')->chunkById(200, function ($lots) use (&$lotsFilled) {
                 foreach ($lots as $lot) {
-                    $lot->payable_unit_cost = $lot->unit_cost;
+                    $source = $this->consignmentPayableSource($lot);
+                    if ($source === null) {
+                        continue;
+                    }
+                    $lot->payable_unit_cost = $source;
                     $lot->save();
                     $lotsFilled++;
                 }
@@ -172,5 +176,18 @@ class PriceBackfill
         }
 
         return $money;
+    }
+
+    private function consignmentPayableSource(StockLot $lot): ?string
+    {
+        if ($lot->unit_cost !== null && $lot->unit_cost !== '') {
+            return Money::of($lot->unit_cost);
+        }
+        $receiptCost = $lot->receiptItem?->cost_price;
+        if ($receiptCost !== null && $receiptCost !== '') {
+            return Money::of($receiptCost);
+        }
+
+        return null;
     }
 }

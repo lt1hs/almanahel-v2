@@ -15,7 +15,7 @@ return new class extends Migration {
                 $table->unsignedInteger('rate_bps');
                 $table->string('calculation_basis', 32)->default('net_realized_sales');
                 $table->string('reason', 255);
-                $table->timestamp('effective_from');
+                $table->dateTime('effective_from');
                 $table->timestamp('applied_at')->nullable();
                 $table->foreignId('created_by')->nullable()->constrained('users')->nullOnDelete();
                 $table->string('idempotency_key', 80)->unique();
@@ -35,8 +35,8 @@ return new class extends Migration {
                 $table->string('scope_key', 32);
                 $table->unsignedInteger('rate_bps');
                 $table->string('calculation_basis', 32)->default('net_realized_sales');
-                $table->timestamp('effective_from');
-                $table->timestamp('effective_to')->nullable();
+                $table->dateTime('effective_from');
+                $table->dateTime('effective_to')->nullable();
                 $table->string('reason', 255);
                 $table->foreignId('created_by')->nullable()->constrained('users')->nullOnDelete();
                 $table->string('idempotency_key', 120)->nullable();

@@ -17,6 +17,7 @@ import {
     defaultSettlementPeriod,
     invoicePeriodFromSettlement,
     periodPreset,
+    type SettlementPreset,
 } from "@/lib/settlementPeriod";
 import { groupSettlementDisplayRows } from "@/lib/settlementDisplayRows";
 

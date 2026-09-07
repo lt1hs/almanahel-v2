@@ -276,6 +276,28 @@ class SellingPriceRevisionTest extends TestCase
         $this->artisan('prices:backfill')->assertSuccessful();
     }
 
+    public function test_backfill_apply_fills_missing_consignment_payable_unit_cost(): void
+    {
+        $branch = $this->makeBranch();
+        $book = $this->makeBook();
+        $lot = StockLot::create([
+            'book_id' => $book->id,
+            'branch_id' => $branch->id,
+            'ownership_type' => 'consignment',
+            'currency' => 'toman',
+            'unit_cost' => 80,
+            'qty_original' => 2,
+            'qty_available' => 2,
+            'payable_unit_cost' => null,
+        ]);
+
+        $this->assertSame(1, app(PriceBackfill::class)->audit()['consignment_lots_would_fill']);
+        $report = app(PriceBackfill::class)->run(true);
+        $this->assertSame(1, $report['consignment_lots_filled']);
+        $this->assertSame('80.00', Money::of($lot->fresh()->payable_unit_cost));
+        $this->assertSame(0, app(PriceBackfill::class)->audit()['consignment_lots_would_fill']);
+    }
+
     /**
      * @param  list<int>|null  $branchIds
      * @return array<string, mixed>

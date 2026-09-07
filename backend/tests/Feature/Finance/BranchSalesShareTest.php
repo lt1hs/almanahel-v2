@@ -121,6 +121,36 @@ class BranchSalesShareTest extends TestCase
         )));
     }
 
+    public function test_period_report_counts_returns_in_the_return_month_not_the_sale_month(): void
+    {
+        config(['almanahel.branch_sales_share_enabled' => true, 'app.timezone' => 'UTC']);
+        $saleAt = Carbon::parse('2026-08-20 12:00:00', 'UTC');
+        Carbon::setTestNow($saleAt);
+        $branch = $this->makeBranch();
+        $this->actingAsRole('admin', $branch);
+        $book = $this->makeBook();
+        $this->makeInventory($branch, $book, ['quantity' => 5, 'price_toman' => 100000, 'cost_price_toman' => 70000]);
+        $this->applyShare($this->sharePayload([$branch->id], '10.00', 'share-ret-period', $saleAt->copy()->subMinute()->toIso8601String()));
+        $sale = $this->sell($branch->id, $book->id, 1, '100000');
+
+        $returnAt = Carbon::parse('2026-09-07 12:00:00', 'UTC');
+        Carbon::setTestNow($returnAt);
+        $this->postJson('/api/returns/customer', [
+            'invoice_id' => $sale['id'],
+            'refund_method' => 'cash',
+            'items' => [['invoice_item_id' => $sale['items'][0]['id'], 'quantity' => 1]],
+        ])->assertCreated();
+
+        $august = $this->getJson('/api/branches/'.$branch->id.'/sales-share?date_from=2026-08-01&date_to=2026-08-31')->assertOk()->json();
+        $this->assertSame('10000.00', Money::of($august['report']['currencies']['toman']['gross_share']));
+        $this->assertSame('0.00', Money::of($august['report']['currencies']['toman']['share_returns']));
+
+        $september = $this->getJson('/api/branches/'.$branch->id.'/sales-share?date_from=2026-09-01&date_to=2026-09-07')->assertOk()->json();
+        $this->assertSame('0.00', Money::of($september['report']['currencies']['toman']['gross_share']));
+        $this->assertSame('10000.00', Money::of($september['report']['currencies']['toman']['share_returns']));
+        $this->assertSame('-10000.00', Money::of($september['report']['currencies']['toman']['net_share']));
+    }
+
     public function test_price_and_cost_changes_do_not_rewrite_shares_and_currencies_stay_split(): void
     {
         config(['almanahel.branch_sales_share_enabled' => true]);
@@ -178,6 +208,54 @@ class BranchSalesShareTest extends TestCase
         $this->assertSame('managerial', $profit['branch_sales_share']['mode']);
         $this->assertTrue($profit['branch_sales_share']['official_net_profit_unchanged']);
         $this->assertSame('شاخص مدیریتی', $profit['branch_sales_share']['currencies']['toman']['remaining_profit_label']);
+    }
+
+    public function test_repair_windows_closes_older_open_rules_in_the_same_scope(): void
+    {
+        config(['almanahel.branch_sales_share_enabled' => true, 'app.timezone' => 'UTC']);
+        Carbon::setTestNow(Carbon::parse('2026-09-07 18:00:00', 'UTC'));
+        $branch = $this->makeBranch();
+        $this->actingAsRole('admin', $branch);
+
+        $t0 = Carbon::parse('2026-09-01 10:00:00', 'UTC');
+        $t1 = Carbon::parse('2026-09-07 16:00:00', 'UTC');
+        BranchSalesShareRule::create([
+            'branch_id' => null,
+            'scope_key' => BranchSalesShareRule::GLOBAL_SCOPE,
+            'rate_bps' => 800,
+            'calculation_basis' => BranchSalesShareRule::BASIS_NET_REALIZED,
+            'effective_from' => $t0,
+            'effective_to' => null,
+            'reason' => 'قانون قدیمی باز',
+            'idempotency_key' => 'open-old',
+        ]);
+        BranchSalesShareRule::create([
+            'branch_id' => null,
+            'scope_key' => BranchSalesShareRule::GLOBAL_SCOPE,
+            'rate_bps' => 1000,
+            'calculation_basis' => BranchSalesShareRule::BASIS_NET_REALIZED,
+            'effective_from' => $t1,
+            'effective_to' => null,
+            'reason' => 'قانون جدید باز',
+            'idempotency_key' => 'open-new',
+        ]);
+
+        $updated = app(\App\Services\BranchShare\BranchSalesShareService::class)->repairWindows();
+        $this->assertGreaterThan(0, $updated);
+
+        $rules = BranchSalesShareRule::query()->orderBy('effective_from')->get();
+        $this->assertTrue($rules[0]->effective_from->equalTo($t0));
+        $this->assertTrue($rules[1]->effective_from->equalTo($t1));
+        $this->assertTrue($rules[0]->effective_to->equalTo($t1));
+        $this->assertNull($rules[1]->effective_to);
+
+        $preview = $this->postJson('/api/branch-sales-shares/preview', $this->sharePayload(
+            [$branch->id],
+            '12.00',
+            'after-repair',
+            now()->toIso8601String()
+        ))->assertOk()->json();
+        $this->assertFalse($preview['has_overlap']);
     }
 
     public function test_managerial_mode_does_not_change_journals_and_stays_balanced(): void
@@ -314,6 +392,7 @@ class BranchSalesShareTest extends TestCase
 
         $rules = BranchSalesShareRule::query()->orderBy('id')->get();
         $this->assertCount(2, $rules);
+        $this->assertTrue($rules[0]->effective_from->equalTo($t0));
         $this->assertTrue($rules[0]->effective_from->lt($rules[0]->effective_to));
         $this->assertTrue($rules[0]->effective_to->equalTo($t1));
         $this->assertNull($rules[1]->effective_to);

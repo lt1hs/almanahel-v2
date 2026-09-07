@@ -315,7 +315,6 @@ export default function SalesPage() {
             fetchInvoices();
             notify.success("toast.invoiceSuccess");
         } catch (error) {
-            console.error("Checkout failed:", error);
             if (error instanceof ApiError && error.status === 409) {
                 const body = error.body as { error?: string; current_price?: string };
                 if (body?.error === "price_changed") {
@@ -324,6 +323,7 @@ export default function SalesPage() {
                     return;
                 }
             }
+            console.error("Checkout failed:", error);
             const msg = error instanceof Error ? error.message : "";
             if (msg) notify.rawError(msg);
             else notify.error("toast.invoiceError");

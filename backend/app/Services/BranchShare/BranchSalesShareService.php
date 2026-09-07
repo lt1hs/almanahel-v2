@@ -641,6 +641,46 @@ class BranchSalesShareService
         ];
     }
 
+    /**
+     * Close older open-ended rules onto the next rule in the same scope.
+     * Also repairs invalid windows where effective_to <= effective_from.
+     */
+    public function repairWindows(): int
+    {
+        $updated = 0;
+        $scopeKeys = BranchSalesShareRule::query()->distinct()->pluck('scope_key');
+        foreach ($scopeKeys as $scopeKey) {
+            $rules = BranchSalesShareRule::query()
+                ->where('scope_key', $scopeKey)
+                ->orderBy('effective_from')
+                ->orderBy('id')
+                ->get();
+            foreach ($rules as $index => $rule) {
+                $next = $rules[$index + 1] ?? null;
+                $from = Carbon::parse($rule->effective_from);
+                $to = $rule->effective_to ? Carbon::parse($rule->effective_to) : null;
+                if ($next) {
+                    $nextFrom = Carbon::parse($next->effective_from);
+                    if ($nextFrom->lte($from)) {
+                        continue;
+                    }
+                    $needsClose = $to === null || $to->lte($from) || $to->gt($nextFrom);
+                    if ($needsClose) {
+                        $this->updateWindowEnd($rule->id, $nextFrom);
+                        $updated++;
+                    }
+                    continue;
+                }
+                if ($to !== null && $to->lte($from)) {
+                    $this->updateWindowEnd($rule->id, null);
+                    $updated++;
+                }
+            }
+        }
+
+        return $updated;
+    }
+
     private function parseEffectiveFrom(string $value): Carbon
     {
         try {
@@ -667,8 +707,19 @@ class BranchSalesShareService
             ]);
         }
         $this->assertValidWindow($rule->effective_from, $until);
-        $rule->effective_to = $until;
-        $rule->save();
+        $this->updateWindowEnd($rule->id, $until);
+    }
+
+    /**
+     * Only write effective_to. Eloquent save() of a dirty `to` omits `from`,
+     * which lets MySQL TIMESTAMP ON UPDATE rewrite effective_from.
+     */
+    private function updateWindowEnd(int $ruleId, ?Carbon $until): void
+    {
+        BranchSalesShareRule::query()->whereKey($ruleId)->update([
+            'effective_to' => $until,
+            'updated_at' => now(),
+        ]);
     }
 
     private function assertValidWindow(Carbon $from, ?Carbon $to): void
@@ -855,10 +906,16 @@ class BranchSalesShareService
     private function currencyTotals(int $branchId, Carbon $start, Carbon $end, string $currency): array
     {
         $shares = InvoiceItemBranchShare::query()
-            ->with(['invoiceItem', 'returnAllocations.customerReturn'])
+            ->with(['invoice', 'invoiceItem', 'returnAllocations.customerReturn'])
             ->where('branch_id', $branchId)
             ->where('currency', $currency)
-            ->whereHas('invoice', fn ($q) => $q->whereBetween('sold_at', [$start, $end]))
+            ->where(function ($q) use ($start, $end) {
+                $q->whereHas('invoice', fn ($invoice) => $invoice->whereBetween('sold_at', [$start, $end]))
+                    ->orWhereHas(
+                        'returnAllocations.customerReturn',
+                        fn ($ret) => $ret->whereBetween('returned_at', [$start, $end])
+                    );
+            })
             ->get();
 
         $gross = '0.00';
@@ -868,19 +925,26 @@ class BranchSalesShareService
         $shareReturns = '0.00';
         $rates = [];
         foreach ($shares as $share) {
-            $item = $share->invoiceItem;
-            $qty = (int) ($item?->quantity ?? $share->quantity);
-            $gross = Money::add($gross, Money::mul($item?->actual_price ?? 0, $qty));
-            $discount = Money::add($discount, Money::mul($item?->discount ?? 0, $qty));
-            $net = Money::add($net, $share->net_sales_amount);
-            $grossShare = Money::add($grossShare, $share->share_amount);
-            $rate = $this->bpsToRate((int) $share->rate_bps);
-            if (!in_array($rate, $rates, true)) {
-                $rates[] = $rate;
+            $soldAt = $share->invoice?->sold_at;
+            $saleInPeriod = $soldAt && Carbon::parse($soldAt)->betweenIncluded($start, $end);
+            if ($saleInPeriod) {
+                $item = $share->invoiceItem;
+                $qty = (int) ($item?->quantity ?? $share->quantity);
+                $gross = Money::add($gross, Money::mul($item?->actual_price ?? 0, $qty));
+                $discount = Money::add($discount, Money::mul($item?->discount ?? 0, $qty));
+                $net = Money::add($net, $share->net_sales_amount);
+                $grossShare = Money::add($grossShare, $share->share_amount);
+                $rate = $this->bpsToRate((int) $share->rate_bps);
+                if (!in_array($rate, $rates, true)) {
+                    $rates[] = $rate;
+                }
             }
             foreach ($share->returnAllocations as $alloc) {
                 $returnedAt = $alloc->customerReturn?->returned_at;
                 if ($returnedAt && (Carbon::parse($returnedAt)->lt($start) || Carbon::parse($returnedAt)->gt($end))) {
+                    continue;
+                }
+                if (!$returnedAt && !$saleInPeriod) {
                     continue;
                 }
                 $shareReturns = Money::add($shareReturns, $alloc->reversed_share_amount);

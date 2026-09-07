@@ -38,6 +38,22 @@ describe("buildSettlementPreviewUrl", () => {
         assert.match(url, /all_open=1/);
     });
 
+    it("accepts a string branch id from a select input", () => {
+        const url = buildSettlementPreviewUrl({
+            supplierAccountId: 9,
+            currency: "toman",
+            branchId: "4",
+        });
+        assert.match(url, /branch_id=4/);
+        const body = buildSettlementBody({
+            supplierAccountId: 9,
+            amount: 1,
+            currency: "toman",
+            branchId: "4",
+        });
+        assert.equal(body.branch_id, 4);
+    });
+
     it("keeps explicit dates when all_open is off", () => {
         const url = buildSettlementPreviewUrl({
             supplierAccountId: 9,
