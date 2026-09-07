@@ -12,6 +12,7 @@ import { useTranslation } from "@/hooks/useTranslation";
 import { useNotify } from "@/hooks/useNotify";
 import { apiRequest, ApiError } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { localDateTimeInputValue, localDateTimeToIso } from "@/lib/localDateTime";
 
 type Currency = "toman" | "dinar";
 type Scope = "all_branches" | "selected_branches";
@@ -56,11 +57,7 @@ export default function BranchSharesPage() {
     const [selected, setSelected] = useState<number[]>(user?.branch_id ? [user.branch_id] : []);
     const [rate, setRate] = useState("10.00");
     const [reason, setReason] = useState("");
-    const [effectiveFrom, setEffectiveFrom] = useState(() => {
-        const d = new Date();
-        d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
-        return d.toISOString().slice(0, 16);
-    });
+    const [effectiveFrom, setEffectiveFrom] = useState(() => localDateTimeInputValue());
     const [idempotencyKey, setIdempotencyKey] = useState(() => crypto.randomUUID());
     const [enabled, setEnabled] = useState(false);
     const [totals, setTotals] = useState<Record<Currency, Totals> | null>(null);
@@ -120,7 +117,7 @@ export default function BranchSharesPage() {
         const body: Record<string, unknown> = {
             scope,
             rate,
-            effective_from: effectiveFrom.length === 16 ? `${effectiveFrom}:00` : effectiveFrom,
+            effective_from: localDateTimeToIso(effectiveFrom),
             reason: reason.trim(),
             idempotency_key: idempotencyKey,
         };

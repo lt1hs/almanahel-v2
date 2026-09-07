@@ -159,10 +159,7 @@ class BranchSalesShareService
                     $scopeKey = BranchSalesShareRule::scopeKey($branchId);
                     BranchSalesShareRule::query()->where('scope_key', $scopeKey)->lockForUpdate()->get();
                     if (!empty($row['close_rule_id'])) {
-                        BranchSalesShareRule::query()
-                            ->whereKey($row['close_rule_id'])
-                            ->whereNull('effective_to')
-                            ->update(['effective_to' => $plan['effective_from']]);
+                        $this->closeOpenRule((int) $row['close_rule_id'], $plan['effective_from']);
                     }
                     BranchSalesShareRule::create([
                         'batch_id' => $batch->id,
@@ -575,7 +572,7 @@ class BranchSalesShareService
             throw new DomainException('دلیل تغییر درصد سهم الزامی است', 422);
         }
         $rateBps = $this->rateToBps($payload['rate'] ?? 0);
-        $effectiveFrom = Carbon::parse((string) ($payload['effective_from'] ?? now()));
+        $effectiveFrom = $this->parseEffectiveFrom((string) ($payload['effective_from'] ?? now()));
         $targets = $this->resolveTargets($scope, $payload['branch_ids'] ?? [], $user);
         $rows = [];
         $warnings = [];
@@ -642,6 +639,45 @@ class BranchSalesShareService
                 'overlap' => $row['overlap'],
             ])->all(),
         ];
+    }
+
+    private function parseEffectiveFrom(string $value): Carbon
+    {
+        try {
+            $parsed = Carbon::parse($value);
+        } catch (\Throwable) {
+            throw new DomainException('زمان شروع نامعتبر است', 422, [
+                'error' => 'invalid_effective_from',
+            ]);
+        }
+
+        return $parsed->utc();
+    }
+
+    private function closeOpenRule(int $ruleId, Carbon $until): void
+    {
+        $rule = BranchSalesShareRule::query()
+            ->whereKey($ruleId)
+            ->whereNull('effective_to')
+            ->lockForUpdate()
+            ->first();
+        if (!$rule) {
+            throw new DomainException('بازه زمانی قوانین سهم شعبه تداخل دارد', 409, [
+                'error' => 'rule_overlap',
+            ]);
+        }
+        $this->assertValidWindow($rule->effective_from, $until);
+        $rule->effective_to = $until;
+        $rule->save();
+    }
+
+    private function assertValidWindow(Carbon $from, ?Carbon $to): void
+    {
+        if ($to !== null && $to->lte($from)) {
+            throw new DomainException('پایان بازه سهم شعبه باید بعد از شروع آن باشد', 422, [
+                'error' => 'invalid_rule_window',
+            ]);
+        }
     }
 
     /**

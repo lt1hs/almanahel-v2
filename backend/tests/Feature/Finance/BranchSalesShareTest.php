@@ -273,6 +273,85 @@ class BranchSalesShareTest extends TestCase
         $this->assertJournalsBalanced();
     }
 
+    public function test_effective_from_with_timezone_offset_is_current_in_utc(): void
+    {
+        config(['almanahel.branch_sales_share_enabled' => true, 'app.timezone' => 'UTC']);
+        $nowUtc = Carbon::parse('2026-09-07 16:00:00', 'UTC');
+        Carbon::setTestNow($nowUtc);
+
+        $branch = $this->makeBranch();
+        $this->actingAsRole('admin', $branch);
+
+        $this->applyShare($this->sharePayload(
+            [$branch->id],
+            '10.00',
+            'share-tz',
+            '2026-09-07T19:00:00+03:00'
+        ));
+
+        $rule = BranchSalesShareRule::query()->first();
+        $this->assertNotNull($rule);
+        $this->assertTrue($rule->effective_from->equalTo($nowUtc), (string) $rule->effective_from);
+
+        $this->getJson('/api/branch-sales-shares/rules')
+            ->assertOk()
+            ->assertJsonPath('branches.0.rate', '10.00');
+    }
+
+    public function test_later_rule_closes_previous_with_to_after_from(): void
+    {
+        config(['almanahel.branch_sales_share_enabled' => true, 'app.timezone' => 'UTC']);
+        $t0 = Carbon::parse('2026-09-07 10:00:00', 'UTC');
+        Carbon::setTestNow($t0);
+        $branch = $this->makeBranch();
+        $this->actingAsRole('admin', $branch);
+
+        $this->applyShare($this->sharePayload([$branch->id], '10.00', 'share-w1', $t0->toIso8601String()));
+
+        $t1 = $t0->copy()->addHour();
+        Carbon::setTestNow($t1);
+        $this->applyShare($this->sharePayload([$branch->id], '12.00', 'share-w2', $t1->toIso8601String()));
+
+        $rules = BranchSalesShareRule::query()->orderBy('id')->get();
+        $this->assertCount(2, $rules);
+        $this->assertTrue($rules[0]->effective_from->lt($rules[0]->effective_to));
+        $this->assertTrue($rules[0]->effective_to->equalTo($t1));
+        $this->assertNull($rules[1]->effective_to);
+    }
+
+    public function test_rule_cannot_have_effective_to_before_or_equal_from(): void
+    {
+        config(['almanahel.branch_sales_share_enabled' => true, 'app.timezone' => 'UTC']);
+        $from = Carbon::parse('2026-09-07 12:00:00', 'UTC');
+        Carbon::setTestNow($from);
+        $branch = $this->makeBranch();
+        $this->actingAsRole('admin', $branch);
+        $this->applyShare($this->sharePayload([$branch->id], '10.00', 'share-invalid', $from->toIso8601String()));
+
+        $rule = BranchSalesShareRule::query()->first();
+        $this->assertNotNull($rule);
+
+        try {
+            $rule->effective_to = $from->copy()->subMinute();
+            $rule->save();
+            $this->fail('expected invalid window to be rejected');
+        } catch (\App\Exceptions\DomainException $e) {
+            $this->assertSame(422, $e->status);
+            $this->assertSame('invalid_rule_window', $e->context['error'] ?? null);
+        }
+
+        $rule->refresh();
+        $this->assertNull($rule->effective_to);
+
+        try {
+            $rule->effective_to = $from->copy();
+            $rule->save();
+            $this->fail('expected equal window to be rejected');
+        } catch (\App\Exceptions\DomainException $e) {
+            $this->assertSame('invalid_rule_window', $e->context['error'] ?? null);
+        }
+    }
+
     public function test_admin_enables_flag_from_settings_endpoint(): void
     {
         $branch = $this->makeBranch();

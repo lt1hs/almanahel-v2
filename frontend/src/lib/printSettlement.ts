@@ -179,8 +179,8 @@ function reportTables(
   formatNumber: (n: number) => string
 ): string {
   return groupItems(items)
-    .map(([name, groupItems]) => {
-      const rows = groupItems
+    .map(([name, branchRows]) => {
+      const rows = branchRows
         .map((item, idx) => `
         <tr>
           <td class="num">${idx + 1}</td>

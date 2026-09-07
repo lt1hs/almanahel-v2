@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Exceptions\DomainException;
 use Illuminate\Database\Eloquent\Model;
 
 class BranchSalesShareRule extends Model
@@ -37,5 +38,18 @@ class BranchSalesShareRule extends Model
     public static function scopeKey(?int $branchId): string
     {
         return $branchId === null ? self::GLOBAL_SCOPE : (string) $branchId;
+    }
+
+    protected static function booted(): void
+    {
+        static::saving(function (self $rule): void {
+            $from = $rule->effective_from;
+            $to = $rule->effective_to;
+            if ($from && $to && $to->lte($from)) {
+                throw new DomainException('پایان بازه سهم شعبه باید بعد از شروع آن باشد', 422, [
+                    'error' => 'invalid_rule_window',
+                ]);
+            }
+        });
     }
 }
