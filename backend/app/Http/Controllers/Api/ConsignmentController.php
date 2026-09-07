@@ -646,8 +646,9 @@ class ConsignmentController extends Controller
             'supplier_id'    => 'required_without:supplier_account_id|nullable|exists:suppliers,id',
             'branch_id'      => 'nullable|exists:branches,id',
             'period_type'    => 'required|in:monthly,quarterly,custom',
-            'period_start'   => 'required|date',
-            'period_end'     => 'required|date|after_or_equal:period_start',
+            'period_start'   => 'nullable|date|required_without:all_open',
+            'period_end'     => 'nullable|date|after_or_equal:period_start|required_without:all_open',
+            'all_open'       => 'sometimes|boolean',
             'amount'         => 'required|numeric|min:0.01',
             'currency'       => 'required|in:toman,dinar',
             'payment_method' => 'required|in:cash,bank_transfer,check',
@@ -656,6 +657,7 @@ class ConsignmentController extends Controller
             'bank_name'      => 'nullable|string',
             'financial_account_id' => 'nullable|exists:financial_accounts,id',
         ]);
+        $validated['all_open'] = $request->boolean('all_open');
 
         if ($request->boolean('aggregate')) {
             $created = app(SettlementRecorder::class)->createForAllBranches($request->user(), $validated);
@@ -766,11 +768,16 @@ class ConsignmentController extends Controller
         $validated = $request->validate([
             'supplier_account_id' => 'nullable|exists:supplier_accounts,id',
             'supplier_id'  => 'required_without:supplier_account_id|nullable|exists:suppliers,id',
-            'period_start' => 'required|date',
-            'period_end'   => 'required|date|after_or_equal:period_start',
+            'period_start' => 'nullable|date|required_without:all_open',
+            'period_end'   => 'nullable|date|after_or_equal:period_start|required_without:all_open',
+            'all_open'     => 'sometimes|boolean',
             'currency'     => 'nullable|in:toman,dinar',
             'branch_id'    => 'nullable|exists:branches,id',
         ]);
+
+        $allOpen = $request->boolean('all_open');
+        $periodStart = $allOpen ? null : ($validated['period_start'] ?? null);
+        $periodEnd = $allOpen ? null : ($validated['period_end'] ?? null);
 
         if ($request->boolean('aggregate')) {
             BranchAccess::assertCanAggregateSupplierAccounts($request->user());
@@ -790,8 +797,8 @@ class ConsignmentController extends Controller
             $preview = app(PeriodSettlement::class)->previewAllBranches(
                 $supplierId,
                 $currency,
-                $validated['period_start'],
-                $validated['period_end']
+                $periodStart,
+                $periodEnd
             );
 
             return response()->json([
@@ -815,8 +822,8 @@ class ConsignmentController extends Controller
         $preview = app(PeriodSettlement::class)->preview(
             $scope['supplier_id'],
             $currency,
-            $validated['period_start'],
-            $validated['period_end'],
+            $periodStart,
+            $periodEnd,
             $scope['branch_id'],
             $scope['supplier_account_id']
         );

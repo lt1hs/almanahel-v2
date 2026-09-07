@@ -83,4 +83,25 @@ final class Money
 
         return self::roundHalfUp($raw);
     }
+
+    /** $bps is integer basis points (1000 = 10%). */
+    public static function mulBps(mixed $amount, int $bps): string
+    {
+        if ($bps <= 0) {
+            return self::of(0);
+        }
+        $raw = bcdiv(bcmul(self::of($amount), (string) $bps, 8), '10000', 8);
+
+        return self::roundHalfUp($raw);
+    }
+
+    public static function proportion(mixed $amount, int $part, int $whole): string
+    {
+        if ($part <= 0 || $whole <= 0) {
+            return self::of(0);
+        }
+        $raw = bcdiv(bcmul(self::of($amount), (string) $part, 8), (string) $whole, 8);
+
+        return self::roundHalfUp($raw);
+    }
 }

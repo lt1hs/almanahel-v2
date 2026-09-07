@@ -5,6 +5,7 @@ namespace Tests\Feature\Settlement;
 use App\Models\ConsignmentReceipt;
 use App\Models\Gift;
 use App\Models\GiftLotAllocation;
+use App\Models\Invoice;
 use App\Services\Suppliers\SupplierAccountResolver;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\Support\CreatesDomainData;
@@ -342,5 +343,92 @@ class ConsignmentSettlementCorrectnessTest extends TestCase
         $this->assertSame('partially_settled', $afterSale['payable_status']);
         $this->assertSame(10000.0, (float) $afterSale['remaining_payable']);
         $this->assertSame('partially_settled', \App\Models\ConsignmentReceipt::query()->find($afterSale['id'])->status);
+    }
+
+    public function test_all_open_settle_clears_prior_month_sales_left_by_current_month_period(): void
+    {
+        $branch = $this->makeBranch();
+        $this->actingAsRole('admin', $branch);
+        $book = $this->makeBook();
+        $supplier = $this->makeSupplier();
+        $account = app(SupplierAccountResolver::class)->ensureForPair($branch->id, $supplier->id);
+
+        $this->postJson('/api/consignments', [
+            'supplier_account_id' => $account->id,
+            'branch_id' => $branch->id,
+            'currency' => 'toman',
+            'received_at' => now()->subMonths(3)->toDateString(),
+            'items' => [['book_id' => $book->id, 'quantity' => 10, 'cost_price' => 10000, 'selling_price' => 15000]],
+        ])->assertCreated();
+
+        $this->postJson('/api/invoices', [
+            'branch_id' => $branch->id,
+            'payment_method' => 'cash',
+            'currency' => 'toman',
+            'items' => [['book_id' => $book->id, 'quantity' => 3, 'actual_price' => 15000]],
+        ])->assertCreated();
+        Invoice::query()->latest('id')->first()?->update([
+            'sold_at' => now()->subMonths(3)->startOfMonth(),
+        ]);
+
+        $this->postJson('/api/invoices', [
+            'branch_id' => $branch->id,
+            'payment_method' => 'cash',
+            'currency' => 'toman',
+            'items' => [['book_id' => $book->id, 'quantity' => 2, 'actual_price' => 15000]],
+        ])->assertCreated();
+
+        $monthStart = now()->startOfMonth()->toDateString();
+        $today = now()->toDateString();
+
+        $monthPreview = $this->getJson('/api/consignments/settlement-preview?'.http_build_query([
+            'supplier_account_id' => $account->id,
+            'period_start' => $monthStart,
+            'period_end' => $today,
+            'currency' => 'toman',
+            'branch_id' => $branch->id,
+        ]))->assertOk()->json();
+        $this->assertSame(20000.0, (float) $monthPreview['total_payable']);
+
+        $this->postJson('/api/consignments/settle', [
+            'supplier_account_id' => $account->id,
+            'branch_id' => $branch->id,
+            'period_type' => 'custom',
+            'period_start' => $monthStart,
+            'period_end' => $today,
+            'amount' => '20000.00',
+            'currency' => 'toman',
+            'payment_method' => 'cash',
+        ])->assertCreated();
+
+        $partial = $this->getJson('/api/consignments?branch_id='.$branch->id.'&payable_status=all')
+            ->assertOk()
+            ->json('data.0');
+        $this->assertSame('partially_settled', $partial['payable_status']);
+        $this->assertSame(30000.0, (float) $partial['remaining_payable']);
+
+        $allPreview = $this->getJson('/api/consignments/settlement-preview?'.http_build_query([
+            'supplier_account_id' => $account->id,
+            'all_open' => 1,
+            'currency' => 'toman',
+            'branch_id' => $branch->id,
+        ]))->assertOk()->json();
+        $this->assertSame(30000.0, (float) $allPreview['total_payable']);
+
+        $this->postJson('/api/consignments/settle', [
+            'supplier_account_id' => $account->id,
+            'branch_id' => $branch->id,
+            'period_type' => 'custom',
+            'all_open' => true,
+            'amount' => $allPreview['total_payable'],
+            'currency' => 'toman',
+            'payment_method' => 'cash',
+        ])->assertCreated();
+
+        $final = $this->getJson('/api/consignments?branch_id='.$branch->id.'&payable_status=settled')
+            ->assertOk()
+            ->json('data.0');
+        $this->assertSame('settled', $final['payable_status']);
+        $this->assertSame(0.0, (float) $final['remaining_payable']);
     }
 }

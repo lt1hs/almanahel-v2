@@ -1,15 +1,16 @@
 "use client";
 
-import React, { useMemo, useRef, useState } from "react";
-import { ArrowRight, Download, ImagePlus, RotateCcw, Save, Trash2 } from "lucide-react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { ArrowRight, Download, ImagePlus, Printer, RotateCcw, Save, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Card, CardContent } from "@/components/ui/Card";
 import { Link } from "@/i18n/routing";
 import { useTranslation } from "@/hooks/useTranslation";
 import { useNotify } from "@/hooks/useNotify";
 import { cn } from "@/lib/utils";
-import { printDesignedInvoice, buildSettlementPrintLabels } from "@/lib/printSettlement";
+import { printDesignedInvoice, downloadDesignedInvoicePdf, buildSettlementPrintLabels } from "@/lib/printSettlement";
 import {
+  HEADER_META_FIELD_IDS,
   INVOICE_A5_HEIGHT_PX,
   INVOICE_A5_WIDTH_PX,
   INVOICE_FIELD_ORDER,
@@ -17,15 +18,21 @@ import {
   defaultInvoiceDesign,
   invoiceFieldTexts,
   invoiceProtectedFacts,
+  isCustomInvoiceTemplate,
   keepProtectedFacts,
   loadInvoiceTexts,
   mergeInvoiceTexts,
+  nudgeFieldPosition,
+  applyOfficialLetterhead,
+  invoiceLetterheadLang,
+  officialInvoiceTemplateUrl,
   saveInvoiceDesign,
   saveInvoiceTexts,
   type InvoiceDesign,
   type InvoiceFieldId,
   type InvoiceFieldLayout,
   type InvoiceFieldTexts,
+  type InvoiceLetterheadLang,
   type SettlementInvoiceSource,
 } from "@/lib/settlementInvoiceLayout";
 
@@ -44,8 +51,8 @@ export function SettlementInvoiceDesigner({
   const symbol =
     source.currency === "dinar" ? t("common.currency.dinarSymbol") : t("common.currency.tomanSymbol");
   const generatedTexts = useMemo(
-    () => invoiceFieldTexts({ source, labels, formatNumber, currencySymbol: symbol }),
-    [source, labels, formatNumber, symbol]
+    () => invoiceFieldTexts({ source, labels, formatNumber, currencySymbol: symbol, lang: language }),
+    [source, labels, formatNumber, symbol, language]
   );
   const facts = useMemo(() => invoiceProtectedFacts(source, formatNumber), [source, formatNumber]);
   const [design, setDesign] = useState<InvoiceDesign>(initialDesign);
@@ -53,7 +60,7 @@ export function SettlementInvoiceDesigner({
     mergeInvoiceTexts(generatedTexts, loadInvoiceTexts(source.id), facts)
   );
   const [selectedId, setSelectedId] = useState<InvoiceFieldId>("body");
-  const [isSavingPdf, setIsSavingPdf] = useState(false);
+  const [busy, setBusy] = useState<"print" | "pdf" | null>(null);
   const [dirty, setDirty] = useState(false);
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const designRef = useRef(design);
@@ -62,8 +69,6 @@ export function SettlementInvoiceDesigner({
   const resizeRef = useRef<{ id: InvoiceFieldId; startW: number; startH: number; sx: number; sy: number } | null>(null);
   designRef.current = design;
   textsRef.current = texts;
-
-  const selected = design.fields.find((field) => field.id === selectedId) ?? design.fields[0];
 
   const persist = (next: InvoiceDesign, store = false) => {
     designRef.current = next;
@@ -74,6 +79,46 @@ export function SettlementInvoiceDesigner({
       saveInvoiceTexts(source.id, textsRef.current);
       setDirty(false);
     }
+  };
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) return;
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      const target = event.target as HTMLElement | null;
+      if (target?.closest("[data-invoice-controls]")) return;
+      const field = designRef.current.fields.find((item) => item.id === selectedId);
+      if (!field) return;
+      event.preventDefault();
+      const next = nudgeFieldPosition(
+        field,
+        event.key as "ArrowUp" | "ArrowDown" | "ArrowLeft" | "ArrowRight",
+        event.shiftKey
+      );
+      patchField(selectedId, next);
+    };
+    const onKeyUp = (event: KeyboardEvent) => {
+      if (!["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) return;
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      const target = event.target as HTMLElement | null;
+      if (target?.closest("[data-invoice-controls]")) return;
+      saveInvoiceDesign(designRef.current);
+      saveInvoiceTexts(source.id, textsRef.current);
+      setDirty(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+    };
+  }, [selectedId, source.id]);
+
+  const selected = design.fields.find((field) => field.id === selectedId) ?? design.fields[0];
+  const letterheadLang = invoiceLetterheadLang(design.templateDataUrl, language);
+
+  const selectLetterhead = (lang: InvoiceLetterheadLang) => {
+    persist(applyOfficialLetterhead(designRef.current, lang), true);
   };
 
   const patchField = (id: InvoiceFieldId, patch: Partial<InvoiceFieldLayout>, store = false) => {
@@ -183,7 +228,27 @@ export function SettlementInvoiceDesigner({
   };
 
   const download = async () => {
-    setIsSavingPdf(true);
+    setBusy("pdf");
+    try {
+      saveAll(true);
+      await downloadDesignedInvoicePdf({
+        source,
+        labels,
+        formatNumber,
+        currencySymbol: symbol,
+        lang: language === "ar" ? "ar" : "fa",
+        design: designRef.current,
+        texts: textsRef.current,
+      });
+    } catch {
+      notify.error("toast.invoicePdfError");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const print = async () => {
+    setBusy("print");
     try {
       saveAll(true);
       await printDesignedInvoice({
@@ -198,13 +263,29 @@ export function SettlementInvoiceDesigner({
     } catch {
       notify.error("toast.invoicePrintError");
     } finally {
-      setIsSavingPdf(false);
+      setBusy(null);
     }
   };
 
   return (
     <div className="space-y-4 pb-10">
-      <div className="flex flex-wrap items-center justify-between gap-3">
+      <style>{`
+        @media print {
+          [data-invoice-handle],
+          [data-invoice-controls] { display: none !important; }
+          [data-invoice-sheet] textarea {
+            appearance: none !important;
+            background: transparent !important;
+            border: 0 !important;
+            box-shadow: none !important;
+            outline: none !important;
+            color: #1a1a1a !important;
+            -webkit-print-color-adjust: exact;
+            print-color-adjust: exact;
+          }
+        }
+      `}</style>
+      <div className="flex flex-wrap items-center justify-between gap-3 print:hidden">
         <div className="flex items-center gap-3">
           <Link href="/dashboard/consignment/settle?tab=history">
             <Button variant="ghost" size="sm" className="h-9 w-9 rounded-xl border border-ink/5 p-0">
@@ -226,21 +307,33 @@ export function SettlementInvoiceDesigner({
             variant="outline"
             size="sm"
             className="h-10 rounded-xl px-4 text-[11px] font-black"
-            onClick={saveAll}
-            disabled={!dirty}
+            onClick={() => saveAll()}
+            disabled={!dirty || busy !== null}
           >
             <Save className="ms-1.5 h-3.5 w-3.5" />
             {t("consignment.settle.invoice.save")}
           </Button>
           <Button
-            variant="primary"
+            variant="outline"
             size="sm"
             className="h-10 rounded-xl px-4 text-[11px] font-black"
             onClick={download}
-            disabled={isSavingPdf}
+            disabled={busy !== null}
+            isLoading={busy === "pdf"}
           >
             <Download className="ms-1.5 h-3.5 w-3.5" />
-            {t("finance.settlement.printInvoice")}
+            {t("finance.settlement.downloadPdf")}
+          </Button>
+          <Button
+            variant="primary"
+            size="sm"
+            className="h-10 rounded-xl px-4 text-[11px] font-black"
+            onClick={print}
+            disabled={busy !== null}
+            isLoading={busy === "print"}
+          >
+            <Printer className="ms-1.5 h-3.5 w-3.5" />
+            {t("finance.settlement.print")}
           </Button>
         </div>
       </div>
@@ -250,7 +343,8 @@ export function SettlementInvoiceDesigner({
           <CardContent className="flex justify-center overflow-auto p-4 pt-4">
             <div
               ref={canvasRef}
-              className="relative shrink-0 overflow-hidden rounded-md border border-ink/10 bg-white shadow-sm"
+              data-invoice-sheet
+              className="relative shrink-0 overflow-hidden rounded-md border border-ink/10 bg-white font-ibm-plex-arabic shadow-sm print:rounded-none print:border-0 print:shadow-none"
               style={{
                 width: INVOICE_A5_WIDTH_PX,
                 height: INVOICE_A5_HEIGHT_PX,
@@ -261,7 +355,10 @@ export function SettlementInvoiceDesigner({
               onPointerUp={onPointerUp}
               onPointerCancel={onPointerUp}
             >
-              {design.fields.map((field) => (
+              {design.fields.map((field) => {
+                const compact = HEADER_META_FIELD_IDS.includes(field.id);
+                if (field.id === "attachment" && isArabic && !texts.attachment) return null;
+                return (
                 <div
                   key={field.id}
                   className={cn(
@@ -278,10 +375,24 @@ export function SettlementInvoiceDesigner({
                 >
                   <button
                     type="button"
+                    data-invoice-handle
                     onPointerDown={(event) => onMovePointerDown(event, field.id)}
-                    className="absolute inset-x-0 top-0 z-10 h-3 cursor-grab bg-primary/20 active:cursor-grabbing"
+                    className={cn(
+                      "absolute z-10 cursor-grab bg-transparent active:cursor-grabbing print:hidden",
+                      compact ? "inset-y-0 left-0 w-2.5" : "inset-x-0 top-0 h-3"
+                    )}
                     aria-label={t("consignment.settle.invoice.move")}
-                  />
+                  >
+                    {compact ? (
+                      <span className="absolute inset-y-0 left-0 flex w-2.5 flex-col items-center justify-between py-0.5">
+                        <span className="h-1.5 w-1.5 rounded-[1px] bg-primary" />
+                        <span className="h-1.5 w-1.5 rounded-[1px] bg-primary" />
+                        <span className="h-1.5 w-1.5 rounded-[1px] bg-primary" />
+                      </span>
+                    ) : (
+                      <span className="block h-full w-full bg-primary/20" />
+                    )}
+                  </button>
                   <textarea
                     value={texts[field.id]}
                     onChange={(event) => patchText(field.id, event.target.value)}
@@ -290,32 +401,64 @@ export function SettlementInvoiceDesigner({
                       saveInvoiceTexts(source.id, textsRef.current);
                       setDirty(false);
                     }}
-                    className="h-full w-full resize-none overflow-hidden bg-transparent px-1 pb-3 pt-3 outline-none"
+                    className={cn(
+                      "h-full w-full resize-none overflow-hidden bg-transparent outline-none font-ibm-plex-arabic print:border-0 print:shadow-none print:outline-none",
+                      compact ? "py-0 ps-2 pe-1" : "px-1 pb-3 pt-3"
+                    )}
                     style={{
                       fontSize: `${field.fontSize}px`,
-                      lineHeight: 1.55,
-                      textAlign:
-                        field.align === "start" ? "right" : field.align === "end" ? "left" : field.align,
+                      lineHeight: compact ? 1.1 : 1.55,
+                      textAlign: compact
+                        ? "left"
+                        : field.align === "start"
+                          ? "right"
+                          : field.align === "end"
+                            ? "left"
+                            : field.align,
                       fontWeight: field.bold ? 700 : 400,
-                      fontFamily: '"Traditional Arabic", "Arabic Typesetting", Tahoma, serif',
                     }}
                   />
                   <button
                     type="button"
+                    data-invoice-handle
                     onPointerDown={(event) => onResizePointerDown(event, field.id)}
-                    className="absolute bottom-0 left-0 z-10 h-3.5 w-3.5 cursor-nwse-resize rounded-br-sm bg-primary"
+                    className={cn(
+                      "absolute z-10 cursor-nwse-resize bg-primary print:hidden",
+                      compact ? "bottom-0 left-0 h-1.5 w-1.5" : "bottom-0 left-0 h-3.5 w-3.5 rounded-br-sm"
+                    )}
                     aria-label={t("consignment.settle.invoice.resize")}
                   />
                 </div>
-              ))}
+                );
+              })}
             </div>
           </CardContent>
         </Card>
 
-        <div className="space-y-3">
+        <div className="space-y-3 print:hidden" data-invoice-controls>
           <Card className="rounded-3xl border border-white/80 bg-white/75">
             <CardContent className="space-y-3 p-4 pt-4">
               <p className="text-[11px] font-black text-ink">{t("consignment.settle.invoice.template")}</p>
+              <div className="grid grid-cols-2 gap-1.5">
+                {([
+                  { key: "fa" as const, label: t("common.persian") },
+                  { key: "ar" as const, label: t("common.arabic") },
+                ]).map((option) => (
+                  <button
+                    key={option.key}
+                    type="button"
+                    onClick={() => selectLetterhead(option.key)}
+                    className={cn(
+                      "h-9 rounded-xl text-[11px] font-black transition-all",
+                      !isCustomInvoiceTemplate(design.templateDataUrl) && letterheadLang === option.key
+                        ? "bg-primary text-white shadow-sm shadow-primary/20"
+                        : "border border-ink/10 bg-white text-ink/50 hover:border-primary/20 hover:text-ink"
+                    )}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
               <label className="flex h-10 cursor-pointer items-center justify-center gap-2 rounded-xl border border-dashed border-ink/15 bg-parchment/40 text-[11px] font-black text-ink/55">
                 <ImagePlus className="h-4 w-4" />
                 {t("consignment.settle.invoice.uploadTemplate")}
@@ -326,10 +469,10 @@ export function SettlementInvoiceDesigner({
                   onChange={(event) => onUpload(event.target.files?.[0])}
                 />
               </label>
-              {design.templateDataUrl ? (
+              {isCustomInvoiceTemplate(design.templateDataUrl) ? (
                 <button
                   type="button"
-                  onClick={() => persist({ ...designRef.current, templateDataUrl: null }, true)}
+                  onClick={() => persist({ ...designRef.current, templateDataUrl: officialInvoiceTemplateUrl(letterheadLang) }, true)}
                   className="flex h-9 w-full items-center justify-center gap-2 rounded-xl border border-ink/10 text-[11px] font-black text-ink/50"
                 >
                   <Trash2 className="h-3.5 w-3.5" />
@@ -338,7 +481,12 @@ export function SettlementInvoiceDesigner({
               ) : null}
               <button
                 type="button"
-                onClick={() => persist({ ...defaultInvoiceDesign(), templateDataUrl: designRef.current.templateDataUrl }, true)}
+                onClick={() => persist({
+                  ...defaultInvoiceDesign(letterheadLang),
+                  templateDataUrl: isCustomInvoiceTemplate(designRef.current.templateDataUrl)
+                    ? designRef.current.templateDataUrl
+                    : officialInvoiceTemplateUrl(letterheadLang),
+                }, true)}
                 className="flex h-9 w-full items-center justify-center gap-2 rounded-xl border border-ink/10 text-[11px] font-black text-ink/50"
               >
                 <RotateCcw className="h-3.5 w-3.5" />

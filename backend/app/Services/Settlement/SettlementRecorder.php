@@ -45,11 +45,15 @@ class SettlementRecorder
         }
 
         return DB::transaction(function () use ($user, $data, $amount, $branchId, $method, $supplierAccountId) {
+            $allOpen = !empty($data['all_open']);
+            $periodStart = $allOpen ? null : (string) $data['period_start'];
+            $periodEnd = $allOpen ? null : (string) $data['period_end'];
+
             $preview = $this->period->preview(
                 (int) $data['supplier_id'],
                 (string) $data['currency'],
-                (string) $data['period_start'],
-                (string) $data['period_end'],
+                $periodStart,
+                $periodEnd,
                 $branchId,
                 $supplierAccountId
             );
@@ -73,8 +77,8 @@ class SettlementRecorder
                 'user_id' => $user->id,
                 'settlement_number' => 'SET-' . strtoupper(Str::random(8)),
                 'period_type' => $data['period_type'],
-                'period_start' => $data['period_start'],
-                'period_end' => $data['period_end'],
+                'period_start' => $preview['period_start'],
+                'period_end' => $preview['period_end'],
                 'amount' => $amount,
                 'currency' => $data['currency'],
                 'payment_method' => $method,
@@ -87,8 +91,8 @@ class SettlementRecorder
 
             $this->period->settle(
                 $settlement,
-                (string) $data['period_start'],
-                (string) $data['period_end'],
+                $periodStart,
+                $periodEnd,
                 $amount,
                 $preview['total_payable']
             );
@@ -146,11 +150,15 @@ class SettlementRecorder
         }
 
         return DB::transaction(function () use ($user, $data, $supplierId, $currency, $amount) {
+            $allOpen = !empty($data['all_open']);
+            $periodStart = $allOpen ? null : (string) $data['period_start'];
+            $periodEnd = $allOpen ? null : (string) $data['period_end'];
+
             $preview = $this->period->previewAllBranches(
                 $supplierId,
                 $currency,
-                (string) $data['period_start'],
-                (string) $data['period_end']
+                $periodStart,
+                $periodEnd
             );
             $rows = $preview['by_branch'] ?? [];
             if ($rows === []) {
@@ -178,8 +186,9 @@ class SettlementRecorder
                     'supplier_account_id' => $share['supplier_account_id'],
                     'branch_id' => $share['branch_id'],
                     'period_type' => $data['period_type'],
-                    'period_start' => $data['period_start'],
-                    'period_end' => $data['period_end'],
+                    'period_start' => $preview['period_start'],
+                    'period_end' => $preview['period_end'],
+                    'all_open' => $allOpen,
                     'amount' => $share['amount'],
                     'expected_total' => $share['remaining_payable'],
                     'currency' => $currency,

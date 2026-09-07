@@ -6,6 +6,7 @@ import {
     Bell, User, Search, Globe, ChevronDown, CheckCircle2, AlertTriangle, Info,
     LogOut, CreditCard, RefreshCw, Store, Settings, X, Languages, Trash2,
     LayoutDashboard, Library, Wallet, BarChart3, Truck, Warehouse, Users, ContactRound, Tag,
+    Percent,
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { useTranslation } from "@/hooks/useTranslation";
@@ -15,6 +16,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { cn } from "@/lib/utils";
 import { apiRequest } from "@/lib/api";
 import { useNotificationInbox, useInvalidateNotifications } from "@/hooks/useNotificationInbox";
+import { canAccessRoute } from "@/lib/routeAccess";
 
 interface InboxNotification {
     id: number;
@@ -60,6 +62,7 @@ const QUICK_LINKS: QuickLink[] = [
     { titleKey: "nav.distribution", href: "/dashboard/distribution", icon: Truck, keywords: ["distribution", "transfer", "توزیع", "انتقال"] },
     { titleKey: "nav.sales", href: "/dashboard/sales", icon: Wallet, keywords: ["sales", "invoice", "فروش", "صندوق", "فاکتور"] },
     { titleKey: "nav.finance", href: "/dashboard/finance", icon: BarChart3, keywords: ["finance", "profit", "مالی", "سود"] },
+    { titleKey: "nav.branchShares", href: "/dashboard/finance/branch-shares", icon: Percent, keywords: ["share", "branch", "سهم", "شعبه"] },
     { titleKey: "nav.customers", href: "/dashboard/customers", icon: ContactRound, keywords: ["customer", "مشتری", "عميل"] },
     { titleKey: "nav.suppliers", href: "/dashboard/suppliers", icon: Users, keywords: ["supplier", "تأمین", "تامین"] },
     { titleKey: "nav.checks", href: "/dashboard/checks", icon: CreditCard, keywords: ["check", "چک"] },
@@ -82,6 +85,7 @@ const PAGE_TITLE_KEYS: Record<string, string> = {
     "/dashboard/checks": "nav.checks",
     "/dashboard/finance": "nav.finance",
     "/dashboard/finance/branch-profit": "nav.branchProfit",
+    "/dashboard/finance/branch-shares": "nav.branchShares",
     "/dashboard/expenses": "nav.expenses",
     "/dashboard/admin": "nav.admin",
     "/dashboard/admin/currency": "admin.currencySettings",
@@ -197,12 +201,13 @@ export function Navbar() {
 
     const searchResults = useMemo(() => {
         const q = search.trim().toLowerCase();
-        if (!q) return QUICK_LINKS.slice(0, 6);
-        return QUICK_LINKS.filter((link) => {
+        const allowed = QUICK_LINKS.filter((link) => canAccessRoute(user?.role, link.href));
+        if (!q) return allowed.slice(0, 6);
+        return allowed.filter((link) => {
             const title = t(link.titleKey).toLowerCase();
             return title.includes(q) || link.keywords.some((k) => k.toLowerCase().includes(q));
         }).slice(0, 8);
-    }, [search, t]);
+    }, [search, t, user?.role]);
 
     const navigateTo = (href: string) => {
         router.push(href);

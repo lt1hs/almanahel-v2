@@ -15,4 +15,5 @@ class InvoiceItem extends Model
     public function book() { return $this->belongsTo(Book::class); }
     public function overrideBy() { return $this->belongsTo(User::class, 'override_by'); }
     public function lotAllocations() { return $this->hasMany(SaleLotAllocation::class); }
+    public function branchShare() { return $this->hasOne(InvoiceItemBranchShare::class); }
 }

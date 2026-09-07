@@ -22,6 +22,7 @@ use App\Http\Controllers\Api\ActivityLogController;
 use App\Http\Controllers\Api\CustomerController;
 use App\Http\Controllers\Api\NotificationController;
 use App\Http\Controllers\Api\PriceChangeController;
+use App\Http\Controllers\Api\BranchSalesShareController;
 use Illuminate\Support\Facades\Route;
 use App\Http\Middleware\AuditMutations;
 
@@ -64,12 +65,23 @@ Route::middleware(['auth:sanctum', AuditMutations::class])->group(function () {
     Route::post('/price-changes/preview', [PriceChangeController::class, 'preview']);
     Route::post('/price-changes', [PriceChangeController::class, 'store']);
     Route::get('/price-changes/current', [PriceChangeController::class, 'current']);
+    Route::get('/price-changes/flags', [PriceChangeController::class, 'flags']);
+    Route::put('/price-changes/flags', [PriceChangeController::class, 'updateFlags']);
     Route::get('/price-changes/{priceChangeBatch}', [PriceChangeController::class, 'show']);
+
+    Route::post('/branch-sales-shares/preview', [BranchSalesShareController::class, 'preview']);
+    Route::post('/branch-sales-shares', [BranchSalesShareController::class, 'store']);
+    Route::put('/branch-sales-shares/enabled', [BranchSalesShareController::class, 'updateEnabled']);
+    Route::get('/branch-sales-shares/rules', [BranchSalesShareController::class, 'rules']);
+    Route::get('/branch-sales-shares/history', [BranchSalesShareController::class, 'history']);
+    Route::get('/branch-sales-shares/summary', [BranchSalesShareController::class, 'summary']);
+    Route::get('/branch-sales-shares/invoices', [BranchSalesShareController::class, 'invoices']);
 
     // ─── Branches ──────────────────────────────────────────────
     Route::get('/branches',              [BranchController::class, 'index']);
     Route::get('/branches/{branch}',     [BranchController::class, 'show']);
     Route::get('/branches/{branch}/profit', [BranchController::class, 'profit']);
+    Route::get('/branches/{branch}/sales-share', [BranchController::class, 'salesShare']);
     Route::post('/branches',             [BranchController::class, 'store'])->middleware('role:admin');
     Route::put('/branches/{branch}',     [BranchController::class, 'update'])->middleware('role:admin');
     Route::delete('/branches/{branch}',  [BranchController::class, 'destroy'])->middleware('role:admin');

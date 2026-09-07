@@ -25,7 +25,15 @@ describe("canAccessRoute", () => {
         assert.equal(canAccessRoute("accountant", "/dashboard/finance"), true);
         assert.equal(canAccessRoute("accountant", "/dashboard/reports"), true);
         assert.equal(canAccessRoute("accountant", "/dashboard/finance/branch-profit"), false);
+        assert.equal(canAccessRoute("accountant", "/dashboard/finance/branch-shares"), false);
+        assert.equal(canAccessRoute("branch_manager", "/dashboard/finance/branch-shares"), false);
+        assert.equal(canAccessRoute("admin", "/dashboard/finance/branch-shares"), true);
+        assert.equal(canAccessRoute("warehouse_staff", "/dashboard/finance/branch-shares"), false);
         assert.equal(canAccessRoute("accountant", "/dashboard/admin"), false);
+        assert.equal(canAccessRoute("accountant", "/dashboard/prices"), false);
+        assert.equal(canAccessRoute("branch_manager", "/dashboard/prices"), false);
+        assert.equal(canAccessRoute("admin", "/dashboard/prices"), true);
+        assert.equal(canAccessRoute("super_admin", "/dashboard/prices"), true);
     });
 
     it("allows branch ops on customers directory and blocks accountant", () => {

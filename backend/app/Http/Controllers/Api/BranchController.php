@@ -9,6 +9,7 @@ use App\Models\User;
 use App\Support\ActivityLogger;
 use App\Support\Authorization\BranchAccess;
 use App\Services\Reports\LedgerReportService;
+use App\Services\BranchShare\BranchSalesShareService;
 use App\Services\Treasury\FinancialAccountBootstrap;
 use Illuminate\Http\Request;
 
@@ -188,5 +189,32 @@ class BranchController extends Controller
         );
 
         return response()->json(app(LedgerReportService::class)->branchProfit($branch, $period['from'], $period['to']));
+    }
+
+    public function salesShare(Request $request, Branch $branch, BranchSalesShareService $shares)
+    {
+        BranchAccess::assertCanViewFinancialReports($request->user());
+        if ($request->user()->role === 'branch_manager' && (int) $request->user()->branch_id !== (int) $branch->id) {
+            BranchAccess::deny('اجازه مشاهده سهم شعبه دیگر را ندارید');
+        }
+        $period = app(LedgerReportService::class)->period(
+            $request->input('date_from'),
+            $request->input('date_to'),
+            '1970-01-01',
+            now()->toDateString()
+        );
+        $profit = app(LedgerReportService::class)->branchProfit($branch, $period['from'], $period['to']);
+        $operating = [
+            'toman' => $profit['net_profit_toman'] ?? $profit['currencies']['toman']['net_profit'] ?? '0.00',
+            'dinar' => $profit['net_profit_dinar'] ?? $profit['currencies']['dinar']['net_profit'] ?? '0.00',
+        ];
+
+        return response()->json([
+            'branch' => $profit['branch'],
+            'period' => $profit['period'],
+            'rules' => $shares->currentRules($request->user(), (int) $branch->id),
+            'report' => $shares->reportForBranch((int) $branch->id, $period['from'], $period['to'], $operating),
+            'invoices' => $shares->invoiceRows($request->user(), (int) $branch->id, $period['from'], $period['to']),
+        ]);
     }
 }

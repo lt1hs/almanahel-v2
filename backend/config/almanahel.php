@@ -26,6 +26,11 @@ return [
     'selling_price_versioning_enabled' => filter_var(env('SELLING_PRICE_VERSIONING_ENABLED', false), FILTER_VALIDATE_BOOLEAN),
     /** Bulk consignment payable_unit_cost revisions. Off = lots keep intake/backfill cost. */
     'consignment_cost_revision_enabled' => filter_var(env('CONSIGNMENT_COST_REVISION_ENABLED', false), FILTER_VALIDATE_BOOLEAN),
+    /**
+     * Managerial branch sales share (performance / bonus). Off = no snapshots, no API mutation, reports unchanged.
+     * Does not post journals or change official net_profit.
+     */
+    'branch_sales_share_enabled' => filter_var(env('BRANCH_SALES_SHARE_ENABLED', false), FILTER_VALIDATE_BOOLEAN),
     'book_categories' => [
         'دینی',
         'ادبی',

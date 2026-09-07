@@ -10,11 +10,54 @@ use App\Models\StockLot;
 use App\Models\SupplierAccount;
 use App\Services\Pricing\PriceChangeService;
 use App\Services\Pricing\SellingPriceService;
+use App\Support\ActivityLogger;
 use App\Support\Authorization\BranchAccess;
+use App\Support\PriceFlags;
 use Illuminate\Http\Request;
 
 class PriceChangeController extends Controller
 {
+    public function flags()
+    {
+        return response()->json([
+            'selling_price_versioning_enabled' => PriceFlags::sellingVersioningEnabled(),
+            'consignment_cost_revision_enabled' => PriceFlags::consignmentCostRevisionEnabled(),
+        ]);
+    }
+
+    public function updateFlags(Request $request)
+    {
+        BranchAccess::assertCanManageSettings($request->user());
+        $validated = $request->validate([
+            'type' => 'required|in:selling_price,consignment_cost',
+            'enabled' => 'required|boolean',
+        ]);
+        $enabled = (bool) $validated['enabled'];
+        if ($validated['type'] === 'selling_price') {
+            PriceFlags::setSellingVersioningEnabled($enabled);
+            $action = $enabled ? 'selling_price_versioning_enabled' : 'selling_price_versioning_disabled';
+            $description = $enabled ? 'فعال‌سازی نسخه‌بندی قیمت فروش' : 'خاموش کردن نسخه‌بندی قیمت فروش';
+        } else {
+            PriceFlags::setConsignmentCostRevisionEnabled($enabled);
+            $action = $enabled ? 'consignment_cost_revision_enabled' : 'consignment_cost_revision_disabled';
+            $description = $enabled ? 'فعال‌سازی تغییر بهای امانی' : 'خاموش کردن تغییر بهای امانی';
+        }
+        ActivityLogger::record(
+            'pricing',
+            $action,
+            $description,
+            null,
+            ['type' => $validated['type'], 'enabled' => $enabled],
+            null,
+            $request->user()->id,
+        );
+
+        return response()->json([
+            'selling_price_versioning_enabled' => PriceFlags::sellingVersioningEnabled(),
+            'consignment_cost_revision_enabled' => PriceFlags::consignmentCostRevisionEnabled(),
+        ]);
+    }
+
     public function preview(Request $request, PriceChangeService $service)
     {
         $payload = $this->validated($request);
@@ -151,6 +194,10 @@ class PriceChangeController extends Controller
             'supplier_account_id' => 'required_if:type,consignment_cost|nullable|exists:supplier_accounts,id',
             'new_price' => 'required_if:type,selling_price|nullable|numeric',
             'new_cost' => 'required_if:type,consignment_cost|nullable|numeric',
+            'branch_overrides' => 'nullable|array',
+            'branch_overrides.*.branch_id' => 'required|integer',
+            'branch_overrides.*.new_price' => 'nullable|numeric',
+            'branch_overrides.*.new_cost' => 'nullable|numeric',
         ];
         if ($apply) {
             $rules['preview_hash'] = 'required|string|size:64';

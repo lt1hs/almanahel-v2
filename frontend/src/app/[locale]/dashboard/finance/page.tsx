@@ -25,6 +25,7 @@ import {
     sumDebtRowsForCurrency,
     type OperationalFinanceRole,
 } from "@/lib/financeRequests";
+import { buildSettlementBody, buildSettlementPreviewUrl } from "@/lib/settlementPeriod";
 import { RequireRole } from "@/components/auth/RequireRole";
 import { BulkSettlementPanel } from "@/components/finance/BulkSettlementPanel";
 import { LedgerReportsPanel } from "@/components/finance/LedgerReportsPanel";
@@ -346,12 +347,23 @@ function FinancePageContent() {
         </div>
     ) : null;
 
-    const handleCalculateSettlement = async (supplierAccountId: number, fromDate: string, toDate: string) => {
+    const handleCalculateSettlement = async (
+        supplierAccountId: number,
+        fromDate: string,
+        toDate: string,
+        allOpen = false
+    ) => {
         setIsSettlementLoading(true);
         try {
-            const branchQs = effectiveSettlementBranchId ? `&branch_id=${effectiveSettlementBranchId}` : "";
             const data = await apiRequest(
-                `/consignments/settlement-preview?supplier_account_id=${supplierAccountId}&period_start=${fromDate}&period_end=${toDate}&currency=${currency}${branchQs}`
+                buildSettlementPreviewUrl({
+                    supplierAccountId,
+                    fromDate,
+                    toDate,
+                    currency,
+                    branchId: effectiveSettlementBranchId,
+                    allOpen,
+                })
             );
             const items = (data.items || []).map((item: any) => {
                 const total = Number(item.open_amount ?? item.total ?? 0);
@@ -372,6 +384,8 @@ function FinancePageContent() {
                     total,
                     commission,
                     publisherShare: Number(item.publisher_share ?? total - commission),
+                    kind: item.kind === "gift" ? "gift" : "sale",
+                    bookId,
                 };
             });
             setSettlementData(items);
@@ -389,21 +403,28 @@ function FinancePageContent() {
         }
     };
 
-    const handleConfirmSettlement = async (supplierAccountId: number, fromDate: string, toDate: string, amount: number) => {
+    const handleConfirmSettlement = async (
+        supplierAccountId: number,
+        fromDate: string,
+        toDate: string,
+        amount: number,
+        allOpen = false
+    ) => {
         setIsConfirming(true);
         try {
             const result = await apiRequest("/consignments/settle", {
                 method: "POST",
-                body: JSON.stringify({
-                    supplier_account_id: supplierAccountId,
-                    period_type: "custom",
-                    period_start: fromDate,
-                    period_end: toDate,
-                    amount,
-                    currency,
-                    payment_method: "bank_transfer",
-                    ...(effectiveSettlementBranchId ? { branch_id: Number(effectiveSettlementBranchId) } : {}),
-                }),
+                body: JSON.stringify(
+                    buildSettlementBody({
+                        supplierAccountId,
+                        fromDate,
+                        toDate,
+                        amount,
+                        currency,
+                        branchId: effectiveSettlementBranchId,
+                        allOpen,
+                    })
+                ),
             });
             notify.success("toast.settlementSuccess");
             setSettlementData([]);

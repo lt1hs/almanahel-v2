@@ -25,6 +25,7 @@ import {
     ContactRound,
     Activity,
     Tag,
+    Percent,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/contexts/AuthContext";
@@ -77,6 +78,7 @@ const NAV_GROUPS: NavGroup[] = [
             { titleKey: "nav.finance", href: "/dashboard/finance", icon: BarChart3, color: "text-indigo-500" },
             { titleKey: "nav.expenses", href: "/dashboard/expenses", icon: Wallet, color: "text-orange-500" },
             { titleKey: "nav.branchProfit", href: "/dashboard/finance/branch-profit", icon: BarChart3, color: "text-cyan-500" },
+            { titleKey: "nav.branchShares", href: "/dashboard/finance/branch-shares", icon: Percent, color: "text-emerald-600" },
         ],
     },
     {

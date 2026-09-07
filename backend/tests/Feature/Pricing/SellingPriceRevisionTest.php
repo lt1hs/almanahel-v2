@@ -9,7 +9,9 @@ use App\Models\SellingPriceRevision;
 use App\Models\StockLot;
 use App\Services\Pricing\PriceBackfill;
 use App\Support\Money;
+use App\Support\PriceFlags;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Schema;
 use Tests\Support\CreatesDomainData;
 use Tests\TestCase;
@@ -19,6 +21,13 @@ class SellingPriceRevisionTest extends TestCase
 {
     use RefreshDatabase;
     use CreatesDomainData;
+
+    protected function tearDown(): void
+    {
+        Cache::forget(PriceFlags::SELLING_KEY);
+        Cache::forget(PriceFlags::CONSIGNMENT_KEY);
+        parent::tearDown();
+    }
 
     public function test_schema_and_unit_cost_are_immutable(): void
     {
@@ -196,6 +205,62 @@ class SellingPriceRevisionTest extends TestCase
             'book_id' => $book->id,
             'price_toman' => 111,
         ])->assertForbidden();
+    }
+
+    public function test_admin_enables_selling_flag_from_api(): void
+    {
+        $branch = $this->makeBranch();
+        $this->actingAsRole('admin', $branch);
+        $this->assertFalse(PriceFlags::sellingVersioningEnabled());
+        $this->putJson('/api/price-changes/flags', [
+            'type' => 'selling_price',
+            'enabled' => true,
+        ])->assertOk()->assertJsonPath('selling_price_versioning_enabled', true);
+        $this->assertTrue(PriceFlags::sellingVersioningEnabled());
+
+        $this->actingAsRole('accountant', $branch);
+        $this->putJson('/api/price-changes/flags', [
+            'type' => 'selling_price',
+            'enabled' => false,
+        ])->assertForbidden();
+    }
+
+    public function test_branch_overrides_apply_different_selling_prices(): void
+    {
+        config(['almanahel.selling_price_versioning_enabled' => true]);
+        $a = $this->makeBranch(['name' => 'A']);
+        $b = $this->makeBranch(['name' => 'B', 'city' => 'مشهد']);
+        $this->actingAsRole('admin', $a);
+        $book = $this->makeBook();
+
+        foreach ([$a, $b] as $branch) {
+            $this->postJson('/api/inventory/purchase', [
+                'branch_id' => $branch->id,
+                'book_id' => $book->id,
+                'quantity' => 3,
+                'currency' => 'toman',
+                'cost_price' => 100,
+                'selling_price' => 150,
+            ])->assertCreated();
+        }
+
+        $payload = $this->sellingPayload($book->id, $a->id, 170, 'sell-override', [$a->id, $b->id]) + [
+            'branch_overrides' => [
+                ['branch_id' => $b->id, 'new_price' => 200],
+            ],
+        ];
+        $preview = $this->postJson('/api/price-changes/preview', $payload)->assertOk()->json();
+        $byBranch = collect($preview['applied'])->keyBy('branch_id');
+        $this->assertSame('170.00', Money::of($byBranch[$a->id]['new_price']));
+        $this->assertSame('200.00', Money::of($byBranch[$b->id]['new_price']));
+
+        $this->postJson('/api/price-changes', $payload + [
+            'preview_hash' => $preview['preview_hash'],
+        ])->assertCreated();
+
+        $selling = app(\App\Services\Pricing\SellingPriceService::class);
+        $this->assertSame('170.00', Money::of($selling->current($book->id, $a->id, 'toman')['price']));
+        $this->assertSame('200.00', Money::of($selling->current($book->id, $b->id, 'toman')['price']));
     }
 
     public function test_backfill_dry_run_writes_nothing(): void

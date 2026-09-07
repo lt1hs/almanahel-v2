@@ -34,5 +34,6 @@
         <env name="FINANCE_LEDGER_REPORTS_ENABLED" value="true"/>
         <env name="SELLING_PRICE_VERSIONING_ENABLED" value="false"/>
         <env name="CONSIGNMENT_COST_REVISION_ENABLED" value="false"/>
+        <env name="BRANCH_SALES_SHARE_ENABLED" value="false"/>
     </php>
 </phpunit>

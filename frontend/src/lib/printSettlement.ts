@@ -4,11 +4,17 @@
 
 import {
   buildDesignedInvoiceHtml,
+  INVOICE_A5_HEIGHT_PX,
+  INVOICE_A5_WIDTH_PX,
   invoiceFieldTexts,
+  invoicePdfFileName,
   loadInvoiceDesign,
   loadInvoiceTexts,
   mergeInvoiceTexts,
+  PLATFORM_FONT_FAMILY,
+  wrapTextLines,
   type InvoiceDesign,
+  type InvoiceFieldLayout,
   type InvoiceFieldTexts,
   type SettlementInvoiceSource,
 } from "@/lib/settlementInvoiceLayout";
@@ -86,22 +92,51 @@ function groupItems(items: SettlementPrintItem[]): [string, SettlementPrintItem[
   return Array.from(groups.entries());
 }
 
-function safeFilePart(value: string): string {
-  return value.replace(/[\\/:*?"<>|]+/g, "-").replace(/\s+/g, " ").trim() || "report";
+function platformFontFaceCss(): string {
+  if (typeof document === "undefined") return "";
+  const chunks: string[] = [];
+  for (const sheet of Array.from(document.styleSheets)) {
+    let rules: CSSRuleList;
+    try {
+      rules = sheet.cssRules;
+    } catch {
+      continue;
+    }
+    for (const rule of Array.from(rules)) {
+      if (rule instanceof CSSFontFaceRule && /ibm plex|plex sans arabic/i.test(rule.cssText)) {
+        chunks.push(rule.cssText);
+      }
+    }
+  }
+  return chunks.join("\n");
 }
 
-async function downloadPdfFromHtml(
-  html: string,
-  filename: string,
-  opts?: { format?: "a4" | "a5" }
-): Promise<void> {
-  const format = opts?.format ?? "a4";
-  const frameW = format === "a5" ? 559 : 794;
-  const frameH = format === "a5" ? 794 : 1123;
+async function waitForPrintReady(doc: Document): Promise<void> {
+  await Promise.all([document.fonts.ready, doc.fonts?.ready ?? Promise.resolve()]);
+  const images = Array.from(doc.images);
+  await Promise.all(
+    images.map(
+      (img) =>
+        img.complete
+          ? Promise.resolve()
+          : new Promise<void>((resolve) => {
+              img.onload = () => resolve();
+              img.onerror = () => resolve();
+            })
+    )
+  );
+  await new Promise((resolve) => window.setTimeout(resolve, 120));
+}
+
+async function printHtmlInIframe(html: string): Promise<void> {
+  const existing = document.getElementById("settlement-print-frame");
+  if (existing) existing.remove();
+
   const iframe = document.createElement("iframe");
+  iframe.id = "settlement-print-frame";
   iframe.setAttribute("aria-hidden", "true");
   iframe.style.cssText =
-    `position:fixed;left:-12000px;top:0;width:${frameW}px;height:${frameH}px;border:0;opacity:0;pointer-events:none;`;
+    "position:fixed;right:0;bottom:0;width:0;height:0;border:0;opacity:0;pointer-events:none;";
   document.body.appendChild(iframe);
 
   const doc = iframe.contentDocument || iframe.contentWindow?.document;
@@ -110,52 +145,32 @@ async function downloadPdfFromHtml(
     throw new Error("PRINT_UNAVAILABLE");
   }
 
+  const fontFamily = getComputedStyle(document.body).fontFamily || PLATFORM_FONT_FAMILY;
+  const fontCss = platformFontFaceCss();
   doc.open();
-  doc.write(html);
+  doc.write(html.replace("</head>", `<style>${fontCss} body, .sheet { font-family: ${fontFamily}; }</style></head>`));
   doc.close();
 
-  await new Promise<void>((resolve) => {
-    const done = () => resolve();
-    if (doc.readyState === "complete") {
-      window.setTimeout(done, 80);
-    } else {
-      iframe.onload = () => window.setTimeout(done, 80);
+  const triggerPrint = async () => {
+    await waitForPrintReady(doc);
+    try {
+      iframe.contentWindow?.focus();
+      iframe.contentWindow?.print();
+    } finally {
+      window.setTimeout(() => iframe.remove(), 60_000);
     }
-  });
+  };
 
-  const target = (doc.querySelector(".sheet") as HTMLElement | null) ?? doc.body;
-  const html2canvas = (await import("html2canvas")).default;
-  const { jsPDF } = await import("jspdf");
-  const canvas = await html2canvas(target, {
-    scale: 2,
-    useCORS: true,
-    backgroundColor: "#ffffff",
-    windowWidth: frameW,
-  });
-
-  const pdf = new jsPDF({ orientation: "portrait", unit: "mm", format });
-  const pageW = pdf.internal.pageSize.getWidth();
-  const pageH = pdf.internal.pageSize.getHeight();
-  const margin = format === "a5" ? 8 : 10;
-  const usableW = pageW - margin * 2;
-  const usableH = pageH - margin * 2;
-  const imgW = usableW;
-  const imgH = (canvas.height * imgW) / canvas.width;
-  const img = canvas.toDataURL("image/jpeg", 0.92);
-
-  let heightLeft = imgH;
-  let offset = 0;
-  pdf.addImage(img, "JPEG", margin, margin, imgW, imgH);
-  heightLeft -= usableH;
-  while (heightLeft > 0) {
-    offset += usableH;
-    pdf.addPage();
-    pdf.addImage(img, "JPEG", margin, margin - offset, imgW, imgH);
-    heightLeft -= usableH;
+  if (doc.readyState === "complete") {
+    await triggerPrint();
+    return;
   }
 
-  pdf.save(filename);
-  iframe.remove();
+  await new Promise<void>((resolve, reject) => {
+    iframe.onload = () => {
+      void triggerPrint().then(resolve).catch(reject);
+    };
+  });
 }
 
 function reportTables(
@@ -260,13 +275,14 @@ export async function printSettlement(
   const html =
     variant === "invoice"
       ? buildDesignedInvoiceHtml({
-          design: loadInvoiceDesign(),
+          design: loadInvoiceDesign(lang),
           texts: texts ?? mergeInvoiceTexts(
             invoiceFieldTexts({
               source: invoiceSource,
               labels,
               formatNumber,
               currencySymbol,
+              lang,
             }),
             loadInvoiceTexts(settlementId)
           ),
@@ -280,7 +296,7 @@ export async function printSettlement(
   <title>${esc(labels.reportTitle)} — ${esc(supplierName)}</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: Tahoma, "Segoe UI", Arial, sans-serif; color: #1a1a1a; background: #fff; font-size: 11px; line-height: 1.4; }
+    body { font-family: ${PLATFORM_FONT_FAMILY}; color: #1a1a1a; background: #fff; font-size: 11px; line-height: 1.4; }
     .sheet { max-width: 794px; margin: 0 auto; padding: 4px 2px 8px; }
     .header { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 1.5px solid #111; padding-bottom: 6px; margin-bottom: 8px; }
     .brand { font-size: 15px; font-weight: 800; }
@@ -308,6 +324,7 @@ export async function printSettlement(
     .totals .payable b { font-size: 13px; }
     .footer { margin-top: 10px; padding-top: 6px; border-top: 1px dashed #ccc; text-align: center; color: #888; font-size: 9px; }
     @media print { body { padding: 0; } }
+    @page { size: A4; margin: 10mm; }
   </style>
 </head>
 <body>
@@ -333,12 +350,7 @@ export async function printSettlement(
 </body>
 </html>`;
 
-  const title = variant === "invoice" ? labels.invoiceTitle : labels.reportTitle;
-  await downloadPdfFromHtml(
-    html,
-    `${safeFilePart(title)}-${safeFilePart(supplierName)}-${safeFilePart(docNo)}.pdf`,
-    { format: variant === "invoice" ? "a5" : "a4" }
-  );
+  await printHtmlInIframe(html);
 }
 
 export async function printDesignedInvoice(opts: {
@@ -352,25 +364,133 @@ export async function printDesignedInvoice(opts: {
 }): Promise<void> {
   const lang = opts.lang ?? "fa";
   const supplierName = opts.source.supplier?.name || "—";
-  const docNo = opts.source.settlement_number || "invoice";
-  await downloadPdfFromHtml(
+  await printHtmlInIframe(
     buildDesignedInvoiceHtml({
-      design: opts.design ?? loadInvoiceDesign(),
+      design: opts.design ?? loadInvoiceDesign(lang),
       texts: opts.texts ?? mergeInvoiceTexts(
         invoiceFieldTexts({
           source: opts.source,
           labels: opts.labels,
           formatNumber: opts.formatNumber,
           currencySymbol: opts.currencySymbol,
+          lang,
         }),
         loadInvoiceTexts(opts.source.id)
       ),
       title: `${opts.labels.invoiceTitle} — ${supplierName}`,
       lang,
-    }),
-    `${safeFilePart(opts.labels.invoiceTitle)}-${safeFilePart(supplierName)}-${safeFilePart(docNo)}.pdf`,
-    { format: "a5" }
+    })
   );
+}
+
+function loadRasterImage(src: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error("IMAGE_FAILED"));
+    image.src = src;
+  });
+}
+
+function canvasAlign(field: InvoiceFieldLayout): CanvasTextAlign {
+  if (field.id === "date" || field.id === "number") return "left";
+  if (field.align === "start") return "right";
+  if (field.align === "end") return "left";
+  if (field.align === "center") return "center";
+  return "right";
+}
+
+export async function downloadDesignedInvoicePdf(opts: {
+  source: SettlementInvoiceSource;
+  labels: PrintSettlementLabels;
+  formatNumber: (n: number) => string;
+  currencySymbol: string;
+  lang?: "fa" | "ar";
+  design?: InvoiceDesign;
+  texts?: InvoiceFieldTexts;
+}): Promise<void> {
+  const { jsPDF } = await import("jspdf");
+  const lang = opts.lang ?? "fa";
+  const supplierName = opts.source.supplier?.name || "—";
+  const design = opts.design ?? loadInvoiceDesign(lang);
+  const texts = opts.texts ?? mergeInvoiceTexts(
+    invoiceFieldTexts({
+      source: opts.source,
+      labels: opts.labels,
+      formatNumber: opts.formatNumber,
+      currencySymbol: opts.currencySymbol,
+      lang,
+    }),
+    loadInvoiceTexts(opts.source.id)
+  );
+  const title = `${opts.labels.invoiceTitle} — ${supplierName}`;
+
+  await document.fonts.ready;
+
+  const scale = 2;
+  const width = INVOICE_A5_WIDTH_PX;
+  const height = INVOICE_A5_HEIGHT_PX;
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(width * scale);
+  canvas.height = Math.round(height * scale);
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("PDF_UNAVAILABLE");
+
+  ctx.scale(scale, scale);
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, width, height);
+
+  if (design.templateDataUrl) {
+    try {
+      const letterhead = await loadRasterImage(design.templateDataUrl);
+      ctx.drawImage(letterhead, 0, 0, width, height);
+    } catch {
+      // Keep text even if the letterhead image fails to load.
+    }
+  }
+
+  const fontFamily = getComputedStyle(document.body).fontFamily || PLATFORM_FONT_FAMILY;
+  ctx.fillStyle = "#1a1a1a";
+
+  for (const field of design.fields) {
+    const text = String(texts[field.id] ?? "");
+    if (!text.trim()) continue;
+
+    const x = (field.x / 100) * width;
+    const y = (field.y / 100) * height;
+    const boxW = (field.w / 100) * width;
+    const boxH = (field.h / 100) * height;
+    const numericMeta = field.id === "date" || field.id === "number";
+    const align = canvasAlign(field);
+    const lineHeight = field.fontSize * (numericMeta ? 1.1 : 1.55);
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(x, y, boxW, boxH);
+    ctx.clip();
+    ctx.font = `${field.bold ? 700 : 400} ${field.fontSize}px ${fontFamily}`;
+    ctx.direction = numericMeta ? "ltr" : "rtl";
+    ctx.textAlign = align;
+    ctx.textBaseline = numericMeta ? "middle" : "top";
+
+    const lines = wrapTextLines(text, boxW, (value) => ctx.measureText(value).width);
+    const originX = align === "left" ? x : align === "center" ? x + boxW / 2 : x + boxW;
+    if (numericMeta) {
+      ctx.fillText(lines[0] ?? text, originX, y + boxH / 2);
+    } else {
+      let cursorY = y;
+      for (const line of lines) {
+        if (cursorY > y + boxH) break;
+        ctx.fillText(line, originX, cursorY);
+        cursorY += lineHeight;
+      }
+    }
+    ctx.restore();
+  }
+
+  const pdf = new jsPDF({ unit: "mm", format: "a5", orientation: "portrait" });
+  pdf.addImage(canvas.toDataURL("image/jpeg", 0.93), "JPEG", 0, 0, 148, 210);
+  pdf.save(invoicePdfFileName(title));
 }
 
 export function buildSettlementPrintLabels(

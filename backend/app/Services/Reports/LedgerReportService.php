@@ -136,12 +136,21 @@ class LedgerReportService
             $aliases['net_profit_'.$currency] = $block['net_profit'];
         }
 
-        return [
+        $payload = [
             'branch' => $branch,
             'period' => ['from' => $period['from'], 'to' => $period['to']],
             'currencies' => $currencies,
             ...$aliases,
         ];
+        if (\App\Support\BranchShareFlags::enabled()) {
+            $payload['branch_sales_share'] = app(\App\Services\BranchShare\BranchSalesShareService::class)
+                ->reportForBranch((int) $branch->id, $period['from'], $period['to'], [
+                    'toman' => $aliases['net_profit_toman'] ?? '0.00',
+                    'dinar' => $aliases['net_profit_dinar'] ?? '0.00',
+                ]);
+        }
+
+        return $payload;
     }
 
     /**

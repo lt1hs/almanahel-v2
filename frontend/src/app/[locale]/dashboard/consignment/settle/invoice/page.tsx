@@ -16,7 +16,7 @@ import {
 function InvoiceDesignerContent() {
   const searchParams = useSearchParams();
   const id = Number(searchParams.get("id"));
-  const { t } = useTranslation();
+  const { t, language } = useTranslation();
   const [source, setSource] = useState<SettlementInvoiceSource | null>(
     Number.isFinite(id) ? readCachedSettlementInvoiceRow(id) : null
   );
@@ -62,7 +62,7 @@ function InvoiceDesignerContent() {
     );
   }
 
-  return <SettlementInvoiceDesigner source={source} initialDesign={loadInvoiceDesign()} />;
+  return <SettlementInvoiceDesigner source={source} initialDesign={loadInvoiceDesign(language)} />;
 }
 
 export default function SettlementInvoicePage() {

@@ -21,6 +21,7 @@ import {
   persistOperationalBranchId,
   resolveDefaultOperationalBranchId,
 } from "@/lib/operationalBranch";
+import { buildSettlementBody, buildSettlementPreviewUrl } from "@/lib/settlementPeriod";
 
 export default function ConsignmentSettlePage() {
   const { t, isArabic, preferredCurrency } = useTranslation();
@@ -133,13 +134,20 @@ export default function ConsignmentSettlePage() {
   };
 
   const handleCalculate = useCallback(
-    async (supplierIdOrAccountId: number, fromDate: string, toDate: string) => {
+    async (supplierIdOrAccountId: number, fromDate: string, toDate: string, allOpen = false) => {
       if (!allBranchesMode && !effectiveBranchId) return;
       setIsLoading(true);
       try {
-        const query = allBranchesMode
-          ? `/consignments/settlement-preview?aggregate=1&supplier_id=${supplierIdOrAccountId}&period_start=${fromDate}&period_end=${toDate}&currency=${preferredCurrency}`
-          : `/consignments/settlement-preview?supplier_account_id=${supplierIdOrAccountId}&period_start=${fromDate}&period_end=${toDate}&currency=${preferredCurrency}&branch_id=${effectiveBranchId}`;
+        const query = buildSettlementPreviewUrl({
+          aggregate: allBranchesMode,
+          supplierId: allBranchesMode ? supplierIdOrAccountId : null,
+          supplierAccountId: allBranchesMode ? null : supplierIdOrAccountId,
+          fromDate,
+          toDate,
+          currency: preferredCurrency,
+          branchId: allBranchesMode ? null : effectiveBranchId,
+          allOpen,
+        });
         const data = await apiRequest(query);
         setBreakdown(
           data.breakdown
@@ -160,6 +168,7 @@ export default function ConsignmentSettlePage() {
               commission: 0,
               publisherShare: Number(item.open_amount ?? item.total ?? 0),
               kind: item.kind === "gift" ? "gift" : "sale",
+              bookId,
               branchId: item.branch_id != null ? Number(item.branch_id) : null,
               branchName: item.branch_name ? String(item.branch_name) : null,
             };
@@ -181,38 +190,29 @@ export default function ConsignmentSettlePage() {
     supplierAccountId: number,
     fromDate: string,
     toDate: string,
-    amount: number
+    amount: number,
+    allOpen = false
   ) => {
     if (!allBranchesMode && !effectiveBranchId) return;
     setIsConfirming(true);
     try {
-      const result = allBranchesMode
-        ? await apiRequest("/consignments/settle?aggregate=1", {
-            method: "POST",
-            body: JSON.stringify({
-              supplier_id: supplierAccountId,
-              period_type: "custom",
-              period_start: fromDate,
-              period_end: toDate,
-              amount,
-              expected_total: breakdown?.remaining_payable,
-              currency: preferredCurrency,
-              payment_method: "bank_transfer",
-            }),
+      const result = await apiRequest(allBranchesMode ? "/consignments/settle?aggregate=1" : "/consignments/settle", {
+        method: "POST",
+        body: JSON.stringify(
+          buildSettlementBody({
+            supplierId: allBranchesMode ? supplierAccountId : null,
+            supplierAccountId: allBranchesMode ? null : supplierAccountId,
+            fromDate,
+            toDate,
+            amount,
+            expectedTotal: breakdown?.remaining_payable,
+            currency: preferredCurrency,
+            branchId: allBranchesMode ? null : effectiveBranchId,
+            allOpen,
+            aggregate: allBranchesMode,
           })
-        : await apiRequest("/consignments/settle", {
-            method: "POST",
-            body: JSON.stringify({
-              supplier_account_id: supplierAccountId,
-              branch_id: effectiveBranchId,
-              period_type: "custom",
-              period_start: fromDate,
-              period_end: toDate,
-              amount,
-              currency: preferredCurrency,
-              payment_method: "bank_transfer",
-            }),
-          });
+        ),
+      });
       setSettlementData([]);
       setBreakdown(null);
       setSessionKey((key) => key + 1);
@@ -305,6 +305,7 @@ export default function ConsignmentSettlePage() {
           branches={branches}
           selectedBranchId={selectedBranchId}
           onBranchChange={handleBranchChange}
+          autoCalculate
         />
       )}
     </div>

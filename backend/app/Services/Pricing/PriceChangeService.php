@@ -103,7 +103,7 @@ class PriceChangeService
                             $plan['book_id'],
                             (int) $row['branch_id'],
                             $plan['currency'],
-                            $plan['new_amount'],
+                            $row['new_price'],
                             $plan['reason'],
                             $user,
                             $batch->id,
@@ -120,7 +120,7 @@ class PriceChangeService
                             (int) $row['branch_id'],
                             $row['supplier_account_id'] ?? $plan['supplier_account_id'],
                             $plan['currency'],
-                            $plan['new_amount'],
+                            $row['new_cost'],
                             $plan['reason'],
                             $user,
                             $batch->id,
@@ -189,6 +189,7 @@ class PriceChangeService
         if (Money::isZero($amount) || Money::isNegative($amount)) {
             throw new DomainException('مبلغ جدید باید بزرگ‌تر از صفر باشد', 422);
         }
+        $overrides = $this->overrideAmounts($payload, $type);
 
         [$eligibleIds, $rejected] = $this->resolveBranches($scope, $payload['branch_ids'] ?? [], $user, $currency, $type, $forApply);
 
@@ -212,15 +213,17 @@ class PriceChangeService
             'currency' => $currency,
             'scope' => $scope,
             'new_amount' => $amount,
+            'overrides' => $overrides,
             'supplier_id' => $supplierId,
             'branch_ids' => $eligibleIds,
         ];
 
         foreach ($eligibleIds as $branchId) {
+            $rowAmount = $overrides[$branchId] ?? $amount;
             if ($type === PriceChangeBatch::TYPE_SELLING) {
                 BranchAccess::assertCanChangeSellingPrice($user, $branchId, false);
                 $current = $this->selling->current($bookId, $branchId, $currency, $forApply);
-                $margin = $this->marginWarning($bookId, $branchId, $currency, $amount, null);
+                $margin = $this->marginWarning($bookId, $branchId, $currency, $rowAmount, null);
                 $unsold = (int) StockLot::query()
                     ->where('book_id', $bookId)
                     ->where('branch_id', $branchId)
@@ -235,16 +238,17 @@ class PriceChangeService
                 $applied[] = [
                     'branch_id' => $branchId,
                     'old_price' => $current['price'],
-                    'new_price' => $amount,
+                    'new_price' => $rowAmount,
                     'version' => $current['version'],
                     'unsold_qty' => $unsold,
                     'reserved_qty' => $reserved,
-                    'value_delta' => Money::mul(Money::sub($amount, $current['price']), $unsold),
+                    'value_delta' => Money::mul(Money::sub($rowAmount, $current['price']), $unsold),
                     'margin_warning' => $margin,
                 ];
                 $fingerprint['rows'][] = [
                     'branch_id' => $branchId,
                     'old_price' => $current['price'],
+                    'new_price' => $rowAmount,
                     'version' => $current['version'],
                     'unsold_qty' => $unsold,
                     'reserved_qty' => $reserved,
@@ -268,13 +272,13 @@ class PriceChangeService
                 $applied[] = [
                     'branch_id' => $branchId,
                     'old_cost' => Money::of($oldCost),
-                    'new_cost' => $amount,
+                    'new_cost' => $rowAmount,
                     'lots_count' => $lots->count(),
                     'unsold_qty' => $unsold,
                     'reserved_qty' => $reserved,
-                    'value_delta' => Money::mul(Money::sub($amount, $oldCost), $unsold),
+                    'value_delta' => Money::mul(Money::sub($rowAmount, $oldCost), $unsold),
                     'selling_price' => $sell['price'],
-                    'margin_warning' => $this->marginWarning($bookId, $branchId, $currency, null, $amount),
+                    'margin_warning' => $this->marginWarning($bookId, $branchId, $currency, null, $rowAmount),
                     'supplier_account_id' => $branchAccount?->id,
                     'lots' => $lots->map(fn (StockLot $lot) => [
                         'id' => $lot->id,
@@ -477,5 +481,32 @@ class PriceChangeService
                 'error' => 'future_effective_at',
             ]);
         }
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     * @return array<int, string>
+     */
+    private function overrideAmounts(array $payload, string $type): array
+    {
+        $field = $type === PriceChangeBatch::TYPE_SELLING ? 'new_price' : 'new_cost';
+        $map = [];
+        foreach ($payload['branch_overrides'] ?? [] as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+            $id = (int) ($row['branch_id'] ?? 0);
+            if ($id <= 0 || !array_key_exists($field, $row) || $row[$field] === null || $row[$field] === '') {
+                continue;
+            }
+            $value = Money::of($row[$field]);
+            if (Money::isZero($value) || Money::isNegative($value)) {
+                throw new DomainException('مبلغ جدید باید بزرگ‌تر از صفر باشد', 422);
+            }
+            $map[$id] = $value;
+        }
+        ksort($map);
+
+        return $map;
     }
 }

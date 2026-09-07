@@ -22,8 +22,8 @@ class PeriodSettlement
     public function preview(
         int $supplierId,
         string $currency,
-        string $periodStart,
-        string $periodEnd,
+        ?string $periodStart,
+        ?string $periodEnd,
         ?int $branchId = null,
         ?int $supplierAccountId = null
     ): array {
@@ -47,6 +47,7 @@ class PeriodSettlement
             $returnReversals = Money::add($returnReversals, $line['return_reversals'] ?? '0.00');
         }
         $total = Money::add($salesPayable, $giftPayable);
+        [$resolvedStart, $resolvedEnd] = $this->resolvePeriodBounds($lines, $periodStart, $periodEnd);
 
         return [
             'total_payable' => $total,
@@ -59,8 +60,8 @@ class PeriodSettlement
                 'remaining_payable' => $total,
             ],
             'commission_rate' => '1.0000',
-            'period_start' => $periodStart,
-            'period_end' => $periodEnd,
+            'period_start' => $resolvedStart,
+            'period_end' => $resolvedEnd,
             'currency' => $currency,
             'supplier_account_id' => $supplierAccountId,
             'branch_id' => $branchId,
@@ -75,8 +76,8 @@ class PeriodSettlement
     public function previewAllBranches(
         int $supplierId,
         string $currency,
-        string $periodStart,
-        string $periodEnd
+        ?string $periodStart,
+        ?string $periodEnd
     ): array {
         $accounts = SupplierAccount::query()
             ->with('branch:id,name')
@@ -141,8 +142,8 @@ class PeriodSettlement
             ],
             'by_branch' => $byBranch,
             'commission_rate' => '1.0000',
-            'period_start' => $periodStart,
-            'period_end' => $periodEnd,
+            'period_start' => $this->resolvePeriodBounds($lines, $periodStart, $periodEnd)[0],
+            'period_end' => $this->resolvePeriodBounds($lines, $periodStart, $periodEnd)[1],
             'currency' => $currency,
             'supplier_account_id' => null,
             'branch_id' => null,
@@ -151,8 +152,8 @@ class PeriodSettlement
 
     public function settle(
         Settlement $settlement,
-        string $periodStart,
-        string $periodEnd,
+        ?string $periodStart,
+        ?string $periodEnd,
         string $amount,
         ?string $expectedTotal = null
     ): array {
@@ -342,8 +343,8 @@ class PeriodSettlement
     public function openLines(
         int $supplierId,
         string $currency,
-        string $periodStart,
-        string $periodEnd,
+        ?string $periodStart,
+        ?string $periodEnd,
         ?int $branchId,
         ?int $supplierAccountId = null
     ): array {
@@ -356,9 +357,11 @@ class PeriodSettlement
             ->leftJoin('books', 'books.id', '=', 'invoice_items.book_id')
             ->where('stock_lots.ownership_type', 'consignment')
             ->where('sale_lot_allocations.currency', $currency)
-            ->whereDate('invoices.sold_at', '>=', $periodStart)
-            ->whereDate('invoices.sold_at', '<=', $periodEnd)
             ->lockForUpdate();
+        if ($periodStart && $periodEnd) {
+            $salesQuery->whereDate('invoices.sold_at', '>=', $periodStart)
+                ->whereDate('invoices.sold_at', '<=', $periodEnd);
+        }
 
         if ($supplierAccountId) {
             $salesQuery->where('sale_lot_allocations.supplier_account_id', $supplierAccountId);
@@ -377,7 +380,8 @@ class PeriodSettlement
             'stock_lots.consignment_receipt_item_id',
             'stock_lots.supplier_id',
             'invoice_items.book_id as book_id',
-            'books.title as book_title'
+            'books.title as book_title',
+            'invoices.sold_at as occurred_on'
         )->get();
 
         $giftsQuery = GiftLotAllocation::query()
@@ -386,9 +390,11 @@ class PeriodSettlement
             ->leftJoin('books', 'books.id', '=', 'gifts.book_id')
             ->where('gift_lot_allocations.ownership_type', 'consignment')
             ->where('gift_lot_allocations.currency', $currency)
-            ->whereDate('gifts.gifted_at', '>=', $periodStart)
-            ->whereDate('gifts.gifted_at', '<=', $periodEnd)
             ->lockForUpdate();
+        if ($periodStart && $periodEnd) {
+            $giftsQuery->whereDate('gifts.gifted_at', '>=', $periodStart)
+                ->whereDate('gifts.gifted_at', '<=', $periodEnd);
+        }
 
         if ($supplierAccountId) {
             $giftsQuery->where('gift_lot_allocations.supplier_account_id', $supplierAccountId);
@@ -406,7 +412,8 @@ class PeriodSettlement
             'gift_lot_allocations.*',
             'stock_lots.consignment_receipt_item_id',
             'gifts.book_id as book_id',
-            'books.title as book_title'
+            'books.title as book_title',
+            'gifts.gifted_at as occurred_on'
         )->get();
 
         $lines = [];
@@ -445,6 +452,7 @@ class PeriodSettlement
                 'consignment_receipt_id' => (int) $receiptId,
                 'consignment_receipt_item_id' => (int) $receiptItemId,
                 'supplier_account_id' => $alloc->supplier_account_id,
+                'occurred_on' => $this->occurredOnDate($alloc->occurred_on ?? null),
             ];
         }
         foreach ($gifts as $alloc) {
@@ -475,10 +483,43 @@ class PeriodSettlement
                 'consignment_receipt_id' => (int) $receiptId,
                 'consignment_receipt_item_id' => $receiptItemId ? (int) $receiptItemId : null,
                 'supplier_account_id' => $alloc->supplier_account_id,
+                'occurred_on' => $this->occurredOnDate($alloc->occurred_on ?? null),
             ];
         }
 
         return $lines;
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $lines
+     * @return array{0: string, 1: string}
+     */
+    private function resolvePeriodBounds(array $lines, ?string $periodStart, ?string $periodEnd): array
+    {
+        if ($periodStart && $periodEnd) {
+            return [$periodStart, $periodEnd];
+        }
+
+        $occurred = [];
+        foreach ($lines as $line) {
+            if (!empty($line['occurred_on'])) {
+                $occurred[] = (string) $line['occurred_on'];
+            }
+        }
+
+        return [
+            $occurred !== [] ? min($occurred) : now()->toDateString(),
+            now()->toDateString(),
+        ];
+    }
+
+    private function occurredOnDate(mixed $value): ?string
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        return \Carbon\Carbon::parse($value)->toDateString();
     }
 
     private function touchReceipts(array $allocations): void

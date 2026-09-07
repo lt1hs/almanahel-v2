@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
     Calculator, ChevronDown, Building2, BookOpen, CalendarDays,
     FileText, ScrollText, CheckCircle2, Banknote, Landmark, Palette,
@@ -13,6 +13,12 @@ import { useTranslation } from "@/hooks/useTranslation";
 import { useNotify } from "@/hooks/useNotify";
 import { printSettlement, buildSettlementPrintLabels } from "@/lib/printSettlement";
 import { ALL_BRANCHES_VALUE } from "@/lib/supplierAccountSelection";
+import {
+    defaultSettlementPeriod,
+    invoicePeriodFromSettlement,
+    periodPreset,
+} from "@/lib/settlementPeriod";
+import { groupSettlementDisplayRows } from "@/lib/settlementDisplayRows";
 
 interface SettlementItem {
     title: string;
@@ -25,12 +31,20 @@ interface SettlementItem {
     kind?: "sale" | "gift";
     branchId?: number | null;
     branchName?: string | null;
+    bookId?: number | null;
 }
 
 export type SettlementConfirmResult = {
     id?: number;
     settlement_number?: string;
-    settlements?: Array<{ id?: number; settlement_number?: string }>;
+    period_start?: string | null;
+    period_end?: string | null;
+    settlements?: Array<{
+        id?: number;
+        settlement_number?: string;
+        period_start?: string | null;
+        period_end?: string | null;
+    }>;
 } | false;
 
 type IssuedInvoice = {
@@ -58,32 +72,6 @@ export type SettlementBreakdown = {
     remaining_payable?: string | number;
     by_branch?: SettlementBranchShare[];
 };
-
-function toDateInput(d: Date): string {
-    const y = d.getFullYear();
-    const m = String(d.getMonth() + 1).padStart(2, "0");
-    const day = String(d.getDate()).padStart(2, "0");
-    return `${y}-${m}-${day}`;
-}
-
-function defaultPeriod(): { from: string; to: string } {
-    const to = new Date();
-    const from = new Date(to.getFullYear(), to.getMonth(), 1);
-    return { from: toDateInput(from), to: toDateInput(to) };
-}
-
-function periodPreset(kind: "month" | "90d" | "year"): { from: string; to: string } {
-    const to = new Date();
-    if (kind === "month") {
-        return { from: toDateInput(new Date(to.getFullYear(), to.getMonth(), 1)), to: toDateInput(to) };
-    }
-    if (kind === "90d") {
-        const from = new Date(to);
-        from.setDate(from.getDate() - 89);
-        return { from: toDateInput(from), to: toDateInput(to) };
-    }
-    return { from: toDateInput(new Date(to.getFullYear(), 0, 1)), to: toDateInput(to) };
-}
 
 function groupSettlementByBranch(items: SettlementItem[]): { branchId: number | null; branchName: string; items: SettlementItem[] }[] {
     const groups = new Map<string, { branchId: number | null; branchName: string; items: SettlementItem[] }>();
@@ -118,12 +106,13 @@ function uniqueRemainingQty(items: SettlementItem[]): number {
 
 interface SettlementWizardProps {
     suppliers: { id: number; name: string }[];
-    onCalculate: (supplierAccountId: number, fromDate: string, toDate: string) => Promise<void>;
+    onCalculate: (supplierAccountId: number, fromDate: string, toDate: string, allOpen?: boolean) => Promise<void>;
     onConfirm?: (
         supplierAccountId: number,
         fromDate: string,
         toDate: string,
-        amount: number
+        amount: number,
+        allOpen?: boolean
     ) => Promise<SettlementConfirmResult | void>;
     settlementData: SettlementItem[];
     breakdown?: SettlementBreakdown | null;
@@ -140,6 +129,7 @@ interface SettlementWizardProps {
     onBranchChange?: (branchId: string) => void;
     showBranchPicker?: boolean;
     allowAllBranches?: boolean;
+    autoCalculate?: boolean;
 }
 
 export function SettlementWizard({
@@ -160,25 +150,28 @@ export function SettlementWizard({
     onBranchChange,
     showBranchPicker = false,
     allowAllBranches = false,
+    autoCalculate = false,
 }: SettlementWizardProps) {
     const { t, formatNumber, language } = useTranslation();
     const notify = useNotify();
     const symbol = currencySymbol || t("common.currency.tomanSymbol");
-    const initialDates = defaultPeriod();
+    const initialDates = defaultSettlementPeriod();
     const [selectedSupplier, setSelectedSupplier] = useState<any>(null);
     const [open, setOpen] = useState(false);
     const [fromDate, setFromDate] = useState(initialDates.from);
     const [toDate, setToDate] = useState(initialDates.to);
     const [settleAmount, setSettleAmount] = useState("");
-    const [activePreset, setActivePreset] = useState<"month" | "90d" | "year" | "custom">("month");
+    const [activePreset, setActivePreset] = useState<SettlementPreset>(initialDates.preset);
     const [issuedInvoice, setIssuedInvoice] = useState<IssuedInvoice | null>(null);
+    const autoCalcKeyRef = useRef("");
 
     useEffect(() => {
-        const next = defaultPeriod();
+        const next = defaultSettlementPeriod();
         setFromDate(next.from);
         setToDate(next.to);
-        setActivePreset("month");
+        setActivePreset(next.preset);
         setSettleAmount("");
+        autoCalcKeyRef.current = "";
     }, [sessionKey]);
 
     const allBranchesMode = Boolean(allowAllBranches && selectedBranchId === ALL_BRANCHES_VALUE);
@@ -203,10 +196,19 @@ export function SettlementWizard({
     );
 
     useEffect(() => {
-        setSettleAmount("");
+        setSettleAmount(totalPayable > 0 ? String(totalPayable) : "");
     }, [totalPayable, sessionKey]);
 
-    const applyPreset = (kind: "month" | "90d" | "year") => {
+    const allOpen = activePreset === "all";
+
+    const applyPreset = (kind: "all" | "month" | "90d" | "year") => {
+        if (kind === "all") {
+            const next = defaultSettlementPeriod();
+            setFromDate(next.from);
+            setToDate(next.to);
+            setActivePreset("all");
+            return;
+        }
         const next = periodPreset(kind);
         setFromDate(next.from);
         setToDate(next.to);
@@ -221,8 +223,15 @@ export function SettlementWizard({
         t("finance.settlement.table.publisherShare"),
     ];
 
-    const branchGroups = useMemo(() => groupSettlementByBranch(settlementData), [settlementData]);
+    const branchGroups = useMemo(
+        () => groupSettlementByBranch(groupSettlementDisplayRows(settlementData)),
+        [settlementData]
+    );
     const splitByBranch = allBranchesMode || branchGroups.length > 1;
+    const displayRows = useMemo(
+        () => branchGroups.flatMap((group) => group.items),
+        [branchGroups]
+    );
 
     const printArgs = (items: SettlementItem[], extra?: Partial<Parameters<typeof printSettlement>[0]>) => ({
         supplierName: extra?.supplierName || selectedSupplier?.name || "",
@@ -240,7 +249,7 @@ export function SettlementWizard({
     const handlePrintReport = async () => {
         if (!selectedSupplier || settlementData.length === 0) return;
         try {
-            await printSettlement(printArgs(settlementData, { variant: "report" }));
+            await printSettlement(printArgs(displayRows, { variant: "report" }));
         } catch {
             notify.error("toast.invoicePrintError");
         }
@@ -270,28 +279,29 @@ export function SettlementWizard({
 
     const confirmAmount = async () => {
         if (!selectedSupplier || !amountValid || !onConfirm) return;
-        const snapshot: IssuedInvoice = {
-            supplierName: selectedSupplier.name,
-            fromDate,
-            toDate,
-            amount: amountNum,
-            items: settlementData,
-            docNumber: "",
-        };
-        const result = await onConfirm(selectedSupplier.id, fromDate, toDate, amountNum);
+        const result = await onConfirm(selectedSupplier.id, fromDate, toDate, amountNum, allOpen);
         if (result === false) return;
         const settlementId = result?.id || result?.settlements?.[0]?.id;
         const docNumber =
             result?.settlement_number ||
             result?.settlements?.[0]?.settlement_number ||
             `SET-${new Date().toISOString().slice(0, 10).replace(/-/g, "")}`;
+        const invoicePeriod = invoicePeriodFromSettlement(allOpen, fromDate, toDate, result || null);
+        const snapshot: IssuedInvoice = {
+            supplierName: selectedSupplier.name,
+            fromDate: invoicePeriod.from,
+            toDate: invoicePeriod.to,
+            amount: amountNum,
+            items: displayRows,
+            docNumber: "",
+        };
         if (settlementId) {
             cacheSettlementInvoiceRow({
                 id: settlementId,
                 settlement_number: docNumber,
                 amount: amountNum,
-                period_start: fromDate,
-                period_end: toDate,
+                period_start: invoicePeriod.from,
+                period_end: invoicePeriod.to,
                 paid_at: new Date().toISOString(),
                 supplier: { name: selectedSupplier.name },
             });
@@ -315,7 +325,28 @@ export function SettlementWizard({
         { key: "remaining", label: t("finance.settlement.remainingPayable"), value: breakdown?.remaining_payable ?? totalPayable, emphasize: true },
     ];
 
-    const canCalculate = Boolean(hasScope && selectedSupplier && fromDate && toDate && !isLoading && !disabled);
+    const canCalculate = Boolean(
+        hasScope && selectedSupplier && (allOpen || (fromDate && toDate)) && !isLoading && !disabled
+    );
+
+    useEffect(() => {
+        if (!autoCalculate || !canCalculate || !selectedSupplier) return;
+        const key = `${sessionKey}:${selectedSupplier.id}:${selectedBranchId}:${activePreset}:${fromDate}:${toDate}`;
+        if (autoCalcKeyRef.current === key) return;
+        autoCalcKeyRef.current = key;
+        void onCalculate(selectedSupplier.id, fromDate, toDate, allOpen);
+    }, [
+        autoCalculate,
+        canCalculate,
+        selectedSupplier,
+        sessionKey,
+        selectedBranchId,
+        activePreset,
+        fromDate,
+        toDate,
+        allOpen,
+        onCalculate,
+    ]);
 
     return (
         <div className="space-y-4">
@@ -334,6 +365,7 @@ export function SettlementWizard({
                         <div className="flex flex-wrap gap-1.5">
                             {(
                                 [
+                                    { key: "all", label: t("finance.settlement.presetAllOpen") },
                                     { key: "month", label: t("finance.settlement.presetThisMonth") },
                                     { key: "90d", label: t("finance.settlement.preset90d") },
                                     { key: "year", label: t("finance.settlement.presetThisYear") },
@@ -433,7 +465,7 @@ export function SettlementWizard({
                                     setFromDate(e.target.value);
                                     setActivePreset("custom");
                                 }}
-                                disabled={disabled || !hasScope}
+                                disabled={disabled || !hasScope || allOpen}
                                 className="h-11 w-full rounded-xl border border-ink/10 bg-white/90 px-3 text-[12px] font-vazirmatn outline-none focus:border-primary/30 disabled:opacity-40"
                             />
                         </div>
@@ -449,7 +481,7 @@ export function SettlementWizard({
                                     setToDate(e.target.value);
                                     setActivePreset("custom");
                                 }}
-                                disabled={disabled || !hasScope}
+                                disabled={disabled || !hasScope || allOpen}
                                 className="h-11 w-full rounded-xl border border-ink/10 bg-white/90 px-3 text-[12px] font-vazirmatn outline-none focus:border-primary/30 disabled:opacity-40"
                             />
                         </div>
@@ -458,7 +490,7 @@ export function SettlementWizard({
                             <button
                                 type="button"
                                 disabled={!canCalculate}
-                                onClick={() => selectedSupplier && onCalculate(selectedSupplier.id, fromDate, toDate)}
+                                onClick={() => selectedSupplier && onCalculate(selectedSupplier.id, fromDate, toDate, allOpen)}
                                 className="h-11 w-full rounded-xl bg-primary text-white text-[12px] font-black font-vazirmatn flex items-center justify-center gap-2 disabled:opacity-40 shadow-sm shadow-primary/20"
                             >
                                 <Calculator className="w-4 h-4" />
@@ -471,6 +503,11 @@ export function SettlementWizard({
                         <p className="text-[11px] font-bold text-amber-700 bg-amber-50 border border-amber-100 rounded-xl px-3 py-2 flex items-center gap-1.5">
                             <Building2 className="w-3.5 h-3.5 shrink-0" />
                             {t("expenses.form.selectBranch")}
+                        </p>
+                    )}
+                    {allOpen && (
+                        <p className="text-[11px] font-bold text-ink/50 bg-parchment/70 border border-ink/5 rounded-xl px-3 py-2">
+                            {t("finance.settlement.allOpenHint")}
                         </p>
                     )}
                     {allBranchesMode && (
@@ -709,8 +746,7 @@ export function SettlementWizard({
                                     !hasScope ||
                                     settlementData.length === 0 ||
                                     !selectedSupplier ||
-                                    !fromDate ||
-                                    !toDate ||
+                                    (!allOpen && (!fromDate || !toDate)) ||
                                     isConfirming ||
                                     !amountValid
                                 }

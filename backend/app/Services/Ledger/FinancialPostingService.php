@@ -18,6 +18,7 @@ use App\Models\Settlement;
 use App\Models\SettlementAllocation;
 use App\Models\StockLot;
 use App\Models\WarehouseLog;
+use App\Services\BranchShare\BranchSalesShareService;
 use App\Services\Settlement\PayableSnapshot;
 use App\Services\Receivables\InvoiceBalance;
 use App\Support\Money;
@@ -50,6 +51,7 @@ class FinancialPostingService
             $this->allocationIntegrity->assertSale($invoice);
             $this->invoiceTotals->assert($invoice);
             $invoice->load('items');
+            app(BranchSalesShareService::class)->snapshotSale($invoice);
             $allocations = SaleLotAllocation::query()
                 ->whereIn('invoice_item_id', $invoice->items()->pluck('id'))
                 ->with('lot')
@@ -189,6 +191,7 @@ class FinancialPostingService
             if ($rows->isEmpty()) {
                 throw new DomainException('مرجوعی بدون تخصیص لات قابل ثبت در دفتر نیست');
             }
+            app(BranchSalesShareService::class)->snapshotReturn($return);
 
             $customerId = $invoice->customer_id ? (int) $invoice->customer_id : null;
             $refund = Money::of($return->refund_amount);
