@@ -13,6 +13,7 @@ import { useTranslation } from "@/hooks/useTranslation";
 import { useNotify } from "@/hooks/useNotify";
 import {
     parseSupplierAccountRow,
+    selectionMatchingCanonicalSupplier,
     supplierAccountsUrl,
     type SupplierAccountSelection,
 } from "@/lib/supplierAccountSelection";
@@ -22,11 +23,18 @@ const SUPPLIER_TYPES = ["publisher", "company", "individual"] as const;
 interface SupplierSelectProps {
     onSelect: (account: SupplierAccountSelection) => void;
     selectedAccountId?: string | number;
+    selectedCanonicalSupplierId?: string | number | null;
     branchId: number | null | undefined;
     compact?: boolean;
 }
 
-export function SupplierSelect({ onSelect, selectedAccountId, branchId, compact = false }: SupplierSelectProps) {
+export function SupplierSelect({
+    onSelect,
+    selectedAccountId,
+    selectedCanonicalSupplierId,
+    branchId,
+    compact = false,
+}: SupplierSelectProps) {
     const { t } = useTranslation();
     const notify = useNotify();
     const [search, setSearch] = useState("");
@@ -64,10 +72,23 @@ export function SupplierSelect({ onSelect, selectedAccountId, branchId, compact 
         fetchAccounts();
     }, [fetchAccounts]);
 
-    const filteredAccounts = accounts.filter((account) => {
-        const q = search.toLowerCase();
-        return account.name.toLowerCase().includes(q);
-    });
+    useEffect(() => {
+        if (selectedAccountId) return;
+        const match = selectionMatchingCanonicalSupplier(accounts, Number(selectedCanonicalSupplierId));
+        if (match) onSelect(match);
+    }, [accounts, onSelect, selectedAccountId, selectedCanonicalSupplierId]);
+
+    const isSelected = (account: SupplierAccountSelection) =>
+        String(selectedAccountId ?? "") === String(account.accountId)
+        || (
+            !selectedAccountId
+            && Number(selectedCanonicalSupplierId) === Number(account.canonicalSupplierId)
+        );
+
+    const filteredAccounts = accounts
+        .filter((account) => account.name.toLowerCase().includes(search.toLowerCase()))
+        .slice()
+        .sort((a, b) => Number(isSelected(b)) - Number(isSelected(a)));
 
     const handleAddAccount = async () => {
         if (!newAccount.name || !branchId) return;
@@ -241,12 +262,12 @@ export function SupplierSelect({ onSelect, selectedAccountId, branchId, compact 
                                     onClick={() => onSelect(account)}
                                     className={cn(
                                         "cursor-pointer p-5 transition-all active:scale-[0.97] rounded-[10px] border relative overflow-hidden group/card",
-                                        String(selectedAccountId) === String(account.accountId)
+                                        isSelected(account)
                                             ? "border-primary bg-primary/[0.03] shadow-[0_10px_30px_rgba(32,171,176,0.1)] ring-1 ring-primary/20"
                                             : "border-white/80 bg-white/40 hover:border-primary/30 hover:bg-white/60 shadow-sm"
                                     )}
                                 >
-                                    {String(selectedAccountId) === String(account.accountId) && (
+                                    {isSelected(account) && (
                                         <motion.div
                                             layoutId="selected-indicator"
                                             className="absolute top-4 left-4 w-6 h-6 bg-primary text-white rounded-full flex items-center justify-center shadow-lg shadow-primary/20 z-10"
@@ -257,7 +278,7 @@ export function SupplierSelect({ onSelect, selectedAccountId, branchId, compact 
                                     <div className="flex items-center gap-4">
                                         <div className={cn(
                                             "w-12 h-12 rounded-[10px] flex items-center justify-center transition-colors",
-                                            String(selectedAccountId) === String(account.accountId)
+                                            isSelected(account)
                                                 ? "bg-primary/10 text-primary"
                                                 : "bg-ink/5 text-ink/30 group-hover/card:bg-primary/5 group-hover/card:text-primary/60"
                                         )}>

@@ -75,3 +75,46 @@ export function uniqueCanonicalSuppliers(
     }
     return out;
 }
+
+type InventorySupplierRow = {
+    branch_id?: number | null;
+    supplier_id?: number | null;
+    supplier?: { id?: number | null; name?: string | null } | null;
+};
+
+function positiveId(value: unknown): number | null {
+    const id = Number(value);
+    return Number.isFinite(id) && id > 0 ? id : null;
+}
+
+/** Canonical supplier id from a book inventory row (column first, then relation). */
+export function inventoryCanonicalSupplierId(
+    inventory: InventorySupplierRow | null | undefined
+): number | null {
+    return positiveId(inventory?.supplier_id) ?? positiveId(inventory?.supplier?.id);
+}
+
+/** Prefer the selected branch's inventory; otherwise any row that already has a supplier. */
+export function pickInventoryForSupplierPrefill<T extends InventorySupplierRow>(
+    inventories: T[] | null | undefined,
+    branchId?: number | null
+): T | null {
+    const rows = Array.isArray(inventories) ? inventories : [];
+    if (!rows.length) return null;
+    const preferredId = positiveId(branchId);
+    if (preferredId != null) {
+        const preferred = rows.find((row) => Number(row.branch_id) === preferredId) ?? null;
+        if (preferred && inventoryCanonicalSupplierId(preferred)) return preferred;
+    }
+    return rows.find((row) => inventoryCanonicalSupplierId(row) != null) ?? rows[0] ?? null;
+}
+
+export function selectionMatchingCanonicalSupplier(
+    accounts: SupplierAccountSelection[],
+    canonicalSupplierId?: number | null
+): SupplierAccountSelection | null {
+    const id = positiveId(canonicalSupplierId);
+    if (id == null) return null;
+    return accounts.find((row) => Number(row.canonicalSupplierId) === id) ?? null;
+}
+

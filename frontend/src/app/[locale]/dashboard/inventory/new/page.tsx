@@ -105,14 +105,10 @@ export default function NewInventoryPage() {
 
     const visibleStockKeys = useMemo((): BranchStockKey[] => {
         if (isHubIntake) {
-            const keys: BranchStockKey[] = ["warehouse", "qom"];
-            if (iraqBranchId || formData.book.iraqOnly) {
-                keys.push("najaf");
-            }
-            return keys;
+            return ["warehouse", "qom"];
         }
         return posKey ? [posKey] : ["qom"];
-    }, [formData.book.iraqOnly, iraqBranchId, isHubIntake, posKey]);
+    }, [isHubIntake, posKey]);
 
     const resolveIntakeBranchId = useCallback((): number | null => {
         if (!isHubIntake) {
@@ -138,7 +134,7 @@ export default function NewInventoryPage() {
 
     /**
      * Supplier list branch must stay stable on hub intake.
-     * resolveIntakeBranchId() follows qty targets (warehouse/qom/najaf) and was
+     * resolveIntakeBranchId() follows qty targets (warehouse/qom) and was
      * clearing the selected supplier mid-wizard via the mismatch effect below.
      */
     const supplierBranchId = useMemo(() => {

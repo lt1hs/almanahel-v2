@@ -33,7 +33,7 @@ const ScannerModal = dynamic(
 interface BookFormProps {
     data: any;
     onChange: (data: any) => void;
-    /** Intake: warehouse + Qom (+ Najaf when iraq-only). Full: all branches (edit). */
+    /** Intake: warehouse + Qom. Full: all branches (edit). */
     stockFields?: "intake" | "full";
     /** Override which qty fields are shown (POS sees only its own branch). */
     visibleStockKeys?: BranchStockKey[];
@@ -155,10 +155,8 @@ export function BookForm({
     const visibleBranchKeys = useMemo((): BranchStockKey[] => {
         if (visibleStockKeys?.length) return visibleStockKeys;
         if (stockFields === "full") return [...BRANCH_STOCK_KEYS];
-        const keys: BranchStockKey[] = ["warehouse", "qom"];
-        if (data.iraqOnly) keys.push("najaf");
-        return keys;
-    }, [stockFields, data.iraqOnly, visibleStockKeys]);
+        return ["warehouse", "qom"];
+    }, [stockFields, visibleStockKeys]);
 
     const totalStock = useMemo(() => {
         return visibleBranchKeys.reduce(

@@ -12,7 +12,12 @@ import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { FilterSelect } from "@/components/ui/FilterSelect";
 import { BookForm } from "@/components/inventory/BookForm";
-import { SupplierSelect, type SupplierAccountSelection } from "@/components/inventory/SupplierSelect";
+import { SupplierSelect } from "@/components/inventory/SupplierSelect";
+import {
+    inventoryCanonicalSupplierId,
+    pickInventoryForSupplierPrefill,
+    type SupplierAccountSelection,
+} from "@/lib/supplierAccountSelection";
 import { useTranslation } from "@/hooks/useTranslation";
 import { useNotify } from "@/hooks/useNotify";
 import { useAuth } from "@/contexts/AuthContext";
@@ -81,6 +86,7 @@ function EditBookContent() {
 
     const [book, setBook] = useState<any>(null);
     const [supplier, setSupplier] = useState<SupplierAccountSelection | null>(null);
+    const [bookSupplierId, setBookSupplierId] = useState<number | null>(null);
     const [branches, setBranches] = useState<any[]>([]);
     const [inventories, setInventories] = useState<any[]>([]);
     const [selectedBranchId, setSelectedBranchId] = useState<number | null>(
@@ -253,6 +259,9 @@ function EditBookContent() {
             }
 
             applyBookPayload(data, branchRows, branchForForm);
+            const supplierInventory = pickInventoryForSupplierPrefill(rows, branchForForm);
+            setSupplier(null);
+            setBookSupplierId(inventoryCanonicalSupplierId(supplierInventory));
             loadedRef.current = true;
         } catch (err) {
             if (err instanceof ApiError && err.status === 404 && loadedRef.current) {
@@ -588,6 +597,7 @@ function EditBookContent() {
                   branchId={operationalBranchId ?? user?.branch_id ?? null}
                   onSelect={setSupplier}
                   selectedAccountId={supplier?.accountId}
+                  selectedCanonicalSupplierId={bookSupplierId ?? supplier?.canonicalSupplierId}
                 />
             </div>
 
